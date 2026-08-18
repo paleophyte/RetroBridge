@@ -249,18 +249,20 @@ Verified via the same `objdump` check: zero `pxor`/`movups`/`movdqu`/
 
 **Verified**: the file-swap-with-rollback logic locally (both the
 success path and, separately, a deliberately-missing new-binary path to
-confirm the old file gets restored rather than left gone), and the full
+confirm the old file gets restored rather than left gone); the full
 bridge-driven path (`legacy_self_update` → two `PUT`s → `EXECDETACH` with
 quoted multi-path arguments → `update.exe` actually swapping the target
-file) against a local test agent. **Not yet verified**: the actual
-`ControlService`/`Toolhelp32` stop-the-real-agent step against a real
-installed NT service or a real 9x background process — same elevation
-limitation as everywhere else in this project that touches the SCM
-directly; needs a real target machine to confirm end-to-end.
+file) against a local test agent; and now the real
+`ControlService`/`Toolhelp32` stop-the-real-agent step end-to-end against
+`win95` (real Windows 9x, via `EXECDETACH`, twice — see the two 9x-specific
+bugs below) with a follow-up `EXECDETACH`/`PSLIST`/`PSKILL` cycle
+confirming the freshly-restarted agent still works correctly post-update.
+Not yet confirmed against a real installed NT-family service specifically
+(only reasoned-through/locally-tested for that half).
 
 ## Bugs found via live testing (not anticipated in advance)
 
-Four real correctness bugs surfaced only once the agent was actually
+Six real correctness bugs surfaced only once the agent was actually
 exercised against a live machine/desktop, not from code review. All are
 worth recording since the pattern ("looks right on paper, breaks the
 moment something realistic happens") is likely to recur as more of this
@@ -424,6 +426,48 @@ convention, not a hard instruction-set floor, and this MSYS2 package's
 actual default (`pentium4`) was five CPU generations newer than anything
 in scope for this project. `-march` needs to be pinned explicitly, and
 verified by disassembly, not assumed from the target triple.
+
+**`update.exe`'s Windows 9x stop step silently never matched, so it never
+actually stopped the old agent before swapping its file.**
+`stop_9x_agent()` compared `PROCESSENTRY32.szExeFile` against the bare
+constant `"llm_agent.exe"` via exact `_stricmp()`. That field is
+documented to (and, confirmed live, actually does) hold the *full path*
+on Windows 9x — `"C:\LLM_AGENT\LLM_AGENT.EXE"`, not just the filename —
+so the comparison could never match, regardless of where the agent was
+actually launched from. `stop_9x_agent()` always returned "not found,"
+`replace_file()` then raced against a still-running process still
+holding the old binary open, and the file swap failed every time on a
+real 9x target. Diagnosed by running `update.exe` via synchronous `EXEC`
+(instead of the normal silent `EXECDETACH`) specifically to see its
+console output, which showed "could not confirm the running agent
+stopped" followed by "failed to replace the agent binary." Fixed with an
+`ends_with_ci()` suffix-match helper instead of the exact-match
+comparison, so it matches regardless of whether `szExeFile` is a bare
+name or a full path. **Reproduced and fixed** — confirmed working
+end-to-end against `win95` via the real `legacy_self_update`/`EXECDETACH`
+path: the file swap succeeded, exactly one `llm_agent.exe` instance was
+running afterward with a fresh PID, and a follow-up `EXECDETACH` still
+reported the correct real target PID.
+
+**`update.log` was never actually created, on any target, despite every
+step appearing to log successfully.** `log_line()` opened the log file
+with `dwDesiredAccess = FILE_APPEND_DATA` only. That access right is
+documented and commonly used for named pipes/mailslots, but is not a
+reliable way to grow a brand-new *regular* file on every Windows
+version/filesystem — confirmed live: zero bytes were ever written, on
+both an NT4 target and (after the 9x fix above made the rest of the
+update succeed) `win95`, with no error surfaced anywhere because
+`log_line()`'s `CreateFileA` failure path was already silent by design
+(logging is deliberately best-effort, not something that should ever
+block or fail the actual update). Since `update.exe` is normally launched
+via `EXECDETACH` with no console and no output redirection, this meant
+`update.exe` runs were completely unobservable after the fact — the one
+thing `update.log` exists for. Fixed by opening with `GENERIC_WRITE`
+instead and explicitly seeking to `FILE_END` before each write, the
+standard portable append idiom (works identically back to Windows 95),
+rather than relying on `FILE_APPEND_DATA`'s implicit-append semantics.
+**Reproduced and fixed** — confirmed `update.log` now contains the full
+expected step-by-step trace after a real `win95` self-update.
 
 ## Trust model
 

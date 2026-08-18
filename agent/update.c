@@ -54,14 +54,23 @@ static void set_log_path(const char *targetPath) {
     memcpy(g_logPath + dirLen, "update.log", 11); /* includes the NUL */
 }
 
+/* GENERIC_WRITE + an explicit seek-to-end, not a bare FILE_APPEND_DATA
+   open: the latter is documented for pipes/mailslots and is unreliable
+   for growing a brand-new regular file on some filesystems/OS versions
+   (observed live: silently produced zero bytes on both an NT4 and a
+   9x target, no error surfaced anywhere since CreateFileA's failure
+   path here was already silent-by-design). SetFilePointer to FILE_END
+   is the standard portable append idiom and works identically back to
+   Windows 95. */
 static void log_line(const char *text) {
     HANDLE hFile;
     DWORD written;
 
     if (!g_logPath[0]) return;
-    hFile = CreateFileA(g_logPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+    hFile = CreateFileA(g_logPath, GENERIC_WRITE, FILE_SHARE_READ, NULL,
                          OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return;
+    SetFilePointer(hFile, 0, NULL, FILE_END);
     WriteFile(hFile, text, (DWORD)strlen(text), &written, NULL);
     WriteFile(hFile, "\r\n", 2, &written, NULL);
     CloseHandle(hFile);
@@ -150,6 +159,19 @@ typedef HANDLE (WINAPI *CreateToolhelp32SnapshotFn)(DWORD, DWORD);
 typedef BOOL (WINAPI *Process32FirstFn)(HANDLE, LPPROCESSENTRY32);
 typedef BOOL (WINAPI *Process32NextFn)(HANDLE, LPPROCESSENTRY32);
 
+/* PROCESSENTRY32.szExeFile is documented to hold the FULL PATH on
+   Windows 9x (confirmed live: "C:\LLM_AGENT\LLM_AGENT.EXE", not just
+   "LLM_AGENT.EXE") - comparing it directly against a bare filename
+   constant, as an earlier version of this function did, can never
+   match. Match on the trailing filename instead, so this works
+   regardless of which convention szExeFile follows. */
+static int ends_with_ci(const char *s, const char *suffix) {
+    int sLen = (int)strlen(s);
+    int suffixLen = (int)strlen(suffix);
+    if (suffixLen > sLen) return 0;
+    return _stricmp(s + (sLen - suffixLen), suffix) == 0;
+}
+
 /* ---- Windows 9x: no SCM, so find llm_agent.exe by name and terminate
    it - the same Toolhelp32 pattern llm_agent.c's own PSLIST already
    established (dynamically resolved for the same reason: NT4's
@@ -186,7 +208,7 @@ static int stop_9x_agent(void) {
     pe.dwSize = sizeof(pe);
     if (pFirst(hSnap, &pe)) {
         do {
-            if (pe.th32ProcessID != myPid && _stricmp(pe.szExeFile, TARGET_EXE_NAME) == 0) {
+            if (pe.th32ProcessID != myPid && ends_with_ci(pe.szExeFile, TARGET_EXE_NAME)) {
                 HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
                 if (hProc) {
                     TerminateProcess(hProc, 0);
