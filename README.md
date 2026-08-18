@@ -9,21 +9,26 @@ this isn't "just use a different SSH server."
 
 Two pieces:
 
-- **`agent/`** — `llm_agent`, a tiny C exec + file-transfer service you
-  cross-compile and copy onto the legacy machine. Token-authed TCP, runs
-  commands and moves files, streams output. Nothing else.
-- **`bridge/`** — an MCP server you run on your modern control machine. It
-  talks to `llm_agent` for shell exec/file transfer and to a VNC server
-  (which you install on the legacy box yourself — see below) for
-  screenshots and input, and exposes all of it as MCP tools.
+- **`agent/`** — `llm_agent`, a single small C service you cross-compile
+  and copy onto the legacy machine. One token-authed TCP channel does
+  everything: runs commands, moves files, captures the screen, sends
+  mouse/keyboard input. No third-party software required on the legacy
+  box — screenshots/input are built straight into the agent with GDI and
+  `mouse_event`/`keybd_event`, not a separately-installed VNC server. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#screenshotinput-built-into-the-agent-not-vnc-revised)
+  for why (that started as a VNC-based design and changed).
+- **`bridge/`** — an MCP server you run on your modern control machine,
+  exposing the agent's commands as MCP tools.
 
-Screenshots and input injection deliberately reuse existing,
-battle-tested software (TightVNC/UltraVNC) instead of a custom protocol —
-see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#why-vnc-not-a-custom-screenshotinput-protocol).
+If you also want to *watch* the box yourself, live, independent of the
+LLM tooling — RDP or your hypervisor's console both work fine and don't
+need anything from this repo. See the RDP-vs-console-session caveat in
+ARCHITECTURE.md if you use RDP for that, though: it can end up looking at
+a different session than what `legacy_screenshot` sees.
 
-**Trust model**: no transport encryption on the exec/file-transfer channel,
-just a shared token. Only put this on an isolated host-only/lab network —
-see [docs/ARCHITECTURE.md#trust-model](docs/ARCHITECTURE.md#trust-model).
+**Trust model**: no transport encryption, just a shared token per
+machine. Only put this on an isolated host-only/lab network — see
+[docs/ARCHITECTURE.md#trust-model](docs/ARCHITECTURE.md#trust-model).
 
 ## 1. Build the agent
 
@@ -67,23 +72,24 @@ Then install it as autostart and start it:
 
 ```
 llm_agent.exe --install
+net start LLMAgent
 ```
 
-On NT-family (NT4/2000/XP) this registers a service (`LLMAgent`) —
-start it with `net start LLMAgent`. On Windows 9x it adds a `Run`
+On NT-family (NT4/2000/XP) `--install` registers a service (`LLMAgent`),
+launched with `SERVICE_INTERACTIVE_PROCESS` so it can actually see/drive
+the logged-on user's real desktop for screenshot/click/key/type — pre-Vista
+Windows has no Session 0 isolation, so this works, but only while someone
+is logged in locally on the console (see ARCHITECTURE.md for the details
+and the RDP-session caveat). On Windows 9x, `--install` adds a `Run`
 registry key instead — it'll start on next logon, or run it immediately
 with `llm_agent.exe --run`.
 
-`llm_agent.exe --uninstall` removes either form of autostart.
+If you already had an older `llm_agent.exe` installed as a service, run
+`llm_agent.exe --uninstall` first and reinstall — the interactive-process
+flag and the newer commands only take effect on a fresh service
+registration, not an in-place binary swap.
 
-## 3. Install a VNC server on each legacy machine
-
-Not bundled here — grab **TightVNC 1.3.x** (last line supporting Windows
-9x/NT4/2000) or UltraVNC from their official sites, install it on the
-target, and set a VNC password. Both run fine in plain polling/GDI capture
-mode with no kernel driver required.
-
-## 4. Set up the bridge
+## 3. Set up the bridge
 
 ```bash
 cd bridge
@@ -93,15 +99,13 @@ python -m venv .venv
 
 List every legacy machine in `bridge/machines.ini` — copy
 `machines.ini.example` to `machines.ini` (gitignored, since it holds
-tokens/passwords) and fill in one `[section]` per machine:
+tokens) and fill in one `[section]` per machine:
 
 ```ini
 [win2k-1]
 host = 192.168.56.10
 exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
-vnc_port = 5900
-vnc_password = whatever-you-set-in-the-vnc-server
 
 [winxp-1]
 host = 192.168.56.11
@@ -109,8 +113,8 @@ exec_token = a-different-long-random-shared-secret
 ```
 
 The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
-`machine` argument to every tool below. `exec_port`/`vnc_port`/
-`vnc_password` are optional (default to `2222`/`5900`/none).
+`machine` argument to every tool below. `exec_port` is optional (defaults
+to `2222`).
 
 Wire the bridge into your MCP client config (e.g. Claude Code) as a stdio
 server:
@@ -135,19 +139,33 @@ Exposed tools: `legacy_list_machines`, `legacy_exec`, `legacy_ping`,
 `machine` argument naming the `machines.ini` section to target. If you
 don't remember the exact name, call `legacy_list_machines` first.
 
+`legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not
+unlock a locked/secure-desktop screen — that's Windows intentionally
+blocking software-simulated Ctrl+Alt+Del, not a bug here (real VNC/RDP
+hit the same wall).
+
 ## Status
 
-Exec and file-transfer protocol has been round-tripped locally: `ping`,
-`exec`, and a full `put` (upload) → remote `type` → `get` (download)
-byte-for-byte cycle, all verified against a live `llm_agent.exe` instance
-on this machine. The multi-machine `machines.ini` config has also been
-exercised locally — `legacy_list_machines`, a reachable machine, an
-unreachable-but-configured one (clean error), and an unknown machine name
-(clean error listing what *is* configured) all behave correctly.
+Exec and file-transfer protocol has been round-tripped locally (`ping`,
+`exec`, a full `put`/remote-`type`/`get` byte-for-byte cycle) and also
+against a real Windows 2000 machine end-to-end. The multi-machine
+`machines.ini` config has been exercised locally — machine listing, a
+reachable machine, an unreachable-but-configured one, and an unknown
+machine name all produce correct, clean results.
 
-Not yet verified against a real Windows 9x/NT4/2000 VM — the
-subsystem-version/import-table checks confirm the agent *should* load,
-but that's not the same as booting it on real old hardware or a
-period-accurate VM. Do that before relying on it. The VNC-backed tools
-(`legacy_screenshot`/`legacy_click`/`legacy_key`/`legacy_type`) are
-untested end-to-end — no VNC server has been stood up yet to test against.
+Screenshot/click/key/type are implemented and partially verified locally
+on this dev machine: `legacy_screenshot` round-trips through the full
+pipeline (agent BMP capture → Pillow → PNG) and produces a correctly-sized,
+decodable image; `legacy_key` was exercised on both its error path and a
+real (harmless, self-reverting Caps Lock toggle) success path. `legacy_click`
+and non-trivial `legacy_type` calls were deliberately **not** live-tested
+against this machine's real desktop, to avoid firing synthetic
+clicks/keystrokes at whatever's currently focused here — those, plus the
+`SERVICE_INTERACTIVE_PROCESS` behavior itself (this can only really be
+proven on a real installed service, not a foreground `--run`), still need
+verification on an actual target machine.
+
+Not yet verified against a real Windows 9x/ME/NT4 machine (only Windows
+2000 so far) — the subsystem-version/import-table checks confirm the
+agent *should* load across the whole range, but that's not the same as
+booting it on real old hardware or a period-accurate VM.

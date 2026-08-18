@@ -7,14 +7,13 @@ section in machines.ini (see machines.ini.example), and every tool takes
 a `machine` argument naming which one to target. Call legacy_list_machines
 to discover what's configured.
 
-Two channels per machine, both assumed to be on an isolated lab/host-only
-network (see docs/ARCHITECTURE.md for the trust model):
-
-  - exec/file-transfer: llm_agent (agent/llm_agent.c), a tiny token-authed
-    TCP service.
-  - screen/input: a VNC server you install on the box yourself (TightVNC
-    1.3.x or UltraVNC - see docs/ARCHITECTURE.md for why we didn't roll a
-    custom protocol for this half). This bridge speaks RFB via vncdotool.
+Everything goes through one channel per machine: llm_agent
+(agent/llm_agent.c), a tiny token-authed TCP service, assumed to be on an
+isolated lab/host-only network (see docs/ARCHITECTURE.md for the trust
+model). Screenshot/click/key/type are built into the agent itself (GDI
+capture + mouse_event/keybd_event injection) rather than requiring a
+separately-installed VNC server - see docs/ARCHITECTURE.md for why that
+changed from the original design.
 
 LEGACY_MACHINES_FILE points at the ini file; defaults to machines.ini next
 to this script.
@@ -22,11 +21,12 @@ to this script.
 
 from __future__ import annotations
 
+import io
 import os
-import tempfile
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
+from PIL import Image as PILImage
 
 from agent_client import AgentAuthError, AgentClient, AgentProtocolError
 from machines import MachineConfig, MachineConfigError, load_machines
@@ -62,7 +62,9 @@ srv = MCPServer(
         "a `machine` argument naming which configured machine to target - "
         "call legacy_list_machines first if you don't already know the "
         "name. Use legacy_screenshot before legacy_click/legacy_key when "
-        "you don't already know current on-screen coordinates."
+        "you don't already know current on-screen coordinates. Note: a "
+        "synthetic ctrl-alt-del will not unlock a locked/secure-desktop "
+        "screen - that's an OS security measure, not a bug."
     ),
 )
 
@@ -72,29 +74,18 @@ def _agent(machine: str) -> AgentClient:
     return AgentClient(m.host, m.exec_port, m.exec_token)
 
 
-def _vnc_connect(machine: str):
-    from vncdotool import api
-
-    m = _machine(machine)
-    server = f"{m.host}::{m.vnc_port}"
-    return api.connect(server, password=m.vnc_password)
-
-
 @srv.tool()
 def legacy_list_machines() -> str:
     """List the legacy machines configured in machines.ini, with their
-    host and ports (not tokens/passwords). Call this first if you don't
-    already know which `machine` name to pass to the other tools."""
+    host and port (not tokens). Call this first if you don't already know
+    which `machine` name to pass to the other tools."""
     try:
         machines = _machines()
     except MachineConfigError as e:
         return f"[config error] {e}"
     if not machines:
         return "no machines configured"
-    return "\n".join(
-        f"{m.name}: host={m.host} exec_port={m.exec_port} vnc_port={m.vnc_port}"
-        for m in machines.values()
-    )
+    return "\n".join(f"{m.name}: host={m.host} exec_port={m.exec_port}" for m in machines.values())
 
 
 @srv.tool()
@@ -157,56 +148,73 @@ def legacy_download(machine: str, remote_path: str, local_path: str) -> str:
 
 @srv.tool()
 def legacy_screenshot(machine: str) -> Image:
-    """Capture the current screen of the named legacy machine over VNC."""
-    client = _vnc_connect(machine)
+    """Capture the current screen of the named legacy machine. Requires
+    the agent to be running as an interactive service (see
+    docs/ARCHITECTURE.md) - if it isn't, this may return a blank/black
+    image instead of erroring, since capturing a disconnected window
+    station is a valid (just useless) result."""
     try:
-        fd, path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        client.captureScreen(path)
-        data = Path(path).read_bytes()
-        os.unlink(path)
-        return Image(data=data, format="png")
-    finally:
-        client.disconnect()
+        bmp = _agent(machine).screenshot()
+    except (MachineConfigError, AgentAuthError) as e:
+        raise RuntimeError(f"auth/config error: {e}") from e
+    except AgentProtocolError as e:
+        raise RuntimeError(f"protocol error: {e}") from e
+    except OSError as e:
+        raise RuntimeError(f"connection error: {e}") from e
+    png_buf = io.BytesIO()
+    PILImage.open(io.BytesIO(bmp)).save(png_buf, format="PNG")
+    return Image(data=png_buf.getvalue(), format="png")
 
 
 @srv.tool()
 def legacy_click(machine: str, x: int, y: int, button: int = 1) -> str:
     """Move the mouse to (x, y) in screen coordinates on the named legacy
-    machine and click. button: 1=left, 2=middle, 3=right (VNC numbering)."""
-    client = _vnc_connect(machine)
+    machine and click. button: 1=left, 2=middle, 3=right."""
     try:
-        client.mouseMove(x, y)
-        client.mousePress(button)
-        return f"clicked ({x}, {y}) button {button} on {machine}"
-    finally:
-        client.disconnect()
+        _agent(machine).click(x, y, button)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"clicked ({x}, {y}) button {button} on {machine}"
 
 
 @srv.tool()
 def legacy_key(machine: str, key: str) -> str:
-    """Press a single key or key combo on the named legacy machine, using
-    vncdotool key names, e.g. 'enter', 'esc', 'ctrl-alt-del',
-    'alt-tab', 'a', 'shift-a'."""
-    client = _vnc_connect(machine)
+    """Press a single key or key combo on the named legacy machine, e.g.
+    'enter', 'esc', 'tab', 'ctrl-alt-del', 'alt-tab', 'a', 'shift-a'.
+    A synthetic ctrl-alt-del will not unlock a locked/secure-desktop
+    screen - that's intentional OS behavior, not a bug here."""
     try:
-        client.keyPress(key)
-        return f"pressed {key} on {machine}"
-    finally:
-        client.disconnect()
+        _agent(machine).key(key)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"pressed {key} on {machine}"
 
 
 @srv.tool()
 def legacy_type(machine: str, text: str) -> str:
-    """Type a string of plain ASCII text on the named legacy machine, one
-    keystroke per character. For special keys/combos use legacy_key."""
-    client = _vnc_connect(machine)
+    """Type a string of plain text (no newlines - use legacy_key('enter')
+    for that) on the named legacy machine, one keystroke per character.
+    Characters that don't map to a key on the agent's keyboard layout are
+    silently skipped. For special keys/combos use legacy_key."""
     try:
-        for ch in text:
-            client.keyPress(ch)
-        return f"typed {len(text)} characters on {machine}"
-    finally:
-        client.disconnect()
+        _agent(machine).type_text(text)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    except ValueError as e:
+        return f"[bad input] {e}"
+    return f"typed {len(text)} characters on {machine}"
 
 
 if __name__ == "__main__":

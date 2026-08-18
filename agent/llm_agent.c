@@ -16,17 +16,32 @@
  *   client -> server: first line is the token.
  *   server -> client: "OK\n" or "FAIL\n" (then closes on FAIL).
  *   client -> server: "EXEC <cmdline>\n" | "PUT <path> <size>\n" | "GET <path>\n"
- *                      | "PING\n" | "QUIT\n"
+ *                      | "SCREENSHOT\n" | "CLICK <x> <y> <button>\n"
+ *                      | "KEY <keyspec>\n" | "TYPE <text>\n" | "PING\n" | "QUIT\n"
  *   server -> client (EXEC): repeated "LEN:<n>\n" + <n> raw bytes of combined
  *                            stdout/stderr, then a final "EXIT:<code>\n".
  *   client -> server (PUT):  <size> raw bytes immediately following the PUT line.
  *   server -> client (PUT):  "OK\n" | "ERR:<msg>\n"
  *   server -> client (GET):  "SIZE:<n>\n" + <n> raw bytes, or "ERR:<msg>\n"
+ *   server -> client (SCREENSHOT): "SIZE:<n>\n" + <n> raw bytes of a BMP
+ *                                  file (BITMAPFILEHEADER+INFOHEADER+pixels),
+ *                                  or "ERR:<msg>\n"
+ *   server -> client (CLICK/KEY/TYPE): "OK\n" | "ERR:<msg>\n"
  *   server -> client (PING): "PONG\n"
  *
  * File sizes are 32-bit (~4GB ceiling, practically ~2GB via the signed APIs
  * used here) - plenty for installer media and driver packages from this
  * OS era; not meant for anything larger.
+ *
+ * SCREENSHOT/CLICK/KEY/TYPE use mouse_event/keybd_event, not the newer
+ * SendInput - SendInput doesn't exist on Windows 9x, and these do, so this
+ * stays consistent with the rest of the agent working across the whole
+ * 9x-XP range. Also: pre-Vista Windows has no Session 0 isolation, so an
+ * NT-service instance of this agent CAN see/drive the real interactive
+ * desktop, but only because install_nt_service() registers it with
+ * SERVICE_INTERACTIVE_PROCESS - without that flag these commands would
+ * silently operate on an invisible, disconnected window station instead
+ * (see docs/ARCHITECTURE.md).
  */
 
 #include <windows.h>
@@ -235,6 +250,237 @@ static int handle_get(SOCKET s, const char *path) {
     return 0;
 }
 
+/* ---- SCREENSHOT: capture the interactive desktop as a BMP. GetDIBits does
+   the color-depth conversion to 24-bit for us regardless of the actual
+   screen depth (8-bit palette displays included), so no palette handling
+   needed here. ---- */
+static int handle_screenshot(SOCKET s) {
+    HDC hScreenDC, hMemDC;
+    HBITMAP hBitmap, hOldBitmap;
+    int width, height;
+    BITMAPINFOHEADER bi;
+    BITMAPFILEHEADER bf;
+    DWORD imageSize, fileSize;
+    BYTE *pixels;
+    char hdr[32];
+
+    hScreenDC = GetDC(NULL);
+    if (!hScreenDC) {
+        send(s, "ERR:GetDC failed\n", 18, 0);
+        return -1;
+    }
+
+    width = GetDeviceCaps(hScreenDC, HORZRES);
+    height = GetDeviceCaps(hScreenDC, VERTRES);
+
+    hMemDC = CreateCompatibleDC(hScreenDC);
+    hBitmap = CreateCompatibleBitmap(hScreenDC, width, height);
+    hOldBitmap = (HBITMAP)SelectObject(hMemDC, hBitmap);
+
+    BitBlt(hMemDC, 0, 0, width, height, hScreenDC, 0, 0, SRCCOPY);
+
+    ZeroMemory(&bi, sizeof(bi));
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = width;
+    bi.biHeight = height; /* positive = standard bottom-up DIB */
+    bi.biPlanes = 1;
+    bi.biBitCount = 24;
+    bi.biCompression = BI_RGB;
+
+    imageSize = ((width * 3 + 3) & ~3UL) * (DWORD)height; /* rows padded to 4 bytes */
+    pixels = (BYTE *)malloc(imageSize);
+    if (!pixels || !GetDIBits(hMemDC, hBitmap, 0, height, pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS)) {
+        if (pixels) free(pixels);
+        SelectObject(hMemDC, hOldBitmap);
+        DeleteObject(hBitmap);
+        DeleteDC(hMemDC);
+        ReleaseDC(NULL, hScreenDC);
+        send(s, "ERR:capture failed\n", 20, 0);
+        return -1;
+    }
+
+    ZeroMemory(&bf, sizeof(bf));
+    bf.bfType = 0x4D42; /* 'BM' */
+    bf.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    fileSize = bf.bfOffBits + imageSize;
+    bf.bfSize = fileSize;
+
+    wsprintfA(hdr, "SIZE:%lu\n", (unsigned long)fileSize);
+    send(s, hdr, (int)strlen(hdr), 0);
+    send(s, (char *)&bf, sizeof(bf), 0);
+    send(s, (char *)&bi, sizeof(bi), 0);
+    send(s, (char *)pixels, (int)imageSize, 0);
+
+    free(pixels);
+    SelectObject(hMemDC, hOldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hMemDC);
+    ReleaseDC(NULL, hScreenDC);
+    return 0;
+}
+
+/* ---- CLICK <x> <y> <button>: move the cursor and click. button 1/2/3 =
+   left/middle/right, matching the numbering the bridge already uses. ---- */
+static int handle_click(SOCKET s, const char *args) {
+    int x, y, button;
+
+    if (sscanf(args, "%d %d %d", &x, &y, &button) != 3) {
+        send(s, "ERR:bad CLICK syntax\n", 22, 0);
+        return -1;
+    }
+
+    SetCursorPos(x, y);
+    switch (button) {
+        case 1:
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            break;
+        case 2:
+            mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+            break;
+        case 3:
+            mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+            break;
+        default:
+            send(s, "ERR:bad button (use 1/2/3)\n", 28, 0);
+            return -1;
+    }
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
+typedef struct { const char *name; WORD vk; } KeyName;
+
+/* Named keys for KEY <keyspec>. Single ASCII characters (letters, digits,
+   punctuation) don't need an entry here - VkKeyScanA handles those,
+   including which ones need Shift. */
+static const KeyName KEY_NAMES[] = {
+    {"enter", VK_RETURN}, {"return", VK_RETURN},
+    {"esc", VK_ESCAPE}, {"escape", VK_ESCAPE},
+    {"tab", VK_TAB}, {"space", VK_SPACE},
+    {"backspace", VK_BACK}, {"bksp", VK_BACK},
+    {"delete", VK_DELETE}, {"del", VK_DELETE},
+    {"insert", VK_INSERT}, {"ins", VK_INSERT},
+    {"home", VK_HOME}, {"end", VK_END},
+    {"pageup", VK_PRIOR}, {"pgup", VK_PRIOR},
+    {"pagedown", VK_NEXT}, {"pgdn", VK_NEXT},
+    {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT},
+    {"f1", VK_F1}, {"f2", VK_F2}, {"f3", VK_F3}, {"f4", VK_F4},
+    {"f5", VK_F5}, {"f6", VK_F6}, {"f7", VK_F7}, {"f8", VK_F8},
+    {"f9", VK_F9}, {"f10", VK_F10}, {"f11", VK_F11}, {"f12", VK_F12},
+    {"win", VK_LWIN}, {"lwin", VK_LWIN}, {"rwin", VK_RWIN},
+    {"capslock", VK_CAPITAL}, {"numlock", VK_NUMLOCK}, {"scrolllock", VK_SCROLL},
+    {"printscreen", VK_SNAPSHOT}, {"prtsc", VK_SNAPSHOT}, {"pause", VK_PAUSE},
+    {NULL, 0}
+};
+
+static int lookup_named_key(const char *tok, WORD *vkOut) {
+    int i;
+    for (i = 0; KEY_NAMES[i].name; i++) {
+        if (_stricmp(tok, KEY_NAMES[i].name) == 0) { *vkOut = KEY_NAMES[i].vk; return 1; }
+    }
+    return 0;
+}
+
+static void press_vk(WORD vk, int down) {
+    keybd_event((BYTE)vk, 0, down ? 0 : KEYEVENTF_KEYUP, 0);
+}
+
+/* ---- KEY <keyspec>: press a single key or "mod-mod-key" combo, e.g.
+   "enter", "a", "shift-a", "ctrl-c", "alt-tab", "ctrl-alt-del".
+   Note: a synthetic Ctrl+Alt+Del does NOT trigger the secure Winlogon SAS
+   on NT-family Windows - that's an intentional OS security measure real
+   VNC/RDP hit too, not a bug here. Sending it is harmless but won't
+   unlock a locked/secure-desktop screen. ---- */
+static int handle_key(SOCKET s, const char *keyspec) {
+    char buf[128];
+    char tokens[8][32];
+    int ntok = 0;
+    int i, ctrl = 0, alt = 0, shift = 0, needShift = 0;
+    char *tok;
+    WORD vk = 0;
+
+    strncpy(buf, keyspec, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    tok = strtok(buf, "-");
+    while (tok && ntok < 8) {
+        strncpy(tokens[ntok], tok, sizeof(tokens[0]) - 1);
+        tokens[ntok][sizeof(tokens[0]) - 1] = '\0';
+        ntok++;
+        tok = strtok(NULL, "-");
+    }
+    if (ntok == 0) {
+        send(s, "ERR:empty key\n", 15, 0);
+        return -1;
+    }
+
+    for (i = 0; i < ntok - 1; i++) {
+        if (_stricmp(tokens[i], "ctrl") == 0 || _stricmp(tokens[i], "control") == 0) ctrl = 1;
+        else if (_stricmp(tokens[i], "alt") == 0) alt = 1;
+        else if (_stricmp(tokens[i], "shift") == 0) shift = 1;
+        else {
+            send(s, "ERR:unknown modifier\n", 22, 0);
+            return -1;
+        }
+    }
+
+    {
+        const char *base = tokens[ntok - 1];
+        if (!lookup_named_key(base, &vk)) {
+            if (strlen(base) == 1) {
+                SHORT r = VkKeyScanA(base[0]);
+                if (r == -1) {
+                    send(s, "ERR:unmappable character\n", 26, 0);
+                    return -1;
+                }
+                vk = (BYTE)(r & 0xFF);
+                if (r & 0x0100) needShift = 1;
+            } else {
+                send(s, "ERR:unknown key name\n", 22, 0);
+                return -1;
+            }
+        }
+    }
+
+    if (ctrl) press_vk(VK_CONTROL, 1);
+    if (alt) press_vk(VK_MENU, 1);
+    if (shift || needShift) press_vk(VK_SHIFT, 1);
+
+    press_vk(vk, 1);
+    press_vk(vk, 0);
+
+    if (shift || needShift) press_vk(VK_SHIFT, 0);
+    if (alt) press_vk(VK_MENU, 0);
+    if (ctrl) press_vk(VK_CONTROL, 0);
+
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
+/* ---- TYPE <text>: type literal text one keystroke at a time via
+   VkKeyScanA (handles Shift for uppercase/punctuation). Characters that
+   don't map to a key on the current keyboard layout are skipped. ---- */
+static int handle_type(SOCKET s, const char *text) {
+    const char *p;
+    for (p = text; *p; p++) {
+        SHORT r = VkKeyScanA(*p);
+        WORD vk;
+        int needShift;
+        if (r == -1) continue;
+        vk = (BYTE)(r & 0xFF);
+        needShift = (r & 0x0100) != 0;
+        if (needShift) press_vk(VK_SHIFT, 1);
+        press_vk(vk, 1);
+        press_vk(vk, 0);
+        if (needShift) press_vk(VK_SHIFT, 0);
+    }
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
 static int recv_line(SOCKET s, char *out, int outlen) {
     int i = 0;
     char c;
@@ -266,6 +512,14 @@ static void handle_client(SOCKET s) {
             handle_put(s, line + 4);
         } else if (strncmp(line, "GET ", 4) == 0) {
             handle_get(s, line + 4);
+        } else if (strcmp(line, "SCREENSHOT") == 0) {
+            handle_screenshot(s);
+        } else if (strncmp(line, "CLICK ", 6) == 0) {
+            handle_click(s, line + 6);
+        } else if (strncmp(line, "KEY ", 4) == 0) {
+            handle_key(s, line + 4);
+        } else if (strncmp(line, "TYPE ", 5) == 0) {
+            handle_type(s, line + 5);
         } else if (strcmp(line, "PING") == 0) {
             send(s, "PONG\n", 5, 0);
         } else if (strcmp(line, "QUIT") == 0) {
@@ -337,7 +591,7 @@ static void WINAPI svc_main(DWORD argc, LPSTR *argv) {
     if (!g_svcStatusHandle) return;
 
     ZeroMemory(&g_svcStatus, sizeof(g_svcStatus));
-    g_svcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_svcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS;
     g_svcStatus.dwCurrentState = SERVICE_RUNNING;
     g_svcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     SetServiceStatus(g_svcStatusHandle, &g_svcStatus);
@@ -364,8 +618,16 @@ static int install_nt_service(void) {
     scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
     if (!scm) { printf("OpenSCManager failed: %lu\n", GetLastError()); return 1; }
 
+    /* SERVICE_INTERACTIVE_PROCESS: pre-Vista Windows has no Session 0
+       isolation, so a LocalSystem service CAN see/drive the logged-on
+       user's real desktop for SCREENSHOT/CLICK/KEY/TYPE - but only if
+       registered with this flag. Without it, those commands would
+       silently run against an invisible, disconnected window station
+       instead of what's actually on screen. Only valid combined with
+       LocalSystem (the NULL account below), which is what we already use. */
     svc = CreateServiceA(scm, SERVICE_NAME_A, SERVICE_DISPLAY,
-                          SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+                          SERVICE_ALL_ACCESS,
+                          SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS,
                           SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
                           cmd, NULL, NULL, NULL, NULL, NULL);
     if (!svc) {

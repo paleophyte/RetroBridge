@@ -1,16 +1,13 @@
 # One section per legacy machine. Section name is the `machine` argument
 # every legacy_* MCP tool takes. Copy this file to machines.ini (gitignored,
-# since exec_token/vnc_password are secrets) and fill in your real machines.
+# since exec_token is a secret) and fill in your real machines.
 
 [win2k-1]
 host = 192.168.56.10
 exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
-vnc_port = 5900
-vnc_password = whatever-you-set-in-the-vnc-server
 
-# exec_port/vnc_port/vnc_password are all optional - exec_port defaults to
-# 2222, vnc_port to 5900, and an unset vnc_password means "no VNC password".
+# exec_port is optional - defaults to 2222.
 [winxp-1]
 host = 192.168.56.11
 exec_token = a-different-long-random-shared-secret

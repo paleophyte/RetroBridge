@@ -22,8 +22,6 @@ class MachineConfig:
     host: str
     exec_port: int = 2222
     exec_token: str = ""
-    vnc_port: int = 5900
-    vnc_password: str | None = None
 
 
 def load_machines(path: Path) -> dict[str, MachineConfig]:
@@ -50,7 +48,5 @@ def load_machines(path: Path) -> dict[str, MachineConfig]:
             host=host,
             exec_port=section.getint("exec_port", fallback=2222),
             exec_token=token,
-            vnc_port=section.getint("vnc_port", fallback=5900),
-            vnc_password=section.get("vnc_password") or None,
         )
     return machines

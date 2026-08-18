@@ -16,7 +16,7 @@ CFLAGS  := -O2 -Wall -DWIN32_LEAN_AND_MEAN
 LDFLAGS := -static-libgcc \
            -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 \
            -Wl,--major-os-version,4 -Wl,--minor-os-version,0 \
-           -lws2_32 -ladvapi32
+           -lws2_32 -ladvapi32 -lgdi32 -luser32
 
 OUT := llm_agent.exe
 SRC := llm_agent.c

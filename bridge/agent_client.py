@@ -1,10 +1,16 @@
-"""TCP client for the llm_agent exec protocol (see agent/llm_agent.c).
+"""TCP client for the llm_agent protocol (see agent/llm_agent.c).
 
 Wire protocol, one connection = one session:
     client -> server: token line
     server -> client: "OK\\n" | "FAIL\\n"
-    client -> server: "EXEC <cmdline>\\n" | "PING\\n" | "QUIT\\n"
+    client -> server: "EXEC <cmdline>\\n" | "PUT <path> <size>\\n" | "GET <path>\\n"
+                       | "SCREENSHOT\\n" | "CLICK <x> <y> <button>\\n"
+                       | "KEY <keyspec>\\n" | "TYPE <text>\\n" | "PING\\n" | "QUIT\\n"
     server -> client (EXEC): repeated "LEN:<n>\\n" + <n> raw bytes, then "EXIT:<code>\\n"
+    server -> client (PUT):  "OK\\n" | "ERR:<msg>\\n"
+    server -> client (GET):  "SIZE:<n>\\n" + <n> raw bytes, or "ERR:<msg>\\n"
+    server -> client (SCREENSHOT): "SIZE:<n>\\n" + <n> raw BMP bytes, or "ERR:<msg>\\n"
+    server -> client (CLICK/KEY/TYPE): "OK\\n" | "ERR:<msg>\\n"
     server -> client (PING): "PONG\\n"
 """
 
@@ -122,6 +128,43 @@ class AgentClient:
             return size
         finally:
             self._quit(sock)
+
+    def screenshot(self) -> bytes:
+        """Capture the agent machine's screen. Returns raw BMP bytes."""
+        sock = self._connect()
+        try:
+            sock.sendall(b"SCREENSHOT\n")
+            header = self._recv_line(sock)
+            if header.startswith("ERR:"):
+                raise AgentProtocolError(header)
+            if not header.startswith("SIZE:"):
+                raise AgentProtocolError(f"unexpected SCREENSHOT response: {header!r}")
+            size = int(header[5:])
+            return self._recv_exact(sock, size)
+        finally:
+            self._quit(sock)
+
+    def _simple_command(self, line: str) -> None:
+        """Send a one-line command that replies with just OK/ERR."""
+        sock = self._connect()
+        try:
+            sock.sendall((line + "\n").encode("utf-8", "replace"))
+            reply = self._recv_line(sock)
+            if reply != "OK":
+                raise AgentProtocolError(reply or "connection closed before OK")
+        finally:
+            self._quit(sock)
+
+    def click(self, x: int, y: int, button: int = 1) -> None:
+        self._simple_command(f"CLICK {x} {y} {button}")
+
+    def key(self, keyspec: str) -> None:
+        self._simple_command(f"KEY {keyspec}")
+
+    def type_text(self, text: str) -> None:
+        if "\n" in text or "\r" in text:
+            raise ValueError("type_text() text must not contain newlines - use key('enter') instead")
+        self._simple_command(f"TYPE {text}")
 
     @staticmethod
     def _quit(sock: socket.socket) -> None:
