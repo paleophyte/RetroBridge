@@ -49,7 +49,10 @@ Windows 4.0 (95/NT4-era) so the loader on old targets will actually accept
 it. Sanity-check with `file llm_agent.exe` — should read
 `PE32 executable for MS Windows 4.00 (console)`.
 
-## 2. Deploy to the legacy machine
+## 2. Deploy to each legacy machine
+
+Repeat this for every legacy box you want the bridge to reach — each one
+needs its own copy of the agent and, ideally, its own token.
 
 Copy `llm_agent.exe` and `agent/llm_agent.ini.example` (renamed to
 `llm_agent.ini`) to the target machine, in the same directory. Edit
@@ -73,7 +76,7 @@ with `llm_agent.exe --run`.
 
 `llm_agent.exe --uninstall` removes either form of autostart.
 
-## 3. Install a VNC server on the legacy machine
+## 3. Install a VNC server on each legacy machine
 
 Not bundled here — grab **TightVNC 1.3.x** (last line supporting Windows
 9x/NT4/2000) or UltraVNC from their official sites, install it on the
@@ -88,47 +91,63 @@ python -m venv .venv
 ./.venv/Scripts/pip install -r requirements.txt
 ```
 
-Point it at the legacy machine via environment variables:
+List every legacy machine in `bridge/machines.ini` — copy
+`machines.ini.example` to `machines.ini` (gitignored, since it holds
+tokens/passwords) and fill in one `[section]` per machine:
 
-```
-LEGACY_HOST=192.168.x.x
-LEGACY_EXEC_PORT=2222
-LEGACY_EXEC_TOKEN=REPLACE_WITH_UNIQUE_TOKEN
-LEGACY_VNC_PORT=5900
-LEGACY_VNC_PASSWORD=whatever-you-set-in-the-vnc-server
+```ini
+[win2k-1]
+host = 192.168.56.10
+exec_port = 2222
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
+vnc_port = 5900
+vnc_password = whatever-you-set-in-the-vnc-server
+
+[winxp-1]
+host = 192.168.56.11
+exec_token = a-different-long-random-shared-secret
 ```
 
-Wire it into your MCP client config (e.g. Claude Code) as a stdio server,
-e.g.:
+The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
+`machine` argument to every tool below. `exec_port`/`vnc_port`/
+`vnc_password` are optional (default to `2222`/`5900`/none).
+
+Wire the bridge into your MCP client config (e.g. Claude Code) as a stdio
+server:
 
 ```json
 {
   "mcpServers": {
     "retro-ssh-server": {
       "command": "C:\\path\\to\\retro-ssh-server\\bridge\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\retro-ssh-server\\bridge\\server.py"],
-      "env": {
-        "LEGACY_HOST": "192.168.x.x",
-        "LEGACY_EXEC_TOKEN": "REPLACE_WITH_UNIQUE_TOKEN",
-        "LEGACY_VNC_PASSWORD": "whatever-you-set-in-the-vnc-server"
-      }
+      "args": ["C:\\path\\to\\retro-ssh-server\\bridge\\server.py"]
     }
   }
 }
 ```
 
-Exposed tools: `legacy_exec`, `legacy_ping`, `legacy_upload`,
-`legacy_download`, `legacy_screenshot`, `legacy_click`, `legacy_key`,
-`legacy_type`.
+Only set `LEGACY_MACHINES_FILE` in `env` if you want `machines.ini` to
+live somewhere other than next to `server.py`.
+
+Exposed tools: `legacy_list_machines`, `legacy_exec`, `legacy_ping`,
+`legacy_upload`, `legacy_download`, `legacy_screenshot`, `legacy_click`,
+`legacy_key`, `legacy_type` — all but `legacy_list_machines` take a
+`machine` argument naming the `machines.ini` section to target. If you
+don't remember the exact name, call `legacy_list_machines` first.
 
 ## Status
 
 Exec and file-transfer protocol has been round-tripped locally: `ping`,
 `exec`, and a full `put` (upload) → remote `type` → `get` (download)
 byte-for-byte cycle, all verified against a live `llm_agent.exe` instance
-on this machine. Not yet verified against a real Windows 9x/NT4/2000 VM —
-the subsystem-version/import-table checks confirm it *should* load, but
-that's not the same as booting it on real old hardware or a
+on this machine. The multi-machine `machines.ini` config has also been
+exercised locally — `legacy_list_machines`, a reachable machine, an
+unreachable-but-configured one (clean error), and an unknown machine name
+(clean error listing what *is* configured) all behave correctly.
+
+Not yet verified against a real Windows 9x/NT4/2000 VM — the
+subsystem-version/import-table checks confirm the agent *should* load,
+but that's not the same as booting it on real old hardware or a
 period-accurate VM. Do that before relying on it. The VNC-backed tools
 (`legacy_screenshot`/`legacy_click`/`legacy_key`/`legacy_type`) are
 untested end-to-end — no VNC server has been stood up yet to test against.

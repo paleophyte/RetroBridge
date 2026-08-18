@@ -1,4 +1,4 @@
-"""TCP client for the retro-agent exec protocol (see agent/agent.c).
+"""TCP client for the llm_agent exec protocol (see agent/llm_agent.c).
 
 Wire protocol, one connection = one session:
     client -> server: token line
