@@ -188,7 +188,7 @@ reliably present before 2000). Design specifics that mattered:
 
 ## Bugs found via live testing (not anticipated in advance)
 
-Three real correctness bugs surfaced only once the agent was actually
+Four real correctness bugs surfaced only once the agent was actually
 exercised against a live machine/desktop, not from code review. All are
 worth recording since the pattern ("looks right on paper, breaks the
 moment something realistic happens") is likely to recur as more of this
@@ -284,6 +284,74 @@ handling), so `svc_ctrl_handler` is never registered or invoked there,
 and this specific bug couldn't occur on 9x. 9x has no equivalent
 "request a graceful stop" mechanism for an ordinary background process in
 the first place.
+
+**The agent crashed outright on a real Windows 95 VM** — "This program
+has performed an illegal operation and will be shut down," `LLM_AGENT`
+executed an invalid instruction at a specific `CS:EIP`, with a full
+register dump. This is the most severe bug found in this project: not a
+hang, an actual fault, and the first time the whole 9x code path had ever
+been exercised against real hardware/a real VM rather than just reasoned
+about. The fault bytes (`66 0f ef c0`) decode to `pxor %xmm0,%xmm0` — an
+SSE2 instruction. SSE2 shipped with the Pentium 4 in 2000, five years
+after Windows 95, and this VM's virtual CPU is deliberately configured
+without it for period accuracy.
+
+Root cause: the `i686-w64-mingw32-gcc` toolchain (the MSYS2 package
+itself, confirmed via `gcc -v`) defaults to `-mtune=generic
+-march=pentium4` — nothing this project ever set. At `-O2`, GCC happily
+vectorizes plain `ZeroMemory()`/struct-zeroing code into `pxor`/`movups`/
+`movdqu`. This was latent in *every* binary built before this fix, on
+every target, not something specific to 9x code paths — it simply never
+crashed on `cucm413`/`scm201` because those VMs' virtual CPUs still
+expose SSE2. Confirmed via `objdump -d`: dozens of SSE2 instructions
+scattered through functions with completely ordinary `ZeroMemory()`
+calls (`run_exec`, `handle_sysinfo`, etc.) — this was never confined to
+one function or one command.
+
+Fix, in two parts:
+
+1. `agent/Makefile` now passes `-march=i486` explicitly, which disables
+   MMX/SSE/SSE2 (and the Pentium-Pro-only `cmov`) for anything compiled
+   fresh from `llm_agent.c`.
+2. That alone wasn't enough — `-march` only affects code GCC compiles
+   from source in this build, not object code already sitting in the
+   toolchain's own prebuilt static libraries (`-static-libgcc` links
+   those in verbatim). `objdump` after step 1 still showed `cmov`/`xmm`
+   instructions, all inside mingw's own `__mingw_pformat`/`__gdtoa`/D2A
+   (its printf-family float-formatting internals) — pulled in wholesale
+   the moment *anything* in the program references `_snprintf`/`printf`/
+   `sscanf`, regardless of which format specifiers are actually used at
+   runtime, since the linker can't know a `%s`-only call site will never
+   need the float path. `_snprintf` (introduced alongside `EXECDETACH`,
+   used on every `EXEC`/`EXECDETACH` call — the hot path) and `sscanf`
+   (in `handle_click`) were removed entirely and replaced with
+   hand-written string/int parsing (`build_shell_command`'s manual
+   `memcpy` concatenation, `parse_int`). `printf` (only in `--install`/
+   `--uninstall`/usage output, never in the service hot path, but
+   statically linked into the binary regardless of whether that code
+   path runs) was replaced with `wsprintfA`-into-a-buffer plus a new
+   `con_msg()` helper wrapping plain `fputs` — formatting via a
+   dynamically-resolved user32.dll export instead of statically-linked
+   CRT internals.
+
+After both fixes, `objdump -d` shows zero `pxor`/`movups`/`movdqu`/
+`punpck` instructions anywhere in the binary. A handful of `cmov`
+instructions remain, but only inside mingw's own mandatory CRT startup
+internals (thread-local-storage setup, PE image base lookup) that run
+unconditionally before `main()` — not something reachable through this
+project's own code, and not fixable short of replacing the CRT entry
+point entirely, which isn't warranted for a gap this narrow (real 486 or
+non-Pro Pentium only; every VM tested against so far has `cmov`, just
+not SSE2). Documented as a known, accepted residual limitation rather
+than silently ignored.
+
+**The practical lesson, worth restating**: a cross-compiler's *default*
+target architecture is not something to trust implicitly just because
+the toolchain's triple says "i686" — that triple names an ABI/toolchain
+convention, not a hard instruction-set floor, and this MSYS2 package's
+actual default (`pentium4`) was five CPU generations newer than anything
+in scope for this project. `-march` needs to be pinned explicitly, and
+verified by disassembly, not assumed from the target triple.
 
 ## Trust model
 

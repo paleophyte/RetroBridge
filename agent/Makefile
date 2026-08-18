@@ -12,7 +12,32 @@
 CC      := i686-w64-mingw32-gcc
 # No -DUNICODE/-D_UNICODE: we want the ANSI "A" API surface everywhere,
 # since Windows 9x's wide-char entry points are mostly unimplemented stubs.
-CFLAGS  := -O2 -Wall -DWIN32_LEAN_AND_MEAN
+#
+# -march=i486 overrides this toolchain's baked-in default of
+# -march=pentium4 (confirmed via `gcc -v`: -mtune=generic -march=pentium4,
+# from how this MSYS2 package itself was built - nothing we ever set).
+# Pentium 4 means SSE2, and at -O2 GCC happily vectorizes plain
+# ZeroMemory()/memset()-shaped code into pxor/movups/movdqu - invalid
+# opcodes on any pre-2000 CPU. Crashed for real on a genuine Windows 95 VM
+# ("illegal operation", LLM_AGENT.EXE, fault instruction 66 0f ef c0 =
+# pxor %xmm0,%xmm0) despite working fine on Windows 2000/NT4 targets,
+# whose VM CPUs happen to still expose SSE2 - this was latent in every
+# binary built before this flag existed, not something specific to 9x
+# code paths. i486 disables MMX/SSE/SSE2 and the P6-only cmov for code
+# WE compile - but -march only affects fresh compilation, not prebuilt
+# object code pulled in from the toolchain's own static libraries (see
+# the CRT-formatted-I/O note in llm_agent.c for the bigger piece of that:
+# _snprintf/printf/sscanf were removed from this file entirely, since
+# each one statically links a large chunk of mingw's own prebuilt
+# printf/scanf internals, built with the SAME unsafe pentium4 default,
+# that -march=i486 here cannot retroactively fix). A handful of cmov
+# instructions remain in mingw's mandatory CRT startup internals
+# (thread-local-storage setup, PE image introspection) that run before
+# main() and aren't something this project's own code can avoid short of
+# replacing the CRT entry point - accepted as a narrow, undocumented-
+# further residual gap (real 486 / non-Pro Pentium only; every VM tested
+# against so far has CMOV, just not SSE2).
+CFLAGS  := -O2 -Wall -march=i486 -DWIN32_LEAN_AND_MEAN
 LDFLAGS := -static-libgcc \
            -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 \
            -Wl,--major-os-version,4 -Wl,--minor-os-version,0 \

@@ -178,13 +178,38 @@ static int send_cstr(SOCKET s, const char *text) {
     return send_all(s, text, (int)strlen(text));
 }
 
+/* Plain, non-formatting console output for --install/--uninstall/usage
+   text. fputs does no format-string parsing, so it can't drag in CRT
+   printf-family internals the way printf()/_snprintf() do - see the
+   -march note in Makefile for why that matters here. Build any dynamic
+   content with wsprintfA (dynamically resolved from user32.dll, safe)
+   before passing it in. */
+static void con_msg(const char *text) {
+    fputs(text, stdout);
+}
+
+/* No _snprintf/printf here on purpose - see the -march note in Makefile.
+   Any code path that references CRT printf-family functions statically
+   links mingw's own float-capable pformat/dtoa implementation, which was
+   prebuilt by this toolchain using ITS OWN unsafe pentium4 default -
+   -march=i486 on our own compile only affects code compiled fresh from
+   this file, not already-compiled library object code pulled in from the
+   archive. wsprintfA is safe (dynamically resolved from user32.dll, not
+   something we compile) but caps output at 1024 bytes, too small for a
+   long EXEC command line - so this does the concatenation by hand instead. */
 static void build_shell_command(char *out, int outlen, const char *cmdline) {
-    if (is_windows_9x()) {
-        _snprintf(out, outlen - 1, "command.com /C %s", cmdline);
-    } else {
-        _snprintf(out, outlen - 1, "cmd.exe /C %s", cmdline);
+    const char *prefix = is_windows_9x() ? "command.com /C " : "cmd.exe /C ";
+    int prefixLen = (int)strlen(prefix);
+    int cmdLen = (int)strlen(cmdline);
+    int copyLen = cmdLen;
+
+    if (prefixLen + copyLen >= outlen) {
+        copyLen = outlen - prefixLen - 1;
+        if (copyLen < 0) copyLen = 0;
     }
-    out[outlen - 1] = '\0';
+    memcpy(out, prefix, prefixLen);
+    memcpy(out + prefixLen, cmdline, copyLen);
+    out[prefixLen + copyLen] = '\0';
 }
 
 static int run_exec(SOCKET s, const char *cmdline) {
@@ -515,12 +540,33 @@ static int handle_screenshot(SOCKET s) {
     return 0;
 }
 
+/* Minimal signed-int parser, no sscanf - see the -march note in Makefile
+   for why CRT formatted-I/O functions are avoided throughout this file.
+   Returns the position after the parsed number, or NULL if there wasn't
+   one there. */
+static const char *parse_int(const char *p, int *out) {
+    int neg = 0, val = 0, any = 0;
+    while (*p == ' ') p++;
+    if (*p == '-') { neg = 1; p++; }
+    while (*p >= '0' && *p <= '9') {
+        val = val * 10 + (*p - '0');
+        p++;
+        any = 1;
+    }
+    if (!any) return NULL;
+    *out = neg ? -val : val;
+    return p;
+}
+
 /* ---- CLICK <x> <y> <button>: move the cursor and click. button 1/2/3 =
    left/middle/right, matching the numbering the bridge already uses. ---- */
 static int handle_click(SOCKET s, const char *args) {
     int x, y, button;
+    const char *p = parse_int(args, &x);
 
-    if (sscanf(args, "%d %d %d", &x, &y, &button) != 3) {
+    if (p) p = parse_int(p, &y);
+    if (p) p = parse_int(p, &button);
+    if (!p) {
         send(s, "ERR:bad CLICK syntax\n", 22, 0);
         return -1;
     }
@@ -1372,7 +1418,12 @@ static int install_nt_service(void) {
     wsprintfA(cmd, "\"%s\" --run", path);
 
     scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (!scm) { printf("OpenSCManager failed: %lu\n", GetLastError()); return 1; }
+    if (!scm) {
+        char msg[64];
+        wsprintfA(msg, "OpenSCManager failed: %lu\n", GetLastError());
+        con_msg(msg);
+        return 1;
+    }
 
     /* SERVICE_INTERACTIVE_PROCESS: pre-Vista Windows has no Session 0
        isolation, so a LocalSystem service CAN see/drive the logged-on
@@ -1388,11 +1439,17 @@ static int install_nt_service(void) {
                           cmd, NULL, NULL, NULL, NULL, NULL);
     if (!svc) {
         DWORD e = GetLastError();
+        char msg[64];
         CloseServiceHandle(scm);
-        printf("CreateService failed: %lu\n", e);
+        wsprintfA(msg, "CreateService failed: %lu\n", e);
+        con_msg(msg);
         return 1;
     }
-    printf("Installed service '%s'. Start it with: net start %s\n", SERVICE_NAME_A, SERVICE_NAME_A);
+    {
+        char msg[256];
+        wsprintfA(msg, "Installed service '%s'. Start it with: net start %s\n", SERVICE_NAME_A, SERVICE_NAME_A);
+        con_msg(msg);
+    }
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return 0;
@@ -1409,7 +1466,11 @@ static int uninstall_nt_service(void) {
     DeleteService(svc);
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
-    printf("Uninstalled service '%s'.\n", SERVICE_NAME_A);
+    {
+        char msg[128];
+        wsprintfA(msg, "Uninstalled service '%s'.\n", SERVICE_NAME_A);
+        con_msg(msg);
+    }
     return 0;
 }
 
@@ -1424,12 +1485,18 @@ static int install_9x_autostart(void) {
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                        0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
-        printf("RegOpenKeyEx failed: %lu\n", GetLastError());
+        char msg[64];
+        wsprintfA(msg, "RegOpenKeyEx failed: %lu\n", GetLastError());
+        con_msg(msg);
         return 1;
     }
     RegSetValueExA(key, SERVICE_NAME_A, 0, REG_SZ, (const BYTE *)cmd, (DWORD)strlen(cmd) + 1);
     RegCloseKey(key);
-    printf("Added Run-key autostart. It will start on next logon, or run now with:\n  %s\n", cmd);
+    {
+        char msg[MAX_PATH + 96];
+        wsprintfA(msg, "Added Run-key autostart. It will start on next logon, or run now with:\n  %s\n", cmd);
+        con_msg(msg);
+    }
     return 0;
 }
 
@@ -1442,7 +1509,7 @@ static int uninstall_9x_autostart(void) {
     }
     RegDeleteValueA(key, SERVICE_NAME_A);
     RegCloseKey(key);
-    printf("Removed Run-key autostart.\n");
+    con_msg("Removed Run-key autostart.\n");
     return 0;
 }
 
@@ -1461,7 +1528,7 @@ static void become_9x_background_process(void) {
 }
 
 static void print_usage(void) {
-    printf(
+    con_msg(
         "llm_agent - minimal exec + file-transfer agent for legacy Windows\n\n"
         "Usage:\n"
         "  llm_agent.exe --install     Install as autostart (NT service, or Run-key on 9x)\n"
