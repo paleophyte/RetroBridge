@@ -386,7 +386,8 @@ Line-oriented, one TCP connection per session:
 ```
 client -> server: <token>\n
 server -> client: OK\n | FAIL\n            (closes on FAIL)
-client -> server: EXEC <cmdline>\n | PUT <path> <size>\n | GET <path>\n
+client -> server: EXEC <cmdline>\n | EXECDETACH <cmdline>\n
+                  | PUT <path> <size>\n | GET <path>\n
                   | SCREENSHOT\n | CLICK <x> <y> <button>\n | KEY <keyspec>\n
                   | TYPE <text>\n | PSLIST\n | PSKILL <pid>\n | SYSINFO\n
                   | REBOOT\n | SHUTDOWN\n | WINLIST\n | CLIPSET <text>\n
@@ -397,6 +398,7 @@ server -> client (EXEC): (LEN:<n>\n <n raw bytes>)* EXIT:<code>\n
                          (a bare LEN:0\n with no bytes may appear as a
                          heartbeat during a long-running, currently-quiet
                          command - see "Bugs found via live testing")
+server -> client (EXECDETACH): OK pid=<pid>\n | ERR:<msg>\n
 client -> server (PUT):  <size> raw bytes, immediately after the PUT line
 server -> client (PUT):  OK\n | ERR:<msg>\n
 server -> client (GET):  SIZE:<n>\n <n raw bytes>  |  ERR:<msg>\n
@@ -421,6 +423,33 @@ doesn't carry over. Good enough for installer/test automation; would need
 a persistent-shell mode if that becomes limiting. Completion is detected
 by our direct child process exiting, not by the pipe reaching EOF — see
 "Bugs found via live testing" for why that distinction matters.
+If the client disconnects while `EXEC` is still running, the next output
+send or heartbeat send fails; the agent terminates its direct child and
+returns to the accept loop so one abandoned command cannot permanently
+consume the single connection slot.
+
+`EXECDETACH` launches a program directly — deliberately *not* through
+`cmd.exe`/`command.com` — and returns immediately after `CreateProcess`
+succeeds, with the actual launched program's PID. Use it for GUI
+programs, browser launches, or background helper scripts that write
+their own log file; use normal `EXEC` for anything needing shell syntax
+(`&&`, `%VAR%` expansion, redirection, built-ins like `dir`), since it
+intentionally waits for the direct child to exit.
+
+First implementation wrapped `EXECDETACH` through the shell the same way
+`EXEC` does, for consistency. Caught before it was ever committed, via
+the same kind of live-testing habit that found the `EXEC`/`net stop`
+bugs above: `cmd.exe /C foo.exe` spawns `foo.exe` as *cmd.exe's own
+child* rather than replacing it, so the PID `CreateProcess` hands back is
+cmd.exe's, not the target's. Confirmed concretely —
+`EXECDETACH("notepad.exe")` reported cmd.exe's PID; `PSKILL` on that PID
+killed cmd.exe while notepad.exe kept running, orphaned and untracked.
+That's exactly the "spawn via `EXEC`, then `PSLIST`-match by name to find
+the real PID" workaround this command exists to eliminate — a shell-
+wrapped `EXECDETACH` doesn't actually solve the problem it was built for.
+Fixed by skipping the shell wrapper entirely for this one command; the
+lost shell features aren't things GUI apps / browser launches /
+standalone helpers typically need anyway.
 
 `PUT`/`GET` move a single file per command, whole-file (no resume, no
 delta transfer). `PUT`'s `<path>` may contain spaces — it's parsed from

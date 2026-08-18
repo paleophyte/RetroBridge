@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import os
+import time
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -109,6 +110,27 @@ def legacy_exec(machine: str, command: str) -> str:
 
 
 @srv.tool()
+def legacy_exec_detach(machine: str, command: str) -> str:
+    """Launch a program on the named legacy machine and return
+    immediately without waiting for it to exit. Runs the program
+    directly, not through cmd.exe - no &&, %VAR% expansion, redirection,
+    or built-ins like `dir`/`start`; use legacy_exec for those. The PID
+    in the reply is the actual launched program (safe to pass to
+    legacy_kill or look for in legacy_ps). Use this for GUI apps, browser
+    launches, installers that keep running, or helper scripts that write
+    their own log file."""
+    try:
+        result = _agent(machine).exec_detach(command)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"launched detached on {machine}: {result.reply}"
+
+
+@srv.tool()
 def legacy_ping(machine: str) -> str:
     """Check that the llm_agent exec service on the named legacy machine
     is reachable and the configured token is accepted."""
@@ -167,6 +189,32 @@ def legacy_screenshot(machine: str) -> Image:
     png_buf = io.BytesIO()
     PILImage.open(io.BytesIO(bmp)).save(png_buf, format="PNG")
     return Image(data=png_buf.getvalue(), format="png")
+
+
+@srv.tool()
+def legacy_screenshot_file(machine: str, local_path: str, image_format: str = "png") -> str:
+    """Capture the current screen and save it on this control machine.
+    Use this when a raw screenshot would be too large/noisy for the tool
+    transcript. image_format is "png" or "bmp"; png is the default."""
+    fmt = image_format.lower()
+    if fmt not in ("png", "bmp"):
+        return '[bad input] image_format must be "png" or "bmp"'
+    try:
+        bmp = _agent(machine).screenshot()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+
+    path = Path(local_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "bmp":
+        path.write_bytes(bmp)
+    else:
+        PILImage.open(io.BytesIO(bmp)).save(path, format="PNG")
+    return f"saved {fmt} screenshot from {machine} to {path}"
 
 
 @srv.tool()
@@ -267,6 +315,59 @@ def legacy_sysinfo(machine: str) -> str:
     except OSError as e:
         return f"[connection error] {e}"
     return "\n".join(f"{k}={v}" for k, v in info.items())
+
+
+@srv.tool()
+def legacy_wait_for_agent(machine: str, timeout_seconds: int = 180, interval_seconds: int = 5) -> str:
+    """Poll until the named machine's agent accepts connections. Useful
+    immediately after legacy_reboot. Returns as soon as ping succeeds."""
+    deadline = time.time() + max(1, timeout_seconds)
+    interval = max(1, interval_seconds)
+    last_error = ""
+    attempts = 0
+    while time.time() < deadline:
+        attempts += 1
+        try:
+            if _agent(machine).ping():
+                return f"agent reachable on {machine} after {attempts} attempt(s)"
+            last_error = "unexpected ping response"
+        except (MachineConfigError, AgentAuthError, OSError) as e:
+            last_error = str(e)
+        time.sleep(interval)
+    return f"timed out waiting for agent on {machine}; last error: {last_error}"
+
+
+@srv.tool()
+def legacy_wait_for_desktop(machine: str, timeout_seconds: int = 180, interval_seconds: int = 5) -> str:
+    """Poll until the interactive desktop looks logged in. This checks
+    for Explorer or visible top-level windows, which is a better
+    post-reboot readiness signal than agent ping alone."""
+    deadline = time.time() + max(1, timeout_seconds)
+    interval = max(1, interval_seconds)
+    last = ""
+    attempts = 0
+    while time.time() < deadline:
+        attempts += 1
+        try:
+            agent = _agent(machine)
+            procs = agent.pslist()
+            names = {name.lower() for _, name in procs}
+            # userinit.exe deliberately excluded: it's the transient
+            # process that launches the shell and then exits, so seeing
+            # it running is more a "still logging in" signal than "ready" -
+            # including it risked a premature/false-positive readiness
+            # report in that narrow window.
+            if "explorer.exe" in names:
+                return f"desktop appears ready on {machine}: login shell process found after {attempts} attempt(s)"
+            windows = agent.winlist()
+            interesting = [w.title for w in windows if w.title and "program manager" not in w.title.lower()]
+            if interesting:
+                return f"desktop appears ready on {machine}: visible window {interesting[0]!r} after {attempts} attempt(s)"
+            last = f"{len(procs)} processes, {len(windows)} visible windows"
+        except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+            last = str(e)
+        time.sleep(interval)
+    return f"timed out waiting for desktop on {machine}; last observation: {last}"
 
 
 @srv.tool()
@@ -379,6 +480,66 @@ def legacy_reg_set(machine: str, root: str, subkey: str, value_name: str, value_
     except ValueError as e:
         return f"[bad input] {e}"
     return f"set {root}\\{subkey}\\{value_name} on {machine}"
+
+
+@srv.tool()
+def legacy_enable_autologon(machine: str, username: str, password: str, domain: str = "", force: bool = True) -> str:
+    """Configure NT-family Winlogon autologon on the named machine.
+    Use before rebooting when the agent needs a logged-in interactive
+    desktop after startup. The password is stored by Windows in plaintext
+    under the Winlogon key, so only use this on isolated lab machines."""
+    subkey = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    try:
+        agent = _agent(machine)
+    except MachineConfigError as e:
+        return f"[auth/config error] {e}"
+    if not domain:
+        try:
+            domain = agent.sysinfo().get("computer_name", "")
+        except (AgentAuthError, AgentProtocolError, OSError):
+            pass  # fall back to domain="" (local account) below
+
+    values = [
+        ("AutoAdminLogon", "SZ", "1"),
+        ("DefaultUserName", "SZ", username),
+        ("DefaultPassword", "SZ", password),
+        ("DefaultDomainName", "SZ", domain),
+        ("ForceAutoLogon", "SZ", "1" if force else "0"),
+        ("DisableCAD", "DWORD", "1"),
+    ]
+    try:
+        for name, typ, data in values:
+            agent.reg_set("HKLM", subkey, name, typ, data)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"enabled Winlogon autologon for {username!r} on {machine}"
+
+
+@srv.tool()
+def legacy_disable_autologon(machine: str) -> str:
+    """Disable Winlogon autologon and clear the stored plaintext
+    DefaultPassword value. Leaves DefaultUserName/DefaultDomainName alone."""
+    subkey = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    values = [
+        ("AutoAdminLogon", "SZ", "0"),
+        ("ForceAutoLogon", "SZ", "0"),
+        ("DefaultPassword", "SZ", ""),
+    ]
+    try:
+        agent = _agent(machine)
+        for name, typ, data in values:
+            agent.reg_set("HKLM", subkey, name, typ, data)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"disabled Winlogon autologon on {machine}"
 
 
 if __name__ == "__main__":

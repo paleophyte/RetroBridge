@@ -5,7 +5,8 @@ truth for edge cases).
 Wire protocol, one connection = one session:
     client -> server: token line
     server -> client: "OK\\n" | "FAIL\\n"
-    client -> server: "EXEC <cmdline>\\n" | "PUT <path> <size>\\n" | "GET <path>\\n"
+    client -> server: "EXEC <cmdline>\\n" | "EXECDETACH <cmdline>\\n"
+                       | "PUT <path> <size>\\n" | "GET <path>\\n"
                        | "SCREENSHOT\\n" | "CLICK <x> <y> <button>\\n"
                        | "KEY <keyspec>\\n" | "TYPE <text>\\n" | "PSLIST\\n"
                        | "PSKILL <pid>\\n" | "SYSINFO\\n" | "REBOOT\\n"
@@ -15,6 +16,7 @@ Wire protocol, one connection = one session:
                        | "PING\\n" | "QUIT\\n"
     server -> client (EXEC): repeated "LEN:<n>\\n" + <n> raw bytes, then "EXIT:<code>\\n"
                              (LEN:0 with no bytes may appear as a heartbeat)
+    server -> client (EXECDETACH): "OK pid=<pid>\\n" | "ERR:<msg>\\n"
     server -> client (PUT):  "OK\\n" | "ERR:<msg>\\n"
     server -> client (GET):  "SIZE:<n>\\n" + <n> raw bytes, or "ERR:<msg>\\n"
     server -> client (SCREENSHOT): "SIZE:<n>\\n" + <n> raw BMP bytes, or "ERR:<msg>\\n"
@@ -61,6 +63,12 @@ class AgentProtocolError(RuntimeError):
 class ExecResult:
     output: bytes
     exit_code: int
+
+
+@dataclass
+class ExecDetachResult:
+    pid: int | None
+    reply: str
 
 
 class AgentClient:
@@ -121,6 +129,30 @@ class AgentClient:
                 else:
                     raise AgentProtocolError(f"unexpected line: {line!r}")
             return ExecResult(output=bytes(output), exit_code=exit_code)
+        finally:
+            self._quit(sock)
+
+    def exec_detach(self, cmdline: str) -> ExecDetachResult:
+        """Launch a program directly (no shell - no &&, %VAR% expansion,
+        redirection, or built-ins like `dir`/`start`) and return
+        immediately. The returned pid is the actual launched program, safe
+        to pass to pskill()/look for in pslist(). Use for GUI apps,
+        browser launches, or standalone background helpers."""
+        sock = self._connect()
+        try:
+            sock.sendall(f"EXECDETACH {cmdline}\n".encode("utf-8", "replace"))
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if not reply.startswith("OK"):
+                raise AgentProtocolError(f"unexpected EXECDETACH response: {reply!r}")
+            pid = None
+            if "pid=" in reply:
+                try:
+                    pid = int(reply.split("pid=", 1)[1].strip())
+                except ValueError:
+                    pid = None
+            return ExecDetachResult(pid=pid, reply=reply)
         finally:
             self._quit(sock)
 

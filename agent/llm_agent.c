@@ -15,7 +15,8 @@
  * Wire protocol (line-oriented, one connection = one session):
  *   client -> server: first line is the token.
  *   server -> client: "OK\n" or "FAIL\n" (then closes on FAIL).
- *   client -> server: "EXEC <cmdline>\n" | "PUT <path> <size>\n" | "GET <path>\n"
+ *   client -> server: "EXEC <cmdline>\n" | "EXECDETACH <cmdline>\n"
+ *                      | "PUT <path> <size>\n" | "GET <path>\n"
  *                      | "SCREENSHOT\n" | "CLICK <x> <y> <button>\n"
  *                      | "KEY <keyspec>\n" | "TYPE <text>\n" | "PSLIST\n"
  *                      | "PSKILL <pid>\n" | "SYSINFO\n" | "REBOOT\n"
@@ -29,6 +30,7 @@
  *                            appear as a heartbeat during a long-running,
  *                            currently-quiet command - already valid
  *                            under this framing, treat as a no-op.
+ *   server -> client (EXECDETACH): "OK pid=<pid>\n" | "ERR:<msg>\n"
  *   client -> server (PUT):  <size> raw bytes immediately following the PUT line.
  *   server -> client (PUT):  "OK\n" | "ERR:<msg>\n"
  *   server -> client (GET):  "SIZE:<n>\n" + <n> raw bytes, or "ERR:<msg>\n"
@@ -162,6 +164,29 @@ static int is_windows_9x(void) {
 }
 
 /* ---- run a command line via cmd.exe /C, stream combined stdout+stderr ---- */
+static int send_all(SOCKET s, const char *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        int n = send(s, buf + sent, len - sent, 0);
+        if (n == SOCKET_ERROR || n == 0) return -1;
+        sent += n;
+    }
+    return 0;
+}
+
+static int send_cstr(SOCKET s, const char *text) {
+    return send_all(s, text, (int)strlen(text));
+}
+
+static void build_shell_command(char *out, int outlen, const char *cmdline) {
+    if (is_windows_9x()) {
+        _snprintf(out, outlen - 1, "command.com /C %s", cmdline);
+    } else {
+        _snprintf(out, outlen - 1, "cmd.exe /C %s", cmdline);
+    }
+    out[outlen - 1] = '\0';
+}
+
 static int run_exec(SOCKET s, const char *cmdline) {
     SECURITY_ATTRIBUTES sa;
     HANDLE hReadPipe = NULL, hWritePipe = NULL;
@@ -198,11 +223,7 @@ static int run_exec(SOCKET s, const char *cmdline) {
        COMMAND.COM's much smaller command-tail buffer (~127 chars) versus
        cmd.exe's; long EXEC commands that work fine on NT-family may need
        shortening (e.g. via a batch file) to run on 9x. */
-    if (is_windows_9x()) {
-        wsprintfA(full, "command.com /C %s", cmdline);
-    } else {
-        wsprintfA(full, "cmd.exe /C %s", cmdline);
-    }
+    build_shell_command(full, sizeof(full), cmdline);
 
     ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                          CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
@@ -235,8 +256,10 @@ static int run_exec(SOCKET s, const char *cmdline) {
                 {
                     char hdr[32];
                     wsprintfA(hdr, "LEN:%lu\n", (unsigned long)got);
-                    send(s, hdr, (int)strlen(hdr), 0);
-                    send(s, buf, (int)got, 0);
+                    if (send_cstr(s, hdr) < 0 || send_all(s, buf, (int)got) < 0) {
+                        TerminateProcess(pi.hProcess, 1);
+                        goto exec_done;
+                    }
                 }
                 gotAny = 1;
                 lastSentTick = GetTickCount();
@@ -252,7 +275,10 @@ static int run_exec(SOCKET s, const char *cmdline) {
                    read timeout. LEN:0 is already valid framing - zero
                    bytes follow - so existing clients handle it as a
                    no-op with no wire protocol change needed. */
-                send(s, "LEN:0\n", 6, 0);
+                if (send_cstr(s, "LEN:0\n") < 0) {
+                    TerminateProcess(pi.hProcess, 1);
+                    goto exec_done;
+                }
                 lastSentTick = GetTickCount();
             }
         }
@@ -268,12 +294,14 @@ static int run_exec(SOCKET s, const char *cmdline) {
             {
                 char hdr[32];
                 wsprintfA(hdr, "LEN:%lu\n", (unsigned long)got);
-                send(s, hdr, (int)strlen(hdr), 0);
-                send(s, buf, (int)got, 0);
+                if (send_cstr(s, hdr) < 0 || send_all(s, buf, (int)got) < 0) {
+                    break;
+                }
             }
         }
     }
 
+exec_done:
     GetExitCodeProcess(pi.hProcess, &exitCode);
 
     CloseHandle(hReadPipe);
@@ -283,8 +311,55 @@ static int run_exec(SOCKET s, const char *cmdline) {
     {
         char tail[64];
         wsprintfA(tail, "EXIT:%lu\n", (unsigned long)exitCode);
-        send(s, tail, (int)strlen(tail), 0);
+        send_cstr(s, tail);
     }
+    return 0;
+}
+
+/* ---- EXECDETACH <cmdline>: launch a program directly (no shell wrapper)
+   and return immediately. Use this for GUI apps or background helpers
+   where waiting for the child, or reporting the wrong PID, would defeat
+   the point.
+
+   Deliberately does NOT go through cmd.exe/command.com the way EXEC does.
+   First cut of this did wrap it in the shell, matching EXEC - but that
+   means the reported PID is cmd.exe's, not the target program's, since
+   `cmd.exe /C foo.exe` spawns foo.exe as cmd.exe's own child rather than
+   replacing it. Confirmed live: EXECDETACH("notepad.exe") reported
+   cmd.exe's PID; PSKILL on that PID killed cmd.exe while notepad.exe kept
+   running, orphaned and untracked - the exact manual "spawn then
+   PSLIST-by-name to find the real PID" workaround this command exists to
+   avoid. Launching the target directly makes the reported PID the actual
+   program, at the cost of shell features (&&, %VAR% expansion,
+   redirection, built-ins like `dir`/`start`) - not a loss for this
+   command's real use cases (GUI apps, browser launches, standalone
+   helper scripts); use EXEC for anything that needs the shell. */
+static int run_exec_detach(SOCKET s, const char *cmdline) {
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char full[LINE_MAX_LEN];
+    char reply[64];
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    /* CreateProcessA can modify lpCommandLine in place, so copy into a
+       local writable buffer rather than passing the wire-protocol string
+       (a const char *) directly. */
+    strncpy(full, cmdline, sizeof(full) - 1);
+    full[sizeof(full) - 1] = '\0';
+
+    if (!CreateProcessA(NULL, full, NULL, NULL, FALSE,
+                         CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi)) {
+        send_cstr(s, "ERR:CreateProcess failed\n");
+        return -1;
+    }
+
+    wsprintfA(reply, "OK pid=%lu\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    send_cstr(s, reply);
     return 0;
 }
 
@@ -1140,7 +1215,9 @@ static void handle_client(SOCKET s) {
 
     for (;;) {
         if (recv_line(s, line, sizeof(line)) < 0) break;
-        if (strncmp(line, "EXEC ", 5) == 0) {
+        if (strncmp(line, "EXECDETACH ", 11) == 0) {
+            run_exec_detach(s, line + 11);
+        } else if (strncmp(line, "EXEC ", 5) == 0) {
             run_exec(s, line + 5);
         } else if (strncmp(line, "PUT ", 4) == 0) {
             handle_put(s, line + 4);

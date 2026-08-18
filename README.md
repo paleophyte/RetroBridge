@@ -151,10 +151,14 @@ naming the `machines.ini` section to target (call `legacy_list_machines`
 first if you don't remember the exact name):
 
 - `legacy_list_machines`
-- `legacy_exec`, `legacy_ping` — run a command, check connectivity
+- `legacy_exec`, `legacy_exec_detach`, `legacy_ping` — run a command,
+  launch a command without waiting, check connectivity. Use
+  `legacy_exec_detach` for GUI apps and long-running helpers.
 - `legacy_upload`, `legacy_download` — file transfer
-- `legacy_screenshot`, `legacy_click`, `legacy_key`, `legacy_type` —
-  screen capture and input injection
+- `legacy_screenshot`, `legacy_screenshot_file`, `legacy_click`,
+  `legacy_key`, `legacy_type` — screen capture and input injection.
+  Use `legacy_screenshot_file` for large screenshots you want saved on
+  the control machine instead of emitted into the tool transcript.
 - `legacy_ps`, `legacy_kill` — list/terminate processes by PID
 - `legacy_sysinfo` — OS version, memory, disk space, computer name
 - `legacy_winlist` — visible top-level windows (title/class/position),
@@ -165,6 +169,15 @@ first if you don't remember the exact name):
 - `legacy_reg_get`, `legacy_reg_set` — native registry access
   (`REG_SZ`/`REG_DWORD` only); use instead of `legacy_exec` + `reg.exe`,
   which doesn't exist by default before XP
+- `legacy_enable_autologon`, `legacy_disable_autologon` — configure or
+  clear NT-family Winlogon autologon. This is the practical way to make
+  the agent usable after reboot on a box that otherwise stops at the
+  login screen. It stores the password in plaintext in the Winlogon
+  registry key, so use it only on isolated lab machines.
+- `legacy_wait_for_agent`, `legacy_wait_for_desktop` — poll after a
+  reboot until the TCP agent responds, then until the interactive shell
+  appears. `legacy_wait_for_desktop` looks for Explorer or visible
+  top-level windows, which is a better readiness signal than ping alone.
 - `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`**; take
   the target down immediately and interrupt anything in progress on it
 
@@ -172,6 +185,16 @@ first if you don't remember the exact name):
 unlock a locked/secure-desktop screen — that's Windows intentionally
 blocking software-simulated Ctrl+Alt+Del, not a bug here (real VNC/RDP
 hit the same wall).
+
+Recommended reboot/login workflow for a standalone NT-family lab box:
+
+1. `legacy_enable_autologon(machine, username, password)` (omit `domain`
+   to use the target computer name for a local account).
+2. `legacy_reboot(machine, confirm=True)`.
+3. `legacy_wait_for_agent(machine)`.
+4. `legacy_wait_for_desktop(machine)`.
+5. `legacy_screenshot_file(machine, "screenshots/after-reboot.png")` or
+   `legacy_screenshot(machine)` to verify what the agent can see.
 
 ## Status
 
