@@ -1,0 +1,6 @@
+agent/llm_agent.ini
+agent/*.exe
+agent/*.o
+bridge/.venv/
+bridge/__pycache__/
+*.pyc
