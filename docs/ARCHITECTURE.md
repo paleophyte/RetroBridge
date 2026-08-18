@@ -188,8 +188,8 @@ reliably present before 2000). Design specifics that mattered:
 
 ## Bugs found via live testing (not anticipated in advance)
 
-Two real correctness bugs surfaced only once the agent was actually
-exercised against a live machine/desktop, not from code review. Both are
+Three real correctness bugs surfaced only once the agent was actually
+exercised against a live machine/desktop, not from code review. All are
 worth recording since the pattern ("looks right on paper, breaks the
 moment something realistic happens") is likely to recur as more of this
 OS range gets tested.
@@ -240,6 +240,50 @@ but it has a much smaller command-tail buffer (~127 characters) than
 shortening (or writing to a batch file first) to run on 9x. Not yet
 tested on real 9x — this is reasoned from documented `COMMAND.COM`
 behavior, not verified empirically like the pipe-hang fix above.
+
+**`net stop` on the installed NT service hung, then reported failure,
+then refused a second stop attempt** — the exact same underlying pattern
+as the `EXEC` pipe-hang, just in the accept loop instead of a pipe read.
+`svc_ctrl_handler()` (the callback the SCM invokes to deliver
+`SERVICE_CONTROL_STOP`) set `g_running = 0` and reported
+`SERVICE_STOP_PENDING`, but that callback runs on the SCM's own
+control-dispatch thread — a *different* thread from the one blocked in
+`server_main()`'s `accept()` (or, if a client happened to be connected,
+`recv()` inside `handle_client()`). Neither blocking call has a timeout
+or any way to notice a flag changing on another thread; nothing was ever
+going to make them return on their own. Reproduced live on `cucm413`:
+first `net stop llmagent` printed "service is stopping........" then
+"could not be stopped"; a second attempt failed differently ("service
+could not be controlled in its present state," error 2189) because the
+SCM now considered a stop already in progress — confirming the process
+itself was still alive and genuinely parked, not crashed.
+
+Fix: track the listening socket and the currently-active client socket
+(if any) in globals, and have `svc_ctrl_handler()` call `closesocket()`
+on both when a stop is requested. Closing a socket that a *different*
+thread is blocked in `accept()`/`recv()` on is a documented, valid way to
+force that call to return on Winsock — confirmed with a standalone
+cross-thread test (a thread blocked in `accept()`, closed from the main
+thread after a delay) before touching the real service code: unblocked
+within 50ms. Deliberately accepted a small, low-consequence race on
+those two globals rather than adding real synchronization — worst case
+a stop takes one extra connection-cycle to notice, not a hang, and that
+matches the lightweight-single-threaded register the rest of this agent
+is written in.
+
+This fix could only be validated for the underlying mechanism locally
+(the cross-thread `closesocket()` test above) — actually exercising the
+real SCM-integrated `net stop` flow needs an elevated, installed service,
+which this dev environment doesn't have. Confirming `net stop` actually
+completes cleanly against the real fix still needs to happen on
+`cucm413` (or another real target) directly.
+
+Only NT-family goes through this SCM/`net stop` path at all — Windows 9x
+never calls `StartServiceCtrlDispatcherA` (see `main()`'s `--run`
+handling), so `svc_ctrl_handler` is never registered or invoked there,
+and this specific bug couldn't occur on 9x. 9x has no equivalent
+"request a graceful stop" mechanism for an ordinary background process in
+the first place.
 
 ## Trust model
 

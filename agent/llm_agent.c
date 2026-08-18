@@ -119,6 +119,14 @@ static int  g_port = DEFAULT_PORT;
 static SERVICE_STATUS_HANDLE g_svcStatusHandle = 0;
 static SERVICE_STATUS g_svcStatus;
 static volatile int g_running = 1;
+/* Tracked so svc_ctrl_handler (called on the SCM's own control-dispatch
+   thread, not the thread running server_main()'s loop) can force a
+   blocked accept()/recv() to return - see the STOP handling note above
+   server_main(). Small, low-consequence race on these two between
+   threads (no locking) is accepted deliberately: worst case a STOP
+   takes one extra connection-cycle to complete, not a hang. */
+static volatile SOCKET g_listenSock = INVALID_SOCKET;
+static volatile SOCKET g_activeClientSock = INVALID_SOCKET;
 
 /* ---- config: llm_agent.ini next to the exe: port=NNNN / token=... ---- */
 static void load_config(void) {
@@ -1202,6 +1210,7 @@ static int server_main(void) {
         return 1;
     }
     listen(listenSock, 4);
+    g_listenSock = listenSock;
 
     while (g_running) {
         struct sockaddr_in clientAddr;
@@ -1211,10 +1220,13 @@ static int server_main(void) {
             if (!g_running) break;
             continue;
         }
+        g_activeClientSock = client;
         handle_client(client);
+        g_activeClientSock = INVALID_SOCKET;
         closesocket(client);
     }
 
+    g_listenSock = INVALID_SOCKET;
     closesocket(listenSock);
     WSACleanup();
     return 0;
@@ -1225,7 +1237,30 @@ static void WINAPI svc_ctrl_handler(DWORD ctrl) {
     if (ctrl == SERVICE_CONTROL_STOP || ctrl == SERVICE_CONTROL_SHUTDOWN) {
         g_running = 0;
         g_svcStatus.dwCurrentState = SERVICE_STOP_PENDING;
+        g_svcStatus.dwWaitHint = 3000;
         SetServiceStatus(g_svcStatusHandle, &g_svcStatus);
+
+        /* The SCM calls this handler on its own control-dispatch thread,
+           separate from the thread blocked in server_main()'s accept()/
+           recv() calls - setting g_running alone does nothing until one
+           of those blocking calls happens to return on its own, which
+           might be never (no new connections, or a client that's just
+           sitting idle). closesocket() on a socket another thread is
+           blocked in is a documented, valid way to force that call to
+           return on Winsock - do it for both the listener (so accept()
+           unblocks) and whatever client connection is currently active,
+           if any (so a blocked recv() in handle_client() unblocks too).
+           Without this, "net stop" times out waiting for a STOPPED
+           status that never comes, even though the process is still
+           alive and will eventually notice g_running on its own the
+           next time something happens to its blocking calls - which,
+           left alone, could be a very long time. */
+        if (g_listenSock != INVALID_SOCKET) {
+            closesocket(g_listenSock);
+        }
+        if (g_activeClientSock != INVALID_SOCKET) {
+            closesocket(g_activeClientSock);
+        }
     }
 }
 
