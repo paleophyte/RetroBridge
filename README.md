@@ -97,9 +97,8 @@ python -m venv .venv
 ./.venv/Scripts/pip install -r requirements.txt
 ```
 
-List every legacy machine in `bridge/machines.ini` — copy
-`machines.ini.example` to `machines.ini` (gitignored, since it holds
-tokens) and fill in one `[section]` per machine:
+List every legacy machine in a `machines.ini` — copy `machines.ini.example`
+and fill in one `[section]` per machine:
 
 ```ini
 [win2k-1]
@@ -116,6 +115,16 @@ The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
 `machine` argument to every tool below. `exec_port` is optional (defaults
 to `2222`).
 
+**Put your real `machines.ini` outside the repo**, e.g.
+`~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at
+it (rather than the in-repo default of `bridge/machines.ini`). This isn't
+just tidiness — anything under `bridge/` is fair game for scratch/test
+files during development on this repo itself, and a real config sitting
+at the same default path a quick local test would use is a live token
+one `rm`/overwrite away from being gone, with no git history to recover
+it from since it's gitignored. Keeping the real file outside the repo
+entirely removes that risk.
+
 Wire the bridge into your MCP client config (e.g. Claude Code) as a stdio
 server:
 
@@ -124,14 +133,18 @@ server:
   "mcpServers": {
     "retro-ssh-server": {
       "command": "C:\\path\\to\\retro-ssh-server\\bridge\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\retro-ssh-server\\bridge\\server.py"]
+      "args": ["C:\\path\\to\\retro-ssh-server\\bridge\\server.py"],
+      "env": {
+        "LEGACY_MACHINES_FILE": "C:\\Users\\you\\.retro-ssh-server\\machines.ini"
+      }
     }
   }
 }
 ```
 
-Only set `LEGACY_MACHINES_FILE` in `env` if you want `machines.ini` to
-live somewhere other than next to `server.py`.
+If `LEGACY_MACHINES_FILE` isn't set, it falls back to `machines.ini` next
+to `server.py` — fine for quick local testing, just not for the real
+config (see above).
 
 Exposed tools: `legacy_list_machines`, `legacy_exec`, `legacy_ping`,
 `legacy_upload`, `legacy_download`, `legacy_screenshot`, `legacy_click`,
@@ -147,23 +160,29 @@ hit the same wall).
 ## Status
 
 Exec and file-transfer protocol has been round-tripped locally (`ping`,
-`exec`, a full `put`/remote-`type`/`get` byte-for-byte cycle) and also
-against a real Windows 2000 machine end-to-end. The multi-machine
-`machines.ini` config has been exercised locally — machine listing, a
+`exec`, a full `put`/remote-`type`/`get` byte-for-byte cycle) and against
+a real Windows 2000 machine (`cucm413`) end-to-end. The multi-machine
+`machines.ini` config has been exercised too — machine listing, a
 reachable machine, an unreachable-but-configured one, and an unknown
 machine name all produce correct, clean results.
 
-Screenshot/click/key/type are implemented and partially verified locally
-on this dev machine: `legacy_screenshot` round-trips through the full
-pipeline (agent BMP capture → Pillow → PNG) and produces a correctly-sized,
-decodable image; `legacy_key` was exercised on both its error path and a
-real (harmless, self-reverting Caps Lock toggle) success path. `legacy_click`
-and non-trivial `legacy_type` calls were deliberately **not** live-tested
-against this machine's real desktop, to avoid firing synthetic
-clicks/keystrokes at whatever's currently focused here — those, plus the
-`SERVICE_INTERACTIVE_PROCESS` behavior itself (this can only really be
-proven on a real installed service, not a foreground `--run`), still need
-verification on an actual target machine.
+Screenshot/click/key/type are now verified end-to-end against a real
+installed service on `cucm413`, not just locally:
+`legacy_screenshot` returned a genuine, content-rich capture of the live
+desktop (confirmed by eye, not just structurally) — proof
+`SERVICE_INTERACTIVE_PROCESS` is working and the agent can actually see
+the interactive session, not a disconnected window station.
+`legacy_click` followed by `legacy_type('x')` produced a visible,
+verifiable effect: Explorer's desktop jump-to-icon selected "Xlight
+Server" (the one icon starting with `x`), confirmed by diffing
+before/after screenshots. `legacy_key` was also exercised on both its
+error path and a real (harmless, self-reverting Caps Lock toggle) success
+path.
+
+Not yet verified against Windows 9x/ME/NT4 (only Windows 2000 so far) —
+the subsystem-version/import-table checks confirm the agent *should*
+load across the whole range, but that's not the same as booting it on
+real old hardware or a period-accurate VM for those specifically.
 
 Not yet verified against a real Windows 9x/ME/NT4 machine (only Windows
 2000 so far) — the subsystem-version/import-table checks confirm the
