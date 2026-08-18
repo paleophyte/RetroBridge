@@ -38,18 +38,26 @@ CC      := i686-w64-mingw32-gcc
 # further residual gap (real 486 / non-Pro Pentium only; every VM tested
 # against so far has CMOV, just not SSE2).
 CFLAGS  := -O2 -Wall -march=i486 -DWIN32_LEAN_AND_MEAN
-LDFLAGS := -static-libgcc \
+LDCOMMON := -static-libgcc \
            -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 \
-           -Wl,--major-os-version,4 -Wl,--minor-os-version,0 \
-           -lws2_32 -ladvapi32 -lgdi32 -luser32
+           -Wl,--major-os-version,4 -Wl,--minor-os-version,0
+LDFLAGS := $(LDCOMMON) -lws2_32 -ladvapi32 -lgdi32 -luser32
 
-OUT := llm_agent.exe
-SRC := llm_agent.c
+all: llm_agent.exe update.exe
 
-$(OUT): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(OUT) $(LDFLAGS)
+llm_agent.exe: llm_agent.c
+	$(CC) $(CFLAGS) llm_agent.c -o llm_agent.exe $(LDFLAGS)
+
+# update.exe (see docs/ARCHITECTURE.md "Self-update") replaces a running
+# llm_agent installation with a new binary and restarts it. Same
+# -march=i486 / no-CRT-formatted-IO discipline as llm_agent.c - it's a
+# separate compiled binary, so it's just as exposed to the toolchain's
+# unsafe pentium4 default. Only needs advapi32 (SCM calls) - no sockets,
+# no GDI.
+update.exe: update.c
+	$(CC) $(CFLAGS) update.c -o update.exe $(LDCOMMON) -ladvapi32
 
 clean:
-	rm -f $(OUT)
+	rm -f llm_agent.exe update.exe
 
-.PHONY: clean
+.PHONY: all clean

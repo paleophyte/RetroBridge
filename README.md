@@ -49,10 +49,12 @@ PATH="/c/msys64/mingw32/bin:$PATH" make
 directory has to be on `PATH` for the *whole* build, not just for finding
 `gcc` itself — a silent, no-error-message failure otherwise.)
 
-This produces `agent/llm_agent.exe`, a 32-bit PE binary stamped for
-Windows 4.0 (95/NT4-era) so the loader on old targets will actually accept
-it. Sanity-check with `file llm_agent.exe` — should read
-`PE32 executable for MS Windows 4.00 (console)`.
+This produces `agent/llm_agent.exe` and `agent/update.exe` (see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update) — used for
+in-place updates, not part of normal deployment), both 32-bit PE binaries
+stamped for Windows 4.0 (95/NT4-era) so the loader on old targets will
+actually accept them. Sanity-check with `file llm_agent.exe` — should
+read `PE32 executable for MS Windows 4.00 (console)`.
 
 ## 2. Deploy to each legacy machine
 
@@ -180,6 +182,13 @@ first if you don't remember the exact name):
   top-level windows, which is a better readiness signal than ping alone.
 - `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`**; take
   the target down immediately and interrupt anything in progress on it
+- `legacy_self_update` — updates the agent on a machine in place:
+  uploads a new `llm_agent.exe` + `update.exe`, launches `update.exe`
+  detached to stop/replace/restart the running agent, then polls for it
+  to come back. Requires `remote_dir` (the absolute directory the agent
+  is currently deployed in) since there's no remote way to ask the agent
+  where it's installed. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update).
 
 `legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not
 unlock a locked/secure-desktop screen — that's Windows intentionally

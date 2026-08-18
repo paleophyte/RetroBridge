@@ -542,5 +542,53 @@ def legacy_disable_autologon(machine: str) -> str:
     return f"disabled Winlogon autologon on {machine}"
 
 
+@srv.tool()
+def legacy_self_update(
+    machine: str,
+    new_agent_local_path: str,
+    update_exe_local_path: str,
+    remote_dir: str,
+    wait_for_agent: bool = True,
+) -> str:
+    """Update the agent on the named legacy machine in place: uploads a
+    new llm_agent.exe and update.exe (build both with `make` in agent/),
+    then launches update.exe detached to stop the running agent
+    (SCM stop+poll on NT-family, process kill on 9x), swap the binary,
+    and restart it. remote_dir is the absolute directory the agent is
+    currently deployed in (e.g. wherever llm_agent.ini lives) - there's
+    no remote way to ask the agent where it's installed, so this has to
+    be supplied. The connection carrying this call completes and closes
+    cleanly before the old agent process actually stops, so the update
+    itself won't be interrupted by its own triggering request. If
+    wait_for_agent is True, polls afterward (like legacy_wait_for_agent)
+    until the new agent responds - useful confirmation the swap actually
+    worked, since a failed swap leaves the OLD agent running (update.exe
+    restores its backup on failure) rather than leaving the machine with
+    no agent at all."""
+    remote_dir = remote_dir.rstrip("\\")
+    remote_new_agent = f"{remote_dir}\\llm_agent_new.exe"
+    remote_update_exe = f"{remote_dir}\\update.exe"
+    remote_target_agent = f"{remote_dir}\\llm_agent.exe"
+
+    try:
+        agent = _agent(machine)
+        agent.put(new_agent_local_path, remote_new_agent)
+        agent.put(update_exe_local_path, remote_update_exe)
+        result = agent.exec_detach(
+            f'"{remote_update_exe}" "{remote_new_agent}" "{remote_target_agent}"'
+        )
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection/file error] {e}"
+
+    msg = f"update launched on {machine}: {result.reply}"
+    if wait_for_agent:
+        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=60, interval_seconds=3)
+    return msg
+
+
 if __name__ == "__main__":
     srv.run(transport="stdio")

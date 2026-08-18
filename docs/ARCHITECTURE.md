@@ -186,6 +186,78 @@ reliably present before 2000). Design specifics that mattered:
   registry needs without the added complexity of `REG_BINARY`/
   `REG_MULTI_SZ` handling.
 
+## Self-update
+
+`agent/update.c` compiles to a second binary, `update.exe`, whose only
+job is replacing a running `llm_agent` installation with a new one:
+stop the old process, swap the file, start the new one. Deliberately a
+*separate* small program rather than a `SELFUPDATE` command bolted onto
+`llm_agent` itself — the whole reason it's needed is that you generally
+can't overwrite an EXE file while it's the one currently executing, so
+something *other than* the running agent has to do the swap.
+
+Usage: `update.exe <new-exe-path> [target-exe-path]`. `target-exe-path`
+defaults to `llm_agent.exe` next to `update.exe` itself if omitted. Both
+paths must be absolute — a service's default working directory is
+`system32`, not wherever the agent/update.exe actually live (the same
+gotcha `load_config()` already has to work around for
+`llm_agent.ini`), so any relative path here would silently resolve to
+the wrong place.
+
+Sequencing, driven by `bridge/server.py`'s `legacy_self_update`:
+
+1. `PUT` the new `llm_agent.exe` to `<remote_dir>\llm_agent_new.exe`
+   (not directly over the live file — see above) and `update.exe` to
+   `<remote_dir>\update.exe`.
+2. `EXECDETACH` launches `update.exe` with both paths, quoted, and
+   returns immediately with its PID. The triggering connection gets its
+   response and closes cleanly *before* `update.exe` actually stops the
+   old agent — `EXECDETACH` launches it as a direct child (not tied to
+   the parent via a pipe the way plain `EXEC` is), so killing the old
+   agent process moments later doesn't touch `update.exe` itself.
+3. `update.exe` stops the old agent — `ControlService` +
+   poll-for-`SERVICE_STOPPED` on NT-family (the same "don't assume a
+   stop is instant" lesson already learned once from the `net stop`
+   bug below, applied here from the start rather than re-discovered),
+   or a Toolhelp32 find-by-name + `TerminateProcess` on 9x (no SCM
+   there at all) — reusing the exact same dynamically-resolved
+   Toolhelp32 pattern `PSLIST` already established, for the same
+   NT4-doesn't-have-it reason.
+4. Renames the old binary to `<target>.old` (retrying briefly — the
+   just-stopped process may take a moment to release its file mapping),
+   moves the new one into place, and restores the `.old` backup if that
+   move fails, so a bad upload can't strand the machine with no agent
+   at all.
+5. Restarts it — `StartService` on NT-family (no need to re-run
+   `--install`; the service registration's binary path didn't change,
+   only the file's contents did), or a direct `CreateProcess ... --run`
+   on 9x (mirroring what the `Run` key would do on next logon, just
+   immediately).
+6. `legacy_self_update` polls afterward with the same logic as
+   `legacy_wait_for_agent`, so the caller gets a real answer about
+   whether the new agent actually came back up, not just whether
+   `update.exe` was launched.
+
+`update.exe` follows the exact same `-march=i486` / no-CRT-formatted-I/O
+discipline as `llm_agent.c` (see the SSE2 crash below) — it's a
+separately compiled binary, so it's just as exposed to the toolchain's
+unsafe default, and there'd be little point fixing that crash in one
+binary while shipping a second one with the identical latent bug.
+Verified via the same `objdump` check: zero `pxor`/`movups`/`movdqu`/
+`punpck` anywhere, only the same handful of unavoidable-CRT-startup
+`cmov` instructions `llm_agent.exe` already has.
+
+**Verified**: the file-swap-with-rollback logic locally (both the
+success path and, separately, a deliberately-missing new-binary path to
+confirm the old file gets restored rather than left gone), and the full
+bridge-driven path (`legacy_self_update` → two `PUT`s → `EXECDETACH` with
+quoted multi-path arguments → `update.exe` actually swapping the target
+file) against a local test agent. **Not yet verified**: the actual
+`ControlService`/`Toolhelp32` stop-the-real-agent step against a real
+installed NT service or a real 9x background process — same elevation
+limitation as everywhere else in this project that touches the SCM
+directly; needs a real target machine to confirm end-to-end.
+
 ## Bugs found via live testing (not anticipated in advance)
 
 Four real correctness bugs surfaced only once the agent was actually
