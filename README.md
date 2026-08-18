@@ -146,11 +146,27 @@ If `LEGACY_MACHINES_FILE` isn't set, it falls back to `machines.ini` next
 to `server.py` — fine for quick local testing, just not for the real
 config (see above).
 
-Exposed tools: `legacy_list_machines`, `legacy_exec`, `legacy_ping`,
-`legacy_upload`, `legacy_download`, `legacy_screenshot`, `legacy_click`,
-`legacy_key`, `legacy_type` — all but `legacy_list_machines` take a
-`machine` argument naming the `machines.ini` section to target. If you
-don't remember the exact name, call `legacy_list_machines` first.
+Exposed tools, all but `legacy_list_machines` taking a `machine` argument
+naming the `machines.ini` section to target (call `legacy_list_machines`
+first if you don't remember the exact name):
+
+- `legacy_list_machines`
+- `legacy_exec`, `legacy_ping` — run a command, check connectivity
+- `legacy_upload`, `legacy_download` — file transfer
+- `legacy_screenshot`, `legacy_click`, `legacy_key`, `legacy_type` —
+  screen capture and input injection
+- `legacy_ps`, `legacy_kill` — list/terminate processes by PID
+- `legacy_sysinfo` — OS version, memory, disk space, computer name
+- `legacy_winlist` — visible top-level windows (title/class/position),
+  useful for finding dialogs/buttons without screenshot-guessing
+- `legacy_clipboard_set` — set the clipboard (pair with
+  `legacy_key(machine, 'ctrl-v')` to paste — more reliable than
+  `legacy_type` for exact strings like product keys)
+- `legacy_reg_get`, `legacy_reg_set` — native registry access
+  (`REG_SZ`/`REG_DWORD` only); use instead of `legacy_exec` + `reg.exe`,
+  which doesn't exist by default before XP
+- `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`**; take
+  the target down immediately and interrupt anything in progress on it
 
 `legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not
 unlock a locked/secure-desktop screen — that's Windows intentionally
@@ -166,25 +182,52 @@ a real Windows 2000 machine (`cucm413`) end-to-end. The multi-machine
 reachable machine, an unreachable-but-configured one, and an unknown
 machine name all produce correct, clean results.
 
-Screenshot/click/key/type are now verified end-to-end against a real
-installed service on `cucm413`, not just locally:
-`legacy_screenshot` returned a genuine, content-rich capture of the live
-desktop (confirmed by eye, not just structurally) — proof
-`SERVICE_INTERACTIVE_PROCESS` is working and the agent can actually see
-the interactive session, not a disconnected window station.
-`legacy_click` followed by `legacy_type('x')` produced a visible,
-verifiable effect: Explorer's desktop jump-to-icon selected "Xlight
-Server" (the one icon starting with `x`), confirmed by diffing
-before/after screenshots. `legacy_key` was also exercised on both its
-error path and a real (harmless, self-reverting Caps Lock toggle) success
-path.
+Screenshot/click/key/type are verified end-to-end against a real
+installed service on `cucm413`, not just locally: `legacy_screenshot`
+returned a genuine, content-rich capture of the live desktop (confirmed
+by eye, not just structurally) — proof `SERVICE_INTERACTIVE_PROCESS` is
+working and the agent can actually see the interactive session, not a
+disconnected window station. `legacy_click` followed by
+`legacy_type('x')` produced a visible, verifiable effect: Explorer's
+desktop jump-to-icon selected "Xlight Server" (the one icon starting with
+`x`), confirmed by diffing before/after screenshots. `legacy_key` was
+also exercised on both its error path and a real (harmless,
+self-reverting Caps Lock toggle) success path.
 
-Not yet verified against Windows 9x/ME/NT4 (only Windows 2000 so far) —
-the subsystem-version/import-table checks confirm the agent *should*
-load across the whole range, but that's not the same as booting it on
-real old hardware or a period-accurate VM for those specifically.
+`legacy_ps`/`legacy_kill`/`legacy_sysinfo`/`legacy_winlist`/
+`legacy_clipboard_set`/`legacy_reg_get`/`legacy_reg_set` are verified
+locally (this dev machine) at both the wire-protocol and bridge-tool
+level — including a real spawn → list → kill round trip, and a real
+registry write → read round trip against a disposable test key. Not yet
+tested against `cucm413` or any other real legacy target.
+`legacy_reboot`/`legacy_shutdown` are implemented and build cleanly but
+have **never been invoked against any real machine** — rebooting a
+machine mid-session isn't something to do just to prove the code path
+works, so this is reasoned from `ExitWindowsEx`'s documented behavior,
+not empirically confirmed. The `confirm=True` gate itself is verified:
+omitting it short-circuits before any network call happens at all.
+
+Testing the process-list/kill code specifically surfaced a real testing
+caveat worth knowing about (not a target-environment bug): on this
+64-bit dev machine, `legacy_ps` can only resolve names for 32-bit
+processes (a 32-bit reader can't read module names from native 64-bit
+processes under WOW64) — every genuine 9x/NT4/2000/XP target is 32-bit
+only, so this won't happen there. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the details.
+
+One real bug was found and fixed via live testing, not code review:
+`legacy_exec` could wedge the *entire* agent — refusing all further
+connections, including `legacy_ping` — if the command spawned something
+that outlived it (e.g. launching any GUI app in the background). Fixed
+by watching the agent's direct child process exit instead of waiting for
+the redirected pipe to reach EOF. Reproduced hanging under the old code,
+confirmed fixed under the new code (returns in ~0.1s, agent stays
+responsive immediately after). See "Bugs found via live testing" in
+ARCHITECTURE.md.
 
 Not yet verified against a real Windows 9x/ME/NT4 machine (only Windows
 2000 so far) — the subsystem-version/import-table checks confirm the
-agent *should* load across the whole range, but that's not the same as
-booting it on real old hardware or a period-accurate VM.
+agent *should* load across the whole range, and the `EXEC` interpreter
+now branches correctly for 9x's `COMMAND.COM`, but neither of those is
+the same as actually booting on real old hardware or a period-accurate
+VM. That's the natural next step.

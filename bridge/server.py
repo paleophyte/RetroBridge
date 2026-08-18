@@ -64,7 +64,10 @@ srv = MCPServer(
         "name. Use legacy_screenshot before legacy_click/legacy_key when "
         "you don't already know current on-screen coordinates. Note: a "
         "synthetic ctrl-alt-del will not unlock a locked/secure-desktop "
-        "screen - that's an OS security measure, not a bug."
+        "screen - that's an OS security measure, not a bug. "
+        "legacy_reboot/legacy_shutdown require confirm=True - they take "
+        "the target down immediately and interrupt anything in progress "
+        "on it, so only pass that once you actually intend it."
     ),
 )
 
@@ -215,6 +218,167 @@ def legacy_type(machine: str, text: str) -> str:
     except ValueError as e:
         return f"[bad input] {e}"
     return f"typed {len(text)} characters on {machine}"
+
+
+@srv.tool()
+def legacy_ps(machine: str) -> str:
+    """List running processes (PID and image name) on the named legacy
+    machine."""
+    try:
+        procs = _agent(machine).pslist()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    if not procs:
+        return "no processes returned"
+    return "\n".join(f"{pid}\t{name}" for pid, name in procs)
+
+
+@srv.tool()
+def legacy_kill(machine: str, pid: int) -> str:
+    """Forcibly terminate a process by PID on the named legacy machine.
+    No protection against killing critical processes (including the
+    agent's own) - same trust model as legacy_exec."""
+    try:
+        _agent(machine).pskill(pid)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"terminated pid {pid} on {machine}"
+
+
+@srv.tool()
+def legacy_sysinfo(machine: str) -> str:
+    """OS family/version/service pack, computer name, memory, and C:
+    disk space for the named legacy machine. Use this to detect what
+    you're actually talking to instead of guessing from context."""
+    try:
+        info = _agent(machine).sysinfo()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return "\n".join(f"{k}={v}" for k, v in info.items())
+
+
+@srv.tool()
+def legacy_reboot(machine: str, confirm: bool = False) -> str:
+    """Reboot the named legacy machine. Takes it down immediately and
+    interrupts anything in progress - pass confirm=True only once you
+    actually intend that."""
+    if not confirm:
+        return "not executed: pass confirm=True to actually reboot the machine"
+    try:
+        _agent(machine).reboot()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"reboot initiated on {machine}"
+
+
+@srv.tool()
+def legacy_shutdown(machine: str, confirm: bool = False) -> str:
+    """Power off the named legacy machine. Takes it down immediately and
+    interrupts anything in progress - pass confirm=True only once you
+    actually intend that."""
+    if not confirm:
+        return "not executed: pass confirm=True to actually shut down the machine"
+    try:
+        _agent(machine).shutdown()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return f"shutdown initiated on {machine}"
+
+
+@srv.tool()
+def legacy_winlist(machine: str) -> str:
+    """List visible top-level windows (handle, position/size, class,
+    title) on the named legacy machine. Use this to find dialogs/buttons
+    by title instead of screenshotting and guessing pixel coordinates."""
+    try:
+        windows = _agent(machine).winlist()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    if not windows:
+        return "no windows returned"
+    return "\n".join(
+        f"hwnd={w.hwnd} pos=({w.x},{w.y}) size={w.width}x{w.height} "
+        f"class={w.class_name!r} title={w.title!r}"
+        for w in windows
+    )
+
+
+@srv.tool()
+def legacy_clipboard_set(machine: str, text: str) -> str:
+    """Set the clipboard on the named legacy machine to plain text (no
+    newlines). Follow with legacy_key(machine, 'ctrl-v') to paste it -
+    more reliable than legacy_type for exact strings like product keys
+    or paths, since it sidesteps keyboard-layout character mapping."""
+    try:
+        _agent(machine).clipboard_set(text)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    except ValueError as e:
+        return f"[bad input] {e}"
+    return f"clipboard set on {machine}"
+
+
+@srv.tool()
+def legacy_reg_get(machine: str, root: str, subkey: str, value_name: str) -> str:
+    """Read a registry value on the named legacy machine. root is one of
+    HKLM/HKCU/HKCR/HKU/HKCC. Only REG_SZ/REG_EXPAND_SZ/REG_DWORD are
+    supported. Use this instead of legacy_exec + reg.exe - reg.exe
+    doesn't exist by default before Windows XP."""
+    try:
+        value = _agent(machine).reg_get(root, subkey, value_name)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    return str(value)
+
+
+@srv.tool()
+def legacy_reg_set(machine: str, root: str, subkey: str, value_name: str, value_type: str, data: str) -> str:
+    """Write a registry value on the named legacy machine. root is one of
+    HKLM/HKCU/HKCR/HKU/HKCC. value_type is "SZ" or "DWORD" (the only two
+    supported). Creates the key if it doesn't already exist."""
+    try:
+        _agent(machine).reg_set(root, subkey, value_name, value_type, data)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+    except ValueError as e:
+        return f"[bad input] {e}"
+    return f"set {root}\\{subkey}\\{value_name} on {machine}"
 
 
 if __name__ == "__main__":

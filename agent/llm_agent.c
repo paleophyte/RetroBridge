@@ -17,9 +17,18 @@
  *   server -> client: "OK\n" or "FAIL\n" (then closes on FAIL).
  *   client -> server: "EXEC <cmdline>\n" | "PUT <path> <size>\n" | "GET <path>\n"
  *                      | "SCREENSHOT\n" | "CLICK <x> <y> <button>\n"
- *                      | "KEY <keyspec>\n" | "TYPE <text>\n" | "PING\n" | "QUIT\n"
+ *                      | "KEY <keyspec>\n" | "TYPE <text>\n" | "PSLIST\n"
+ *                      | "PSKILL <pid>\n" | "SYSINFO\n" | "REBOOT\n"
+ *                      | "SHUTDOWN\n" | "WINLIST\n" | "CLIPSET <text>\n"
+ *                      | "REGGET\t<root>\t<subkey>\t<valuename>\n"
+ *                      | "REGSET\t<root>\t<subkey>\t<valuename>\t<type>\t<data>\n"
+ *                      | "PING\n" | "QUIT\n"
  *   server -> client (EXEC): repeated "LEN:<n>\n" + <n> raw bytes of combined
  *                            stdout/stderr, then a final "EXIT:<code>\n".
+ *                            A "LEN:0\n" with no following bytes may
+ *                            appear as a heartbeat during a long-running,
+ *                            currently-quiet command - already valid
+ *                            under this framing, treat as a no-op.
  *   client -> server (PUT):  <size> raw bytes immediately following the PUT line.
  *   server -> client (PUT):  "OK\n" | "ERR:<msg>\n"
  *   server -> client (GET):  "SIZE:<n>\n" + <n> raw bytes, or "ERR:<msg>\n"
@@ -27,6 +36,21 @@
  *                                  file (BITMAPFILEHEADER+INFOHEADER+pixels),
  *                                  or "ERR:<msg>\n"
  *   server -> client (CLICK/KEY/TYPE): "OK\n" | "ERR:<msg>\n"
+ *   server -> client (PSLIST): "SIZE:<n>\n" + <n> raw bytes of "<pid>\t<name>\r\n"
+ *                              lines, or "ERR:<msg>\n"
+ *   server -> client (PSKILL): "OK\n" | "ERR:<msg>\n"
+ *   server -> client (SYSINFO): "SIZE:<n>\n" + <n> raw bytes of "key=value\r\n"
+ *                               lines
+ *   server -> client (REBOOT/SHUTDOWN): "OK\n" | "ERR:<msg>\n" (OK is sent
+ *                                       before the machine actually goes
+ *                                       down, see handle_power())
+ *   server -> client (WINLIST): "SIZE:<n>\n" + <n> raw bytes of
+ *                               "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n"
+ *                               lines, one per visible top-level window
+ *   server -> client (CLIPSET): "OK\n" | "ERR:<msg>\n"
+ *   server -> client (REGGET): "DWORD:<value>\n" | "SIZE:<n>\n" + <n> raw
+ *                              bytes (REG_SZ) | "ERR:<msg>\n"
+ *   server -> client (REGSET): "OK\n" | "ERR:<msg>\n"
  *   server -> client (PING): "PONG\n"
  *
  * File sizes are 32-bit (~4GB ceiling, practically ~2GB via the signed APIs
@@ -42,11 +66,44 @@
  * SERVICE_INTERACTIVE_PROCESS - without that flag these commands would
  * silently operate on an invisible, disconnected window station instead
  * (see docs/ARCHITECTURE.md).
+ *
+ * PSLIST resolves its enumeration API dynamically (GetProcAddress), never
+ * as a static import, and picks the API by OS family: Toolhelp32
+ * (CreateToolhelp32Snapshot/Process32First/Next) on Windows 9x, PSAPI
+ * (EnumProcesses/GetModuleBaseNameA) on NT-family. Neither API covers the
+ * whole 9x-XP range: Toolhelp32 isn't in NT4's kernel32.dll (added for
+ * Windows 2000), and psapi.dll doesn't exist on 9x at all. A *static*
+ * import of either would make the whole exe fail to load - not just this
+ * feature - on whichever OS family lacks it, the same trap
+ * RegisterServiceProcess below already has to work around.
+ *
+ * REBOOT/SHUTDOWN wrap ExitWindowsEx - no shutdown.exe exists before XP,
+ * so this has to be native. On NT-family, LocalSystem doesn't get
+ * SeShutdownPrivilege by default; it has to be explicitly enabled on the
+ * process token first (enable_shutdown_privilege()), using the same class
+ * of NT-security advapi32 calls install_nt_service() already relies on
+ * being present (if only as compat stubs) on 9x - see docs/ARCHITECTURE.md
+ * for that assumption's status. These are never actually called on 9x
+ * (no privilege model there), only linked.
+ *
+ * WINLIST uses EnumWindows/GetWindowTextA/GetClassNameA/GetWindowRect -
+ * plain user32 exports present since Windows 3.1/95/NT 3.1, safe to call
+ * directly with no dynamic resolution needed (unlike PSLIST's APIs).
+ *
+ * REGGET/REGSET go straight to the Win32 registry API rather than
+ * shelling out to reg.exe, which doesn't exist by default before XP.
+ * Their wire args are TAB-delimited rather than space-delimited like
+ * EXEC/PUT, since registry key paths can contain spaces the same way
+ * filesystem paths can - tabs essentially never appear in real key/value
+ * names, so this sidesteps PUT's right-to-left parsing trick entirely.
+ * Only REG_SZ and REG_DWORD are supported for now.
  */
 
 #include <windows.h>
 #include <winsvc.h>
 #include <winsock2.h>
+#include <tlhelp32.h>
+#include <psapi.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -128,7 +185,16 @@ static int run_exec(SOCKET s, const char *cmdline) {
 
     ZeroMemory(&pi, sizeof(pi));
 
-    wsprintfA(full, "cmd.exe /C %s", cmdline);
+    /* Windows 9x has no cmd.exe at all - that's NT-family only. 9x's
+       command interpreter is COMMAND.COM, which also takes /C. Note
+       COMMAND.COM's much smaller command-tail buffer (~127 chars) versus
+       cmd.exe's; long EXEC commands that work fine on NT-family may need
+       shortening (e.g. via a batch file) to run on 9x. */
+    if (is_windows_9x()) {
+        wsprintfA(full, "command.com /C %s", cmdline);
+    } else {
+        wsprintfA(full, "cmd.exe /C %s", cmdline);
+    }
 
     ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                          CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
@@ -139,20 +205,67 @@ static int run_exec(SOCKET s, const char *cmdline) {
         return -1;
     }
 
-    for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(hReadPipe, buf, sizeof(buf), &got, NULL) || got == 0) {
-            break;
+    /* Poll our direct child (cmd.exe/command.com) instead of blocking on
+       pipe EOF. EOF requires *every* handle to the write end to close,
+       but cmd.exe's inherited write handle also gets inherited by
+       whatever cmd.exe itself spawns (e.g. `start /b notepad.exe`) - if
+       that grandchild stays running, EOF never comes and this would
+       block forever, wedging the whole single-threaded agent (found via
+       live testing, not a hypothetical). Watching our own child's exit
+       instead means we're done as soon as *it* finishes, regardless of
+       what any orphaned grandchild still holds open. */
+    {
+        DWORD lastSentTick = GetTickCount();
+        for (;;) {
+            DWORD avail = 0;
+            int gotAny = 0;
+
+            while (PeekNamedPipe(hReadPipe, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+                DWORD want = avail < sizeof(buf) ? avail : sizeof(buf);
+                DWORD got = 0;
+                if (!ReadFile(hReadPipe, buf, want, &got, NULL) || got == 0) break;
+                {
+                    char hdr[32];
+                    wsprintfA(hdr, "LEN:%lu\n", (unsigned long)got);
+                    send(s, hdr, (int)strlen(hdr), 0);
+                    send(s, buf, (int)got, 0);
+                }
+                gotAny = 1;
+                lastSentTick = GetTickCount();
+            }
+
+            if (WaitForSingleObject(pi.hProcess, 200) == WAIT_OBJECT_0) {
+                break;
+            }
+
+            if (!gotAny && GetTickCount() - lastSentTick >= 5000) {
+                /* Heartbeat so a quiet-but-still-running command (a
+                   silent installer step, say) doesn't trip the client's
+                   read timeout. LEN:0 is already valid framing - zero
+                   bytes follow - so existing clients handle it as a
+                   no-op with no wire protocol change needed. */
+                send(s, "LEN:0\n", 6, 0);
+                lastSentTick = GetTickCount();
+            }
         }
-        {
-            char hdr[32];
-            wsprintfA(hdr, "LEN:%lu\n", (unsigned long)got);
-            send(s, hdr, (int)strlen(hdr), 0);
-            send(s, buf, (int)got, 0);
+
+        /* Final drain: whatever cmd.exe itself wrote and flushed before
+           exiting, even if the pipe isn't fully at EOF yet because of an
+           orphaned grandchild handle. */
+        for (;;) {
+            DWORD avail = 0;
+            DWORD got = 0;
+            if (!PeekNamedPipe(hReadPipe, NULL, 0, NULL, &avail, NULL) || avail == 0) break;
+            if (!ReadFile(hReadPipe, buf, avail < sizeof(buf) ? avail : sizeof(buf), &got, NULL) || got == 0) break;
+            {
+                char hdr[32];
+                wsprintfA(hdr, "LEN:%lu\n", (unsigned long)got);
+                send(s, hdr, (int)strlen(hdr), 0);
+                send(s, buf, (int)got, 0);
+            }
         }
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
     GetExitCodeProcess(pi.hProcess, &exitCode);
 
     CloseHandle(hReadPipe);
@@ -481,6 +594,519 @@ static int handle_type(SOCKET s, const char *text) {
     return 0;
 }
 
+typedef HANDLE (WINAPI *CreateToolhelp32SnapshotFn)(DWORD, DWORD);
+typedef BOOL (WINAPI *Process32FirstFn)(HANDLE, LPPROCESSENTRY32);
+typedef BOOL (WINAPI *Process32NextFn)(HANDLE, LPPROCESSENTRY32);
+
+/* Windows 9x path: Toolhelp32. Resolved dynamically even though this is
+   only ever called on 9x - kernel32.dll's exports are still resolved at
+   whole-process load time regardless of which branch runs, and NT4's
+   kernel32.dll doesn't have these entries at all (added for Windows
+   2000), so a static reference here would break loading on NT4. */
+static int list_processes_9x(char *out, int cap) {
+    HMODULE k32;
+    CreateToolhelp32SnapshotFn pCreateSnap;
+    Process32FirstFn pFirst;
+    Process32NextFn pNext;
+    HANDLE hSnap;
+    PROCESSENTRY32 pe;
+    int len = 0;
+
+    k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return -1;
+    pCreateSnap = (CreateToolhelp32SnapshotFn)GetProcAddress(k32, "CreateToolhelp32Snapshot");
+    pFirst = (Process32FirstFn)GetProcAddress(k32, "Process32First");
+    pNext = (Process32NextFn)GetProcAddress(k32, "Process32Next");
+    if (!pCreateSnap || !pFirst || !pNext) return -1;
+
+    hSnap = pCreateSnap(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return -1;
+
+    ZeroMemory(&pe, sizeof(pe));
+    pe.dwSize = sizeof(pe);
+    if (pFirst(hSnap, &pe)) {
+        do {
+            int n = wsprintfA(out + len, "%lu\t%s\r\n", (unsigned long)pe.th32ProcessID, pe.szExeFile);
+            len += n;
+            if (len > cap - 128) break;
+        } while (pNext(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+    return len;
+}
+
+typedef BOOL (WINAPI *EnumProcessesFn)(DWORD *, DWORD, DWORD *);
+typedef DWORD (WINAPI *GetModuleBaseNameAFn)(HANDLE, HMODULE, LPSTR, DWORD);
+
+/* NT-family path: PSAPI. psapi.dll doesn't exist on Windows 9x at all, so
+   this must stay a dynamic LoadLibrary/GetProcAddress lookup rather than
+   a static -lpsapi import, or the whole exe would fail to load on 9x. */
+static int list_processes_nt(char *out, int cap) {
+    HMODULE psapi;
+    EnumProcessesFn pEnumProcesses;
+    GetModuleBaseNameAFn pGetModuleBaseNameA;
+    DWORD pids[1024];
+    DWORD needed = 0;
+    DWORD count, i;
+    int len = 0;
+
+    psapi = LoadLibraryA("psapi.dll");
+    if (!psapi) return -1;
+    pEnumProcesses = (EnumProcessesFn)GetProcAddress(psapi, "EnumProcesses");
+    pGetModuleBaseNameA = (GetModuleBaseNameAFn)GetProcAddress(psapi, "GetModuleBaseNameA");
+    if (!pEnumProcesses || !pGetModuleBaseNameA) { FreeLibrary(psapi); return -1; }
+
+    if (!pEnumProcesses(pids, sizeof(pids), &needed)) { FreeLibrary(psapi); return -1; }
+    count = needed / sizeof(DWORD);
+
+    for (i = 0; i < count; i++) {
+        HANDLE hProc;
+        char name[MAX_PATH];
+        int n;
+        if (pids[i] == 0) continue;
+        hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pids[i]);
+        if (!hProc) continue;
+        if (pGetModuleBaseNameA(hProc, NULL, name, sizeof(name)) == 0) {
+            strcpy(name, "?");
+        }
+        CloseHandle(hProc);
+        n = wsprintfA(out + len, "%lu\t%s\r\n", (unsigned long)pids[i], name);
+        len += n;
+        if (len > cap - 128) break;
+    }
+    FreeLibrary(psapi);
+    return len;
+}
+
+/* ---- PSLIST: "<pid>\t<name>\r\n" per line, one process per line. ---- */
+static int handle_pslist(SOCKET s) {
+    const int cap = 32768;
+    char *buf = (char *)malloc(cap);
+    int len;
+    char hdr[32];
+
+    if (!buf) {
+        send(s, "ERR:out of memory\n", 19, 0);
+        return -1;
+    }
+
+    len = is_windows_9x() ? list_processes_9x(buf, cap) : list_processes_nt(buf, cap);
+
+    if (len < 0) {
+        free(buf);
+        send(s, "ERR:process enumeration unavailable\n", 37, 0);
+        return -1;
+    }
+
+    wsprintfA(hdr, "SIZE:%d\n", len);
+    send(s, hdr, (int)strlen(hdr), 0);
+    send(s, buf, len, 0);
+    free(buf);
+    return 0;
+}
+
+/* ---- PSKILL <pid>: no protection against killing critical processes
+   (including this agent's own) - same trust model as EXEC already
+   allowing arbitrary commands. ---- */
+static int handle_pskill(SOCKET s, const char *args) {
+    DWORD pid = (DWORD)atol(args);
+    HANDLE hProc;
+
+    if (pid == 0) {
+        send(s, "ERR:bad PID\n", 12, 0);
+        return -1;
+    }
+
+    hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (!hProc) {
+        send(s, "ERR:cannot open process\n", 25, 0);
+        return -1;
+    }
+    if (!TerminateProcess(hProc, 1)) {
+        CloseHandle(hProc);
+        send(s, "ERR:terminate failed\n", 22, 0);
+        return -1;
+    }
+    CloseHandle(hProc);
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
+typedef BOOL (WINAPI *GetDiskFreeSpaceExAFn)(LPCSTR, PULARGE_INTEGER, PULARGE_INTEGER, PULARGE_INTEGER);
+
+/* ---- SYSINFO: key=value lines - OS family/version, computer name,
+   memory, C: disk space. Lets the bridge/LLM detect what it's talking to
+   instead of parsing locale-dependent `ver` output through EXEC (which
+   itself depends on the cmd.exe/COMMAND.COM split above). ---- */
+static int handle_sysinfo(SOCKET s) {
+    char buf[2048];
+    int len = 0;
+    OSVERSIONINFOA vi;
+    char computerName[MAX_COMPUTERNAME_LENGTH + 1];
+    DWORD computerNameLen = sizeof(computerName);
+    MEMORYSTATUS mem;
+    char hdr[32];
+    int is9x;
+    HMODULE k32;
+    GetDiskFreeSpaceExAFn pGetDiskFreeSpaceExA;
+    ULARGE_INTEGER freeAvail, total;
+    BOOL gotDiskInfo = FALSE;
+
+    ZeroMemory(&vi, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    GetVersionExA(&vi);
+    is9x = (vi.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS);
+
+    len += wsprintfA(buf + len, "os_family=%s\r\n", is9x ? "9x" : "nt");
+    len += wsprintfA(buf + len, "os_major=%lu\r\n", (unsigned long)vi.dwMajorVersion);
+    len += wsprintfA(buf + len, "os_minor=%lu\r\n", (unsigned long)vi.dwMinorVersion);
+    /* On 9x, dwBuildNumber packs major/minor into the high word and the
+       real build number into the low word - an MSDN-documented quirk,
+       not a bug here. */
+    len += wsprintfA(buf + len, "os_build=%lu\r\n",
+                      (unsigned long)(is9x ? LOWORD(vi.dwBuildNumber) : vi.dwBuildNumber));
+    len += wsprintfA(buf + len, "service_pack=%s\r\n", vi.szCSDVersion[0] ? vi.szCSDVersion : "(none)");
+
+    if (GetComputerNameA(computerName, &computerNameLen)) {
+        len += wsprintfA(buf + len, "computer_name=%s\r\n", computerName);
+    } else {
+        len += wsprintfA(buf + len, "computer_name=?\r\n");
+    }
+
+    ZeroMemory(&mem, sizeof(mem));
+    mem.dwLength = sizeof(mem);
+    GlobalMemoryStatus(&mem);
+    len += wsprintfA(buf + len, "total_phys_mb=%lu\r\n", (unsigned long)(mem.dwTotalPhys / (1024 * 1024)));
+    len += wsprintfA(buf + len, "avail_phys_mb=%lu\r\n", (unsigned long)(mem.dwAvailPhys / (1024 * 1024)));
+
+    /* GetDiskFreeSpaceExA wasn't in every build across this OS range
+       (original Win95 retail / pre-SP NT4 may lack it), so resolve it
+       dynamically and fall back to the older, universally-present
+       GetDiskFreeSpaceA (sector/cluster based, needs its own math but
+       has been in kernel32.dll since Windows 3.1). */
+    k32 = GetModuleHandleA("kernel32.dll");
+    pGetDiskFreeSpaceExA = k32 ? (GetDiskFreeSpaceExAFn)GetProcAddress(k32, "GetDiskFreeSpaceExA") : NULL;
+    if (pGetDiskFreeSpaceExA) {
+        gotDiskInfo = pGetDiskFreeSpaceExA("C:\\", &freeAvail, &total, NULL);
+    }
+    if (gotDiskInfo) {
+        len += wsprintfA(buf + len, "disk_c_total_mb=%lu\r\n", (unsigned long)(total.QuadPart / (1024 * 1024)));
+        len += wsprintfA(buf + len, "disk_c_free_mb=%lu\r\n", (unsigned long)(freeAvail.QuadPart / (1024 * 1024)));
+    } else {
+        DWORD sectorsPerCluster, bytesPerSector, freeClusters, totalClusters;
+        if (GetDiskFreeSpaceA("C:\\", &sectorsPerCluster, &bytesPerSector, &freeClusters, &totalClusters)) {
+            double bytesPerCluster = (double)sectorsPerCluster * (double)bytesPerSector;
+            len += wsprintfA(buf + len, "disk_c_total_mb=%lu\r\n",
+                              (unsigned long)((double)totalClusters * bytesPerCluster / (1024 * 1024)));
+            len += wsprintfA(buf + len, "disk_c_free_mb=%lu\r\n",
+                              (unsigned long)((double)freeClusters * bytesPerCluster / (1024 * 1024)));
+        } else {
+            len += wsprintfA(buf + len, "disk_c_total_mb=?\r\n");
+            len += wsprintfA(buf + len, "disk_c_free_mb=?\r\n");
+        }
+    }
+
+    wsprintfA(hdr, "SIZE:%d\n", len);
+    send(s, hdr, (int)strlen(hdr), 0);
+    send(s, buf, len, 0);
+    return 0;
+}
+
+/* NT-family requires SeShutdownPrivilege to be explicitly enabled on the
+   process token before ExitWindowsEx will work - LocalSystem doesn't get
+   it by default. Windows 9x has no privilege/token model at all, so this
+   is only called for NT-family. These are the same class of NT-security
+   advapi32 calls install_nt_service() already relies on being present
+   (if only as compat stubs) on 9x - see docs/ARCHITECTURE.md; this
+   function is never actually invoked there, only linked. */
+static void enable_shutdown_privilege(void) {
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        return;
+    }
+    if (LookupPrivilegeValueA(NULL, SE_SHUTDOWN_NAME, &luid)) {
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Luid = luid;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    }
+    CloseHandle(hToken);
+}
+
+/* ---- REBOOT/SHUTDOWN: no shutdown.exe exists before XP, so this has to
+   be a native ExitWindowsEx call. OK is sent before the machine actually
+   goes down - ExitWindowsEx only needs to signal the shutdown sequence
+   to start, and the rest of that sequence (other services stopping
+   first) takes far longer than the TCP send below needs to flush. ---- */
+static int handle_power(SOCKET s, UINT flags) {
+    if (!is_windows_9x()) {
+        enable_shutdown_privilege();
+    }
+    if (!ExitWindowsEx(flags, 0)) {
+        send(s, "ERR:ExitWindowsEx failed\n", 26, 0);
+        return -1;
+    }
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
+struct EnumWinCtx { char *buf; int len; int cap; };
+
+/* EnumWindows/IsWindowVisible/GetWindowTextA/GetClassNameA/GetWindowRect
+   are all plain user32 exports present since Windows 3.1/95/NT 3.1 - safe
+   to call directly, no dynamic resolution needed unlike PSLIST's APIs. */
+static BOOL CALLBACK enum_windows_proc(HWND hwnd, LPARAM lParam) {
+    struct EnumWinCtx *ctx = (struct EnumWinCtx *)lParam;
+    char title[256];
+    char cls[128];
+    RECT rc;
+    int n;
+
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    title[0] = '\0';
+    GetWindowTextA(hwnd, title, sizeof(title));
+    if (title[0] == '\0') return TRUE; /* skip untitled helper/tray windows */
+
+    cls[0] = '\0';
+    GetClassNameA(hwnd, cls, sizeof(cls));
+
+    if (!GetWindowRect(hwnd, &rc)) {
+        ZeroMemory(&rc, sizeof(rc));
+    }
+
+    if (ctx->len > ctx->cap - 512) return FALSE;
+
+    n = wsprintfA(ctx->buf + ctx->len, "%lu\t%d\t%d\t%d\t%d\t%s\t%s\r\n",
+                  (unsigned long)(UINT_PTR)hwnd, rc.left, rc.top,
+                  rc.right - rc.left, rc.bottom - rc.top, cls, title);
+    ctx->len += n;
+    return TRUE;
+}
+
+/* ---- WINLIST: "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n" per
+   visible top-level window with a non-empty title. Lets the caller find
+   dialogs/buttons by title instead of screenshotting and guessing pixel
+   coordinates every time. ---- */
+static int handle_winlist(SOCKET s) {
+    const int cap = 32768;
+    char *buf = (char *)malloc(cap);
+    struct EnumWinCtx ctx;
+    char hdr[32];
+
+    if (!buf) {
+        send(s, "ERR:out of memory\n", 19, 0);
+        return -1;
+    }
+
+    ctx.buf = buf;
+    ctx.len = 0;
+    ctx.cap = cap;
+    EnumWindows(enum_windows_proc, (LPARAM)&ctx);
+
+    wsprintfA(hdr, "SIZE:%d\n", ctx.len);
+    send(s, hdr, (int)strlen(hdr), 0);
+    send(s, buf, ctx.len, 0);
+    free(buf);
+    return 0;
+}
+
+/* ---- CLIPSET <text>: set the clipboard to plain text. More reliable
+   than TYPE for exact strings (product keys, paths) - sidesteps
+   VkKeyScanA/keyboard-layout mapping entirely. Pair with
+   KEY ctrl-v to actually paste it somewhere; this only sets the
+   clipboard, on purpose - same small-composable-primitives style as
+   CLICK/KEY rather than a combined "set and paste" command. ---- */
+static int handle_clipset(SOCKET s, const char *text) {
+    HGLOBAL hMem;
+    char *dst;
+    size_t len = strlen(text) + 1;
+
+    if (!OpenClipboard(NULL)) {
+        send(s, "ERR:OpenClipboard failed\n", 26, 0);
+        return -1;
+    }
+    EmptyClipboard();
+
+    hMem = GlobalAlloc(GMEM_MOVEABLE, len);
+    if (!hMem) {
+        CloseClipboard();
+        send(s, "ERR:out of memory\n", 19, 0);
+        return -1;
+    }
+    dst = (char *)GlobalLock(hMem);
+    memcpy(dst, text, len);
+    GlobalUnlock(hMem);
+
+    /* Once SetClipboardData succeeds, the system owns hMem - must not
+       GlobalFree it ourselves. */
+    if (!SetClipboardData(CF_TEXT, hMem)) {
+        CloseClipboard();
+        send(s, "ERR:SetClipboardData failed\n", 29, 0);
+        return -1;
+    }
+    CloseClipboard();
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
+/* Registry get/set. reg.exe (the CLI tool) doesn't exist by default
+   before XP, so registry work via EXEC is a dead end on 9x/NT4/2000 -
+   this goes straight to the Win32 registry API instead. Unlike the SCM
+   functions used elsewhere, RegOpenKeyExA/RegQueryValueExA/
+   RegCreateKeyExA/RegSetValueExA are safe to link statically across the
+   whole 9x-XP range: the registry itself is a core feature on both
+   family branches, not an NT-only concept merely stubbed for 9x compat.
+
+   Wire args are TAB-delimited (not space-delimited like EXEC/PUT),
+   because registry key paths can contain spaces (e.g. "...\App Paths")
+   the same way filesystem paths can, and tabs essentially never appear
+   in real key/value names - simpler than PUT's right-to-left parsing
+   trick. Only REG_SZ and REG_DWORD are supported for now. */
+
+static HKEY parse_reg_root(const char *name) {
+    if (_stricmp(name, "HKLM") == 0) return HKEY_LOCAL_MACHINE;
+    if (_stricmp(name, "HKCU") == 0) return HKEY_CURRENT_USER;
+    if (_stricmp(name, "HKCR") == 0) return HKEY_CLASSES_ROOT;
+    if (_stricmp(name, "HKU") == 0) return HKEY_USERS;
+    if (_stricmp(name, "HKCC") == 0) return HKEY_CURRENT_CONFIG;
+    return NULL;
+}
+
+/* Splits args in place on literal TAB bytes into up to maxFields fields.
+   Returns the number of fields actually found. */
+static int split_tabs(char *args, char **fields, int maxFields) {
+    int n = 0;
+    char *p = args;
+    fields[n++] = p;
+    while (n < maxFields) {
+        char *tab = strchr(p, '\t');
+        if (!tab) break;
+        *tab = '\0';
+        p = tab + 1;
+        fields[n++] = p;
+    }
+    return n;
+}
+
+/* ---- REGGET\t<root>\t<subkey>\t<valuename> ---- */
+static int handle_regget(SOCKET s, char *args) {
+    char *fields[3];
+    HKEY root, hKey;
+    char hdr[32];
+    DWORD type, dataLen;
+    char *data;
+
+    if (split_tabs(args, fields, 3) != 3) {
+        send(s, "ERR:bad REGGET syntax\n", 23, 0);
+        return -1;
+    }
+    root = parse_reg_root(fields[0]);
+    if (!root) {
+        send(s, "ERR:bad root key\n", 18, 0);
+        return -1;
+    }
+
+    if (RegOpenKeyExA(root, fields[1], 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        send(s, "ERR:cannot open key\n", 21, 0);
+        return -1;
+    }
+
+    dataLen = 0;
+    if (RegQueryValueExA(hKey, fields[2], NULL, &type, NULL, &dataLen) != ERROR_SUCCESS) {
+        RegCloseKey(hKey);
+        send(s, "ERR:cannot query value\n", 24, 0);
+        return -1;
+    }
+
+    if (type == REG_DWORD) {
+        DWORD value = 0;
+        DWORD sz = sizeof(value);
+        RegQueryValueExA(hKey, fields[2], NULL, NULL, (BYTE *)&value, &sz);
+        RegCloseKey(hKey);
+        wsprintfA(hdr, "DWORD:%lu\n", (unsigned long)value);
+        send(s, hdr, (int)strlen(hdr), 0);
+        return 0;
+    }
+
+    if (type == REG_SZ || type == REG_EXPAND_SZ) {
+        data = (char *)malloc(dataLen + 1);
+        if (!data) {
+            RegCloseKey(hKey);
+            send(s, "ERR:out of memory\n", 19, 0);
+            return -1;
+        }
+        if (RegQueryValueExA(hKey, fields[2], NULL, NULL, (BYTE *)data, &dataLen) != ERROR_SUCCESS) {
+            free(data);
+            RegCloseKey(hKey);
+            send(s, "ERR:cannot read value\n", 23, 0);
+            return -1;
+        }
+        RegCloseKey(hKey);
+        /* RegQueryValueEx includes the NUL terminator in dataLen for
+           string types - trim it from what we report/send. */
+        if (dataLen > 0 && data[dataLen - 1] == '\0') dataLen--;
+        wsprintfA(hdr, "SIZE:%lu\n", (unsigned long)dataLen);
+        send(s, hdr, (int)strlen(hdr), 0);
+        send(s, data, (int)dataLen, 0);
+        free(data);
+        return 0;
+    }
+
+    RegCloseKey(hKey);
+    send(s, "ERR:unsupported value type (only SZ/DWORD)\n", 45, 0);
+    return -1;
+}
+
+/* ---- REGSET\t<root>\t<subkey>\t<valuename>\t<type>\t<data>
+   <type> is "SZ" or "DWORD". Creates the key if it doesn't exist. ---- */
+static int handle_regset(SOCKET s, char *args) {
+    char *fields[5];
+    HKEY root, hKey;
+
+    if (split_tabs(args, fields, 5) != 5) {
+        send(s, "ERR:bad REGSET syntax\n", 23, 0);
+        return -1;
+    }
+    root = parse_reg_root(fields[0]);
+    if (!root) {
+        send(s, "ERR:bad root key\n", 18, 0);
+        return -1;
+    }
+
+    if (RegCreateKeyExA(root, fields[1], 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS) {
+        send(s, "ERR:cannot open/create key\n", 28, 0);
+        return -1;
+    }
+
+    if (_stricmp(fields[3], "DWORD") == 0) {
+        DWORD value = (DWORD)atol(fields[4]);
+        if (RegSetValueExA(hKey, fields[2], 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            send(s, "ERR:RegSetValueEx failed\n", 26, 0);
+            return -1;
+        }
+    } else if (_stricmp(fields[3], "SZ") == 0) {
+        DWORD len = (DWORD)strlen(fields[4]) + 1;
+        if (RegSetValueExA(hKey, fields[2], 0, REG_SZ, (const BYTE *)fields[4], len) != ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            send(s, "ERR:RegSetValueEx failed\n", 26, 0);
+            return -1;
+        }
+    } else {
+        RegCloseKey(hKey);
+        send(s, "ERR:unsupported type (use SZ or DWORD)\n", 41, 0);
+        return -1;
+    }
+
+    RegCloseKey(hKey);
+    send(s, "OK\n", 3, 0);
+    return 0;
+}
+
 static int recv_line(SOCKET s, char *out, int outlen) {
     int i = 0;
     char c;
@@ -520,6 +1146,24 @@ static void handle_client(SOCKET s) {
             handle_key(s, line + 4);
         } else if (strncmp(line, "TYPE ", 5) == 0) {
             handle_type(s, line + 5);
+        } else if (strcmp(line, "PSLIST") == 0) {
+            handle_pslist(s);
+        } else if (strncmp(line, "PSKILL ", 7) == 0) {
+            handle_pskill(s, line + 7);
+        } else if (strcmp(line, "SYSINFO") == 0) {
+            handle_sysinfo(s);
+        } else if (strcmp(line, "REBOOT") == 0) {
+            handle_power(s, EWX_REBOOT | EWX_FORCE);
+        } else if (strcmp(line, "SHUTDOWN") == 0) {
+            handle_power(s, EWX_POWEROFF | EWX_FORCE);
+        } else if (strcmp(line, "WINLIST") == 0) {
+            handle_winlist(s);
+        } else if (strncmp(line, "CLIPSET ", 8) == 0) {
+            handle_clipset(s, line + 8);
+        } else if (strncmp(line, "REGGET\t", 7) == 0) {
+            handle_regget(s, line + 7);
+        } else if (strncmp(line, "REGSET\t", 7) == 0) {
+            handle_regset(s, line + 7);
         } else if (strcmp(line, "PING") == 0) {
             send(s, "PONG\n", 5, 0);
         } else if (strcmp(line, "QUIT") == 0) {

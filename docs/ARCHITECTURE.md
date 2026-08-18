@@ -109,6 +109,138 @@ Two gotchas worth knowing about, both structural rather than bugs:
   over RDP. Watching over the VMware/hypervisor console instead doesn't
   have this mismatch, since that *is* the console session.
 
+## Later additions: process control, system info, power, windows, clipboard, registry
+
+`PSLIST`/`PSKILL`, `SYSINFO`, `REBOOT`/`SHUTDOWN`, `WINLIST`, `CLIPSET`,
+and `REGGET`/`REGSET` all followed the same shape as everything above:
+narrow, native, on the same channel, instead of depending on CLI tools
+that don't exist on this OS range by default (`tasklist.exe`/
+`taskkill.exe`/`shutdown.exe`/`reg.exe` are all XP+ ; `sc.exe` isn't
+reliably present before 2000). Design specifics that mattered:
+
+- **`PSLIST` has no single enumeration API across the whole range.**
+  `CreateToolhelp32Snapshot` covers 9x and 2000+ but *not* NT4 (added for
+  Windows 2000). `EnumProcesses`/`GetModuleBaseNameA` (PSAPI) cover
+  NT4/2000/XP but `psapi.dll` doesn't exist on 9x *at all*. Both are
+  resolved via `LoadLibraryA`/`GetProcAddress` at runtime, never a static
+  import — a static import of either would fail to load the *entire
+  binary*, not just this feature, on whichever OS family lacks it. Same
+  trap `RegisterServiceProcess` already has to work around. Branch is
+  `is_windows_9x()`: Toolhelp32 there, PSAPI everywhere else.
+  **Verified locally, but the verification itself surfaced a real caveat
+  for local testing specifically**: on this 64-bit dev machine, every
+  process except the 32-bit `llm_agent.exe` and one 32-bit installer came
+  back with no resolvable name (`GetModuleBaseNameA` needs a
+  bitness-matched target, and this 32-bit agent can't read module names
+  from native 64-bit processes under WOW64). This is a testing artifact,
+  not a real-target bug — every genuine 9x/NT4/2000/XP target is 32-bit
+  only, no WOW64, no mismatch possible.
+- **`SYSINFO`'s memory figures use the old, non-Ex `GlobalMemoryStatus`**
+  (present since Win95/NT 3.1, unlike `GlobalMemoryStatusEx`, which
+  wasn't universal until 98/2000). It's documented to clamp both
+  `dwTotalPhys` and `dwAvailPhys` to 2GB on any machine with more than
+  that installed — confirmed locally (`total_phys_mb=2047` on a modern
+  box with far more RAM than that). Harmless for every real target here,
+  since no legitimate legacy 9x/NT4/2000/XP box has anywhere near 2GB of
+  RAM, but worth knowing if `SYSINFO` is ever pointed at something modern
+  for testing. Disk space resolves `GetDiskFreeSpaceExA` dynamically
+  (missing on original Win95 retail / pre-SP NT4) and falls back to the
+  always-present `GetDiskFreeSpaceA`, doing the cluster/sector math by
+  hand.
+- **`REBOOT`/`SHUTDOWN` need `SeShutdownPrivilege` explicitly enabled**
+  on NT-family — LocalSystem doesn't get it by default, unlike 9x, which
+  has no privilege model at all and just calls `ExitWindowsEx` directly.
+  The privilege-adjustment calls (`OpenProcessToken`/
+  `LookupPrivilegeValueA`/`AdjustTokenPrivileges`) are the same class of
+  NT-security advapi32 function as the SCM calls `install_nt_service()`
+  already relies on being present (if only as no-op compatibility stubs)
+  on 9x — see the note in "OS-family handling" below on that assumption's
+  actual verification status. **Never tested against any real machine,
+  local or remote** — rebooting either the dev machine this was built on
+  or `cucm413` mid-session would be a genuinely disruptive, unrequested
+  action, not a reasonable thing to do just to prove a `ExitWindowsEx`
+  call works. The MCP tools (`legacy_reboot`/`legacy_shutdown`) require an
+  explicit `confirm=True` argument as a result — verified that omitting
+  it short-circuits before any network call happens at all.
+- **`WINLIST`** uses `EnumWindows`/`GetWindowTextA`/`GetClassNameA`/
+  `GetWindowRect` — plain user32 exports present since Windows 3.1/95/
+  NT 3.1, safe to call directly with no dynamic resolution needed, unlike
+  `PSLIST`'s APIs.
+- **`CLIPSET`** uses the classic `OpenClipboard`/`GlobalAlloc`+
+  `GlobalLock`/`SetClipboardData(CF_TEXT, ...)` sequence from the
+  Windows 3.x era, safe across the whole range. Only sets the clipboard —
+  pairing it with `KEY ctrl-v` to actually paste is left to the caller,
+  matching the small-composable-primitives style `CLICK`/`KEY` already
+  use rather than one combined "set and paste" command.
+- **`REGGET`/`REGSET` use TAB-delimited wire arguments**, not
+  space-delimited like `EXEC`/`PUT`. Registry key paths can contain
+  spaces the same way filesystem paths can (e.g. `...\App Paths`), and
+  tabs essentially never appear in real key/value names — simpler than
+  `PUT`'s right-to-left parsing trick for the same underlying problem.
+  `RegOpenKeyExA`/`RegQueryValueExA`/`RegCreateKeyExA`/`RegSetValueExA`
+  are safe to link statically across the whole 9x-XP range — the
+  registry itself is a core OS feature on both family branches, not an
+  NT-only concept merely stubbed for 9x compatibility the way the SCM/
+  token functions are. Only `REG_SZ`/`REG_EXPAND_SZ`/`REG_DWORD` are
+  supported for now — covers the large majority of legacy app/installer
+  registry needs without the added complexity of `REG_BINARY`/
+  `REG_MULTI_SZ` handling.
+
+## Bugs found via live testing (not anticipated in advance)
+
+Two real correctness bugs surfaced only once the agent was actually
+exercised against a live machine/desktop, not from code review. Both are
+worth recording since the pattern ("looks right on paper, breaks the
+moment something realistic happens") is likely to recur as more of this
+OS range gets tested.
+
+**EXEC hung forever, wedging the whole agent, the moment a command
+spawned something that outlives it.** The original implementation
+`ReadFile`-looped on the redirected pipe until it saw EOF, which requires
+*every* handle to the pipe's write end to close. `cmd.exe` inherits that
+handle so it can write to it — but if `cmd.exe` itself spawns something
+(e.g. `start /b notepad.exe`), that inheritance passes transitively to
+the grandchild too, by default, with no way for us to prevent it from our
+side of the `CreateProcess` call for `cmd.exe`. Notepad stays open
+indefinitely, so the pipe's write end never fully closes, so `ReadFile`
+never returns, so `run_exec()` never returns, so `handle_client()` never
+returns — and since the agent is single-threaded, the accept loop never
+gets back to `accept()` either. One ordinary "launch a GUI app in the
+background" command — extremely plausible during real installer
+automation — wedges the *entire* agent against *all* future connections,
+including `PING`, until the orphaning process is manually closed.
+
+Fix: stop waiting for pipe EOF. Poll the *direct* child (`cmd.exe`/
+`command.com`) via `WaitForSingleObject` instead, draining whatever's
+currently buffered each poll via `PeekNamedPipe`+`ReadFile` (non-blocking
+checks, not the blocking read that caused the hang). We're done as soon
+as our own child exits, regardless of what any orphaned grandchild still
+holds open. A side effect worth having anyway: a `LEN:0\n` heartbeat
+(zero bytes follow — already valid under the existing framing, no
+protocol change needed) goes out every 5 seconds of silence so a
+long-running-but-currently-quiet command (a silent installer step, say)
+doesn't trip a client-side read timeout while it's still legitimately in
+progress.
+
+**Reproduced and fixed** — confirmed hung under the original
+implementation (`start /b notepad.exe` never returned), confirmed fixed
+under the rewrite (returns in ~0.1s, agent stays responsive to a
+follow-up `PING` immediately after, `PSLIST`/`PSKILL` find and kill the
+spawned process cleanly).
+
+**Windows 9x has no `cmd.exe` at all.** `run_exec()` originally hardcoded
+`cmd.exe /C <cmdline>` unconditionally. `cmd.exe` is NT-family only —
+Windows 95/98/ME's command interpreter is `COMMAND.COM`. Every `EXEC`
+call would have simply failed on a 9x target ("file not found"), which
+would have broken nearly everything else too (`PUT`/`GET` verification
+and most real workflows lean on `EXEC`). Fixed by branching on
+`is_windows_9x()`. `COMMAND.COM` also takes `/C`, so the fix is narrow,
+but it has a much smaller command-tail buffer (~127 characters) than
+`cmd.exe` — a long `EXEC` command that works fine on NT-family may need
+shortening (or writing to a batch file first) to run on 9x. Not yet
+tested on real 9x — this is reasoned from documented `COMMAND.COM`
+behavior, not verified empirically like the pipe-hang fix above.
+
 ## Trust model
 
 The agent authenticates with a single pre-shared token sent in the
@@ -132,8 +264,8 @@ VPN/tunnel in front rather than trying to harden the agent protocol itself.
 
 ## OS-family handling
 
-Windows 9x and NT-family (NT4/2000/XP) diverge in two places the agent
-cares about:
+Windows 9x and NT-family (NT4/2000/XP) diverge in several places the
+agent cares about:
 
 - **Autostart**: NT-family gets installed as a real service via
   `CreateService`/SCM. Windows 9x has no service manager, so the agent
@@ -144,10 +276,31 @@ cares about:
 - **Unicode**: Windows 9x's wide-char ("W"-suffixed) API entry points are
   mostly unimplemented stubs. The agent is built and linked against the
   ANSI ("A"-suffixed) API surface throughout — no `-DUNICODE`.
+- **Command interpreter**: NT-family uses `cmd.exe`; Windows 9x has no
+  `cmd.exe` at all and uses `COMMAND.COM` instead (also takes `/C`, but
+  with a much smaller ~127-character command-tail buffer). `EXEC`
+  branches on this — see "Bugs found via live testing" below, since this
+  one was a real, shipped bug, not a proactively-handled gotcha.
 
 Detection is `GetVersion()`'s high bit (set → Windows 9x), which is
 reliable across the whole range and doesn't require the XP-only
 `VerifyVersionInfo`.
+
+**An assumption still riding on unverified ground**: `install_nt_service()`
+statically links `OpenSCManagerA`/`CreateServiceA` and friends, and the
+new `REBOOT`/`SHUTDOWN` privilege-adjustment code statically links
+`OpenProcessToken`/`AdjustTokenPrivileges` — all NT-security concepts.
+The working assumption is that Windows 9x's `advapi32.dll` exports these
+as documented no-op compatibility stubs (specifically so apps built
+against them don't fail to *load* on 9x, even though calling them there
+does nothing/returns an error), which is genuinely how Microsoft
+documented 9x's compatibility shims of this era to work. But it hasn't
+been verified empirically on real 9x yet, unlike the Toolhelp32/PSAPI
+split above (which *is* dynamically resolved specifically because the
+equivalent assumption for *that* pair of APIs is false). If a real 9x
+boot ever fails to load `llm_agent.exe` at all — not just fails a
+specific command, but won't start — this static-link assumption is the
+first thing to check.
 
 ## Toolchain notes (the part that actually breaks silently)
 
@@ -191,20 +344,39 @@ client -> server: <token>\n
 server -> client: OK\n | FAIL\n            (closes on FAIL)
 client -> server: EXEC <cmdline>\n | PUT <path> <size>\n | GET <path>\n
                   | SCREENSHOT\n | CLICK <x> <y> <button>\n | KEY <keyspec>\n
-                  | TYPE <text>\n | PING\n | QUIT\n
+                  | TYPE <text>\n | PSLIST\n | PSKILL <pid>\n | SYSINFO\n
+                  | REBOOT\n | SHUTDOWN\n | WINLIST\n | CLIPSET <text>\n
+                  | REGGET\t<root>\t<subkey>\t<valuename>\n
+                  | REGSET\t<root>\t<subkey>\t<valuename>\t<type>\t<data>\n
+                  | PING\n | QUIT\n
 server -> client (EXEC): (LEN:<n>\n <n raw bytes>)* EXIT:<code>\n
+                         (a bare LEN:0\n with no bytes may appear as a
+                         heartbeat during a long-running, currently-quiet
+                         command - see "Bugs found via live testing")
 client -> server (PUT):  <size> raw bytes, immediately after the PUT line
 server -> client (PUT):  OK\n | ERR:<msg>\n
 server -> client (GET):  SIZE:<n>\n <n raw bytes>  |  ERR:<msg>\n
 server -> client (SCREENSHOT): SIZE:<n>\n <n raw BMP bytes>  |  ERR:<msg>\n
 server -> client (CLICK/KEY/TYPE): OK\n | ERR:<msg>\n
+server -> client (PSLIST): SIZE:<n>\n <n raw bytes of "<pid>\t<name>\r\n" lines>
+server -> client (PSKILL): OK\n | ERR:<msg>\n
+server -> client (SYSINFO): SIZE:<n>\n <n raw bytes of "key=value\r\n" lines>
+server -> client (REBOOT/SHUTDOWN): OK\n | ERR:<msg>\n
+server -> client (WINLIST): SIZE:<n>\n <n raw bytes of
+                            "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n" lines>
+server -> client (CLIPSET): OK\n | ERR:<msg>\n
+server -> client (REGGET): DWORD:<value>\n | SIZE:<n>\n <n raw bytes> | ERR:<msg>\n
+server -> client (REGSET): OK\n | ERR:<msg>\n
 server -> client (PING): PONG\n
 ```
 
-`EXEC` runs `cmd.exe /C <cmdline>` and streams combined stdout+stderr.
-There's no persisted shell state across calls — each `EXEC` is a fresh
-`cmd.exe /C`, so `cd` doesn't carry over. Good enough for installer/test
-automation; would need a persistent-shell mode if that becomes limiting.
+`EXEC` runs `cmd.exe /C <cmdline>` (or `command.com /C <cmdline>` on 9x)
+and streams combined stdout+stderr. There's no persisted shell state
+across calls — each `EXEC` is a fresh interpreter invocation, so `cd`
+doesn't carry over. Good enough for installer/test automation; would need
+a persistent-shell mode if that becomes limiting. Completion is detected
+by our direct child process exiting, not by the pipe reaching EOF — see
+"Bugs found via live testing" for why that distinction matters.
 
 `PUT`/`GET` move a single file per command, whole-file (no resume, no
 delta transfer). `PUT`'s `<path>` may contain spaces — it's parsed from
@@ -223,3 +395,15 @@ into the agent" above for the two gotchas that actually matter
 is per-character `KEY` in a loop — no newlines in `<text>` (send `KEY
 enter` instead), and unmappable characters are silently skipped rather
 than erroring the whole command.
+
+`PSLIST` returns `<pid>\t<name>` per running process; `PSKILL <pid>` force
+-terminates one, with no protection against killing critical processes
+(including the agent's own) — same trust model as `EXEC` already allowing
+arbitrary commands. `SYSINFO` returns `key=value` lines describing the OS/
+hardware. `REBOOT`/`SHUTDOWN` wrap `ExitWindowsEx`; `OK` is sent *before*
+the machine actually goes down, since `ExitWindowsEx` only needs to
+signal the shutdown sequence to start. `WINLIST` returns one line per
+visible top-level window with a non-empty title. `CLIPSET <text>` sets
+the clipboard (pair with `KEY ctrl-v` to paste). `REGGET`/`REGSET` are the
+two commands with TAB-delimited arguments instead of space-delimited —
+see "Later additions" above for why.
