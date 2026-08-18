@@ -350,8 +350,16 @@ static void WINAPI svc_main(DWORD argc, LPSTR *argv) {
 
 static int install_nt_service(void) {
     char path[MAX_PATH];
+    char cmd[MAX_PATH + 16];
     SC_HANDLE scm, svc;
     GetModuleFileNameA(NULL, path, MAX_PATH);
+    /* Must pass "--run" so the SCM-launched process knows to call
+       StartServiceCtrlDispatcher instead of falling through to
+       print_usage() and exiting immediately - and must quote the path,
+       since it commonly contains spaces (e.g. "...\My Documents\..."),
+       which would otherwise make Windows try to split it as if the exe
+       were literally named "C:\Documents". */
+    wsprintfA(cmd, "\"%s\" --run", path);
 
     scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
     if (!scm) { printf("OpenSCManager failed: %lu\n", GetLastError()); return 1; }
@@ -359,7 +367,7 @@ static int install_nt_service(void) {
     svc = CreateServiceA(scm, SERVICE_NAME_A, SERVICE_DISPLAY,
                           SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
                           SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
-                          path, NULL, NULL, NULL, NULL, NULL);
+                          cmd, NULL, NULL, NULL, NULL, NULL);
     if (!svc) {
         DWORD e = GetLastError();
         CloseServiceHandle(scm);
