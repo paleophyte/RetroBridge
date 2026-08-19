@@ -148,20 +148,28 @@ reliably present before 2000). Design specifics that mattered:
   always-present `GetDiskFreeSpaceA`, doing the cluster/sector math by
   hand.
 - **`REBOOT`/`SHUTDOWN` need `SeShutdownPrivilege` explicitly enabled**
-  on NT-family — LocalSystem doesn't get it by default, unlike 9x, which
-  has no privilege model at all and just calls `ExitWindowsEx` directly.
-  The privilege-adjustment calls (`OpenProcessToken`/
-  `LookupPrivilegeValueA`/`AdjustTokenPrivileges`) are the same class of
-  NT-security advapi32 function as the SCM calls `install_nt_service()`
-  already relies on being present (if only as no-op compatibility stubs)
-  on 9x — see the note in "OS-family handling" below on that assumption's
-  actual verification status. **Never tested against any real machine,
-  local or remote** — rebooting either the dev machine this was built on
-  or `cucm413` mid-session would be a genuinely disruptive, unrequested
-  action, not a reasonable thing to do just to prove a `ExitWindowsEx`
-  call works. The MCP tools (`legacy_reboot`/`legacy_shutdown`) require an
-  explicit `confirm=True` argument as a result — verified that omitting
-  it short-circuits before any network call happens at all.
+  on NT-family — LocalSystem doesn't get it by default. The
+  privilege-adjustment calls (`OpenProcessToken`/`LookupPrivilegeValueA`/
+  `AdjustTokenPrivileges`) are the same class of NT-security advapi32
+  function as the SCM calls `install_nt_service()` already relies on
+  being present (if only as no-op compatibility stubs) on 9x — see the
+  note in "OS-family handling" below on that assumption's actual
+  verification status. NT-family then calls `ExitWindowsEx` directly,
+  same as any normal NT service.
+
+  9x does **not** call `ExitWindowsEx` directly — see "Bugs found via
+  live testing" below for why: it doesn't work from this process on real
+  hardware, no matter which process makes the call, and the actual fix
+  (`rundll32.exe shell32.dll,SHExitWindowsEx`) took three failed live
+  attempts to find. The MCP tools (`legacy_reboot`/`legacy_shutdown`)
+  require an explicit `confirm=True` argument — verified that omitting it
+  short-circuits before any network call happens at all. **Verified
+  end-to-end against a real machine**: `legacy_reboot` against `win95`
+  now genuinely power-cycles the VM and the agent comes back up on its
+  own afterward (see "Bugs found via live testing"). NT-family's own
+  `ExitWindowsEx` path is still unverified against a real installed
+  service — rebooting `cucm413`/`scm201` mid-session isn't something to
+  do just to prove the code path works.
 - **`WINLIST`** uses `EnumWindows`/`GetWindowTextA`/`GetClassNameA`/
   `GetWindowRect` — plain user32 exports present since Windows 3.1/95/
   NT 3.1, safe to call directly with no dynamic resolution needed, unlike
@@ -262,7 +270,7 @@ Not yet confirmed against a real installed NT-family service specifically
 
 ## Bugs found via live testing (not anticipated in advance)
 
-Six real correctness bugs surfaced only once the agent was actually
+Nine real correctness bugs surfaced only once the agent was actually
 exercised against a live machine/desktop, not from code review. All are
 worth recording since the pattern ("looks right on paper, breaks the
 moment something realistic happens") is likely to recur as more of this
@@ -469,6 +477,107 @@ rather than relying on `FILE_APPEND_DATA`'s implicit-append semantics.
 **Reproduced and fixed** — confirmed `update.log` now contains the full
 expected step-by-step trace after a real `win95` self-update.
 
+**A correctly-installed Windows 9x `Run`-key autostart entry never
+actually launched the agent across a real reboot.** `install_9x_autostart()`
+originally wrote to `HKLM\...\CurrentVersion\Run`. `win95` has User
+Profiles enabled (visible as "Log Off &lt;user&gt;" on its Start menu, a
+side effect of the network-logon dialog investigated below), and Windows
+9x's `Run`-key entries are known to go through a per-profile merge that
+doesn't reliably fire on every boot. Confirmed live: with the registry
+entry present and pointing at the right path (verified via `legacy_reg_get`
+before ever rebooting), a real reboot left the agent's TCP port refusing
+connections indefinitely — not timing out, *refusing*, meaning the
+machine was up and reachable but nothing was listening. Fixed by writing
+to `RunServices` instead — the Microsoft-documented location for a
+background/service-style process, which starts at boot independent of
+profiles or which user (if any) logs on, matching what
+`RegisterServiceProcess` is already trying to achieve.
+`uninstall_9x_autostart()` now cleans up both keys, since a box set up
+with an older build could have a stale entry in the old location.
+**Reproduced and fixed** — after switching to `RunServices`, two
+consecutive real reboots both brought the agent back automatically
+(confirmed once at ~40s, once at ~10s after the machine came back on the
+network), with no manual intervention.
+
+**Even after the autostart fix, the very first automated reboot attempt
+still failed — a second, compounding bug.** `server_main()` called
+`WSAStartup`/`socket`/`bind` exactly once, with no retry, and returned
+immediately (silently exiting the whole process) on any failure. Launched
+from `RunServices` — which starts earlier in Windows 9x's boot sequence
+than a normal interactive `Run`-key or command-prompt launch — the
+TCP/IP stack can plausibly still be finishing initialization at the
+moment the agent tries to bind. Genuinely hard to fully confirm the exact
+failure point from a launch context with no attached console, which is
+what motivated adding `agent_boot.log` (see below) in the same pass.
+Fixed with a bounded retry loop (up to ~2 minutes, every 2s) around both
+`WSAStartup` and `socket`+`bind`. Logged, not just fixed blind — worth
+noting the added `agent_boot.log` output on the reboot that actually
+worked showed both succeeding on the *first* attempt (no retries needed
+that time), so this fix is defensive rather than confirmed as the exact
+original root cause; it hasn't reproduced since being added.
+
+**Startup and self-update failures on any unattended launch (`RunServices`
+at boot, `update.exe` via `EXECDETACH`) were completely unobservable** —
+no console, no output redirection, nothing. Added `agent_boot.log`, next
+to the exe, written with the same `GENERIC_WRITE`+seek-to-`FILE_END`
+idiom as `update.log` above (same reasoning: a bare `FILE_APPEND_DATA`
+open is not reliable for growing a brand-new file). Covers `main()`
+entering the `--run` path, `WSAStartup`/`bind` attempt counts and
+failures, and reaching the accept loop. This is what made diagnosing the
+two bugs above at all possible without a debugger attached to a headless
+boot sequence.
+
+**`REBOOT`/`SHUTDOWN` didn't work on Windows 9x at all, and took three
+live attempts across multiple real reboots to actually fix.** The
+original code called `ExitWindowsEx` directly from the long-running agent
+process, same as the NT-family path. On real `win95`, this produced no
+visible effect whatsoever — no black screen, no "shutting down" UI,
+nothing — the calling process (this agent) simply died, while a
+completely manual Start → Shut Down → Restart on the *same* machine
+worked correctly, ruling out a VM/BIOS/APM limitation and pointing
+squarely at something about how this process was calling the API.
+
+Two follow-up fixes were tried live and both failed identically:
+1. Priming the calling thread's message queue with a throwaway
+   `PeekMessageA` call first (the standard fix for a
+   message-loop-less caller, since `ExitWindowsEx` internally
+   negotiates the shutdown via `WM_QUERYENDSESSION`/`WM_ENDSESSION`
+   broadcasts).
+2. Handing the actual `ExitWindowsEx` call off to a freshly-launched,
+   completely ordinary helper process (`llm_agent.exe --power <flags>`)
+   instead of the long-running, `RegisterServiceProcess`-marked one —
+   mirroring how this project already isolates other self-affecting
+   operations (`update.exe` for self-update).
+
+Both reproduced the exact same symptom as the original code. What
+actually worked, found only after ruling out a VM-level limitation via
+the manual test above: `rundll32.exe shell32.dll,SHExitWindowsEx <flags>`.
+`SHExitWindowsEx` is an undocumented-but-well-known `shell32.dll` export
+— the same one many third-party Windows 95/98 command-line reboot
+utilities used historically, for exactly this reason: it routes through
+the shell's own internal shutdown coordination instead of a bare `user32`
+API call from an arbitrary process, which is apparently unreliable on
+real Windows 9x regardless of which process makes it (service-registered
+or not, message-queue-primed or not). `handle_power()` now launches this
+via `rundll32.exe` as a child process for 9x specifically; NT-family is
+unchanged (direct `ExitWindowsEx`, the standard documented pattern for an
+NT service, never observed broken). **Reproduced and fixed** — confirmed
+end-to-end against real `win95` through the actual `legacy_reboot` code
+path: the VM genuinely power-cycles, and (combined with the `RunServices`
+fix above) the agent comes back up on its own afterward.
+
+A related, non-bug finding from the same test cycle: `win95` has a
+"Enter Network Password" dialog on every boot (a side effect of User
+Profiles being enabled), which blocks nothing agent-related but does sit
+in front of the desktop until dismissed. Since the agent's own
+`legacy_click`/`legacy_type` tools work as soon as it's listening — which
+happens independent of that dialog, since `RunServices` starts before
+user logon completes — this was fully scriptable once credentials were
+available: click the dialog to bring it to front (it can start behind the
+agent's own console window), click the password field, type the
+password, click OK. No manual intervention needed for this step once the
+agent itself is reachable.
+
 ## Trust model
 
 The agent authenticates with a single pre-shared token sent in the
@@ -497,9 +606,11 @@ agent cares about:
 
 - **Autostart**: NT-family gets installed as a real service via
   `CreateService`/SCM. Windows 9x has no service manager, so the agent
-  instead writes a `Run` registry key and, once launched, calls the
-  9x-only `RegisterServiceProcess` kernel32 export so it survives logoff
-  and stays off the taskbar — the standard pattern legitimate background
+  instead writes a `RunServices` registry key (not the plain `Run` key —
+  see "Bugs found via live testing" below for why that distinction turned
+  out to matter) and, once launched, calls the 9x-only
+  `RegisterServiceProcess` kernel32 export so it survives logoff and
+  stays off the taskbar — the standard pattern legitimate background
   tools of that era used.
 - **Unicode**: Windows 9x's wide-char ("W"-suffixed) API entry points are
   mostly unimplemented stubs. The agent is built and linked against the

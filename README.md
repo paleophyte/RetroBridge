@@ -232,12 +232,17 @@ locally (this dev machine) at both the wire-protocol and bridge-tool
 level — including a real spawn → list → kill round trip, and a real
 registry write → read round trip against a disposable test key. Not yet
 tested against `cucm413` or any other real legacy target.
-`legacy_reboot`/`legacy_shutdown` are implemented and build cleanly but
-have **never been invoked against any real machine** — rebooting a
-machine mid-session isn't something to do just to prove the code path
-works, so this is reasoned from `ExitWindowsEx`'s documented behavior,
-not empirically confirmed. The `confirm=True` gate itself is verified:
-omitting it short-circuits before any network call happens at all.
+`legacy_reboot` is verified end-to-end against a real Windows 9x machine
+(`win95`) — genuinely power-cycles the VM and the agent comes back up on
+its own afterward. Getting there took three live fix attempts; raw
+`ExitWindowsEx` turned out not to work from any process context on real
+Windows 9x, regardless of service-registration or message-queue state —
+see "Bugs found via live testing" in ARCHITECTURE.md. NT-family's
+`ExitWindowsEx` path (still the standard direct call there) and
+`legacy_shutdown` are implemented and build cleanly but haven't been
+invoked against a real machine yet. The `confirm=True` gate itself is
+verified: omitting it short-circuits before any network call happens at
+all.
 
 Testing the process-list/kill code specifically surfaced a real testing
 caveat worth knowing about (not a target-environment bug): on this

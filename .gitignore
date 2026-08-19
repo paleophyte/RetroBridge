@@ -4,4 +4,5 @@ agent/*.o
 bridge/machines.ini
 bridge/.venv/
 bridge/__pycache__/
+bridge/screenshots/
 *.pyc

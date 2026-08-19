@@ -188,6 +188,41 @@ static void con_msg(const char *text) {
     fputs(text, stdout);
 }
 
+/* Boot-time log, next to the exe: startup diagnostics for the one launch
+   path with no other way to observe what happened - a RunServices/Run
+   launch at boot has no attached console the way `--run` from an
+   interactive prompt does. Written with GENERIC_WRITE + explicit seek to
+   FILE_END, not a bare FILE_APPEND_DATA open - see update.c's log_line,
+   which hit exactly this: FILE_APPEND_DATA-only silently produced zero
+   bytes on real NT4/9x targets. Only called a handful of times during
+   startup, not per-request, so this isn't a hot-path cost. */
+static void log_boot(const char *text) {
+    char path[MAX_PATH];
+    char *slash;
+    HANDLE hFile;
+    DWORD written, n;
+
+    n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    slash = strrchr(path, '\\');
+    if (slash) *(slash + 1) = '\0';
+    strcat(path, "agent_boot.log");
+
+    hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                         OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    SetFilePointer(hFile, 0, NULL, FILE_END);
+    WriteFile(hFile, text, (DWORD)strlen(text), &written, NULL);
+    WriteFile(hFile, "\r\n", 2, &written, NULL);
+    CloseHandle(hFile);
+}
+
+static void log_boot_err(const char *prefix, DWORD err) {
+    char buf[128];
+    wsprintfA(buf, "%s (GetLastError=%lu)", prefix, (unsigned long)err);
+    log_boot(buf);
+}
+
 /* No _snprintf/printf here on purpose - see the -march note in Makefile.
    Any code path that references CRT printf-family functions statically
    links mingw's own float-capable pformat/dtoa implementation, which was
@@ -966,14 +1001,51 @@ static void enable_shutdown_privilege(void) {
 }
 
 /* ---- REBOOT/SHUTDOWN: no shutdown.exe exists before XP, so this has to
-   be a native ExitWindowsEx call. OK is sent before the machine actually
-   goes down - ExitWindowsEx only needs to signal the shutdown sequence
-   to start, and the rest of that sequence (other services stopping
-   first) takes far longer than the TCP send below needs to flush. ---- */
+   be native.
+
+   On Windows 9x, calling user32's ExitWindowsEx directly does NOT work
+   from this process - confirmed live, twice, with two different fixes
+   that both failed identically: calling it directly, and priming the
+   calling thread's message queue with a throwaway PeekMessageA first
+   (the standard fix for a message-loop-less caller), and separately,
+   handing the call off to a completely ordinary freshly-launched helper
+   process instead of the long-running RegisterServiceProcess-marked one.
+   All three produced the same symptom: the calling process just died,
+   with zero visible effect - no black screen, no "shutting down,"
+   nothing - while a completely manual Start > Shut Down > Restart on the
+   same machine worked fine, ruling out a VM/BIOS/APM limitation.
+
+   What actually works, confirmed live: `rundll32.exe
+   shell32.dll,SHExitWindowsEx <flags>`. SHExitWindowsEx is an
+   undocumented-but-well-known shell32 export - the same one many
+   third-party Windows 95/98 command-line reboot utilities used, for
+   exactly this reason: it goes through the shell's own internal
+   coordination instead of a bare user32 API call from an arbitrary
+   process, which is apparently unreliable on this OS regardless of which
+   process makes it. NT-family keeps calling ExitWindowsEx directly (the
+   standard, documented pattern for an NT service, and never observed
+   broken here) - only 9x goes through rundll32. ---- */
 static int handle_power(SOCKET s, UINT flags) {
-    if (!is_windows_9x()) {
-        enable_shutdown_privilege();
+    if (is_windows_9x()) {
+        char cmd[64];
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        ZeroMemory(&pi, sizeof(pi));
+        wsprintfA(cmd, "rundll32.exe shell32.dll,SHExitWindowsEx %lu", (unsigned long)flags);
+
+        if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            send(s, "ERR:could not launch SHExitWindowsEx helper\n", 46, 0);
+            return -1;
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        send(s, "OK\n", 3, 0);
+        return 0;
     }
+
+    enable_shutdown_privilege();
     if (!ExitWindowsEx(flags, 0)) {
         send(s, "ERR:ExitWindowsEx failed\n", 26, 0);
         return -1;
@@ -1307,18 +1379,65 @@ static void handle_client(SOCKET s) {
     }
 }
 
+/* Up to ~2 minutes, retrying every 2s: when launched from RunServices/Run
+   at boot (as opposed to run by hand from an already-up desktop), Windows
+   9x can still be finishing TCP/IP driver init - confirmed live, this
+   isn't hypothetical: an agent launched via a correctly-registered
+   RunServices entry on a real reboot never came up at all (connection
+   actively refused for 8+ minutes straight), while the identical binary
+   run by hand from a command prompt seconds later worked immediately.
+   WSAStartup/socket/bind failing this early, with nothing retrying, means
+   the process just quietly exits and nothing is ever listening again. */
+static int wsa_startup_with_retry(WSADATA *wsa) {
+    int i;
+    for (i = 0; i < 60; i++) {
+        int rc = WSAStartup(MAKEWORD(1, 1), wsa);
+        if (rc == 0) {
+            char buf[48];
+            wsprintfA(buf, "WSAStartup ok after %d attempt(s)", i + 1);
+            log_boot(buf);
+            return 1;
+        }
+        if (i == 0 || i == 59) {
+            char buf[64];
+            wsprintfA(buf, "WSAStartup attempt %d failed, rc=%d", i + 1, rc);
+            log_boot(buf);
+        }
+        Sleep(2000);
+    }
+    return 0;
+}
+
+static SOCKET bind_listen_with_retry(struct sockaddr_in *addr) {
+    int i;
+    for (i = 0; i < 60; i++) {
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s != INVALID_SOCKET) {
+            if (bind(s, (struct sockaddr *)addr, sizeof(*addr)) != SOCKET_ERROR) {
+                char buf[48];
+                wsprintfA(buf, "bind ok after %d attempt(s)", i + 1);
+                log_boot(buf);
+                return s;
+            }
+            if (i == 0 || i == 59) log_boot_err("bind failed", WSAGetLastError());
+            closesocket(s);
+        } else if (i == 0 || i == 59) {
+            log_boot_err("socket() failed", WSAGetLastError());
+        }
+        Sleep(2000);
+    }
+    return INVALID_SOCKET;
+}
+
 static int server_main(void) {
     WSADATA wsa;
     SOCKET listenSock;
     struct sockaddr_in addr;
 
-    if (WSAStartup(MAKEWORD(1, 1), &wsa) != 0) {
-        return 1;
-    }
+    log_boot("=== server_main starting ===");
 
-    listenSock = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenSock == INVALID_SOCKET) {
-        WSACleanup();
+    if (!wsa_startup_with_retry(&wsa)) {
+        log_boot("giving up: WSAStartup never succeeded");
         return 1;
     }
 
@@ -1327,13 +1446,15 @@ static int server_main(void) {
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons((unsigned short)g_port);
 
-    if (bind(listenSock, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(listenSock);
+    listenSock = bind_listen_with_retry(&addr);
+    if (listenSock == INVALID_SOCKET) {
+        log_boot("giving up: bind never succeeded");
         WSACleanup();
         return 1;
     }
     listen(listenSock, 4);
     g_listenSock = listenSock;
+    log_boot("listening, entering accept loop");
 
     while (g_running) {
         struct sockaddr_in clientAddr;
@@ -1474,7 +1595,18 @@ static int uninstall_nt_service(void) {
     return 0;
 }
 
-/* ---- Windows 9x autostart: HKLM Run key + RegisterServiceProcess ---- */
+/* ---- Windows 9x autostart: HKLM RunServices key + RegisterServiceProcess.
+   Deliberately RunServices, not the plain Run key: Run entries are tied to
+   the interactive user's profile/shell startup, which on a box with User
+   Profiles enabled goes through Windows 9x's known-unreliable per-profile
+   Run-key merge - confirmed live: a correctly-written Run-key entry on
+   win95 (a User-Profiles-enabled box, "Log Off <user>" present on the
+   Start menu) silently never launched across a real reboot, even though
+   the same command line worked fine run by hand. RunServices is the
+   Microsoft-documented location for exactly this kind of background
+   process instead: it starts at boot, independent of profiles or which
+   user (if any) logs on, which also matches what RegisterServiceProcess
+   below is already trying to be. ---- */
 static int install_9x_autostart(void) {
     char path[MAX_PATH];
     char cmd[MAX_PATH + 16];
@@ -1483,7 +1615,7 @@ static int install_9x_autostart(void) {
     wsprintfA(cmd, "\"%s\" --run", path);
 
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                       "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                       "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices",
                        0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
         char msg[64];
         wsprintfA(msg, "RegOpenKeyEx failed: %lu\n", GetLastError());
@@ -1494,7 +1626,7 @@ static int install_9x_autostart(void) {
     RegCloseKey(key);
     {
         char msg[MAX_PATH + 96];
-        wsprintfA(msg, "Added Run-key autostart. It will start on next logon, or run now with:\n  %s\n", cmd);
+        wsprintfA(msg, "Added RunServices-key autostart. It will start on next boot, or run now with:\n  %s\n", cmd);
         con_msg(msg);
     }
     return 0;
@@ -1502,14 +1634,25 @@ static int install_9x_autostart(void) {
 
 static int uninstall_9x_autostart(void) {
     HKEY key;
+    /* Clean up both keys - RunServices is where install_9x_autostart writes
+       now, but Run is where earlier builds wrote, and a leftover stale
+       entry there (harmless on its own, since it just re-launches the
+       same agent) is still worth clearing on any box previously set up
+       with an older build. */
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                       0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueA(key, SERVICE_NAME_A);
+        RegCloseKey(key);
+    }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                       "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices",
                        0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
         return 1;
     }
     RegDeleteValueA(key, SERVICE_NAME_A);
     RegCloseKey(key);
-    con_msg("Removed Run-key autostart.\n");
+    con_msg("Removed RunServices-key autostart.\n");
     return 0;
 }
 
@@ -1551,6 +1694,7 @@ int main(int argc, char **argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "--run") == 0) {
         if (is_windows_9x()) {
+            log_boot("main(): --run on 9x, calling become_9x_background_process");
             become_9x_background_process();
             return server_main();
         }
