@@ -1696,6 +1696,20 @@ int main(int argc, char **argv) {
         if (is_windows_9x()) {
             log_boot("main(): --run on 9x, calling become_9x_background_process");
             become_9x_background_process();
+            /* Detach from whatever console we're attached to - a fresh
+               one Windows auto-allocated (RunServices/RunOnce launch,
+               no parent console to inherit) or the caller's own (run
+               manually from an existing command prompt). Either way
+               this is a long-running background agent that doesn't need
+               console I/O once started; only --install/--uninstall/usage
+               output (via con_msg) still needs one, and those return
+               before ever reaching this point. If we're the only
+               process attached (the auto-allocated case), the window
+               closes; if COMMAND.COM is still attached too (the manual
+               case, waiting on us as its foreground child), only our
+               own attachment drops and the caller's window stays open
+               and usable. */
+            FreeConsole();
             return server_main();
         }
         /* Fall through: NT-family "--run" is what the SCM launches; try the
