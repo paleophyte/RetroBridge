@@ -578,6 +578,43 @@ agent's own console window), click the password field, type the
 password, click OK. No manual intervention needed for this step once the
 agent itself is reachable.
 
+Two follow-up changes from the same session, once the reboot cycle
+itself was confirmed working:
+
+**The agent's console window was always visible on 9x, which wasn't
+wanted for a background agent.** A console-subsystem exe always gets a
+window — a fresh one when launched with no existing console to inherit
+(`RunServices`), or the launching command prompt's own when run
+manually. Fixed by calling `FreeConsole()` right before entering
+`server_main()` in the 9x `--run` path. Confirmed live: the `LLM_AGENT`
+window disappears from both the desktop and `legacy_winlist` after a
+self-update, while the agent stays fully reachable. Safe for the manual
+`--run`-from-a-command-prompt case too, since `COMMAND.COM` remains
+attached to that console as long as it's waiting on `llm_agent.exe` as
+its foreground child — only this process's own attachment drops, so the
+caller's window stays open and usable.
+
+**The "Enter Network Password" dialog itself was removed entirely** by
+changing `win95`'s Primary Network Logon (Control Panel → Network) from
+"Client for Microsoft Networks" to "Windows Logon", scripted through the
+agent's own `legacy_click`/`legacy_type` — including handling the
+"Insert Disk" prompt Windows 95 raised for driver files it didn't have
+cached (the user supplied the missing install media; this isn't
+something the agent can resolve on its own, no remote workaround exists
+for genuinely missing installation media). One real bug surfaced as a
+direct result: `legacy_wait_for_desktop()`'s Explorer-detection check
+did `"explorer.exe" in names` against `pslist()`'s process-name set, but
+`pslist()` reports the *full path* on Windows 9x
+(`c:\windows\explorer.exe`), not the bare filename — the exact same
+`PROCESSENTRY32.szExeFile` full-path pattern already hit once in
+`update.c`'s `stop_9x_agent()` above, this time in the bridge's own
+Python code. This exact-match bug had been silently present the whole
+time; it only surfaced now because the function's fallback check (any
+non-"Program Manager" visible window) had always found *something* first
+— the agent's own console window, or this login dialog — and both of
+those are now gone by design. Fixed with a suffix match
+(`n.endswith("explorer.exe")`) instead of exact membership.
+
 ## Trust model
 
 The agent authenticates with a single pre-shared token sent in the

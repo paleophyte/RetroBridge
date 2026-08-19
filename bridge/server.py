@@ -357,7 +357,17 @@ def legacy_wait_for_desktop(machine: str, timeout_seconds: int = 180, interval_s
             # it running is more a "still logging in" signal than "ready" -
             # including it risked a premature/false-positive readiness
             # report in that narrow window.
-            if "explorer.exe" in names:
+            #
+            # Suffix match, not membership: pslist() reports the FULL PATH
+            # on Windows 9x ("c:\windows\explorer.exe"), not the bare
+            # filename, so a plain `"explorer.exe" in names` check can
+            # never match there. Masked for a long time by the window-list
+            # fallback below always finding something else first (the
+            # agent's own console window, or a login dialog) - only
+            # surfaced once both of those stopped being reliably present
+            # (agent console hidden via FreeConsole, login dialog removed
+            # via Windows Logon) and this became the only signal left.
+            if any(n.endswith("explorer.exe") for n in names):
                 return f"desktop appears ready on {machine}: login shell process found after {attempts} attempt(s)"
             windows = agent.winlist()
             interesting = [w.title for w in windows if w.title and "program manager" not in w.title.lower()]
