@@ -164,12 +164,15 @@ reliably present before 2000). Design specifics that mattered:
   attempts to find. The MCP tools (`legacy_reboot`/`legacy_shutdown`)
   require an explicit `confirm=True` argument — verified that omitting it
   short-circuits before any network call happens at all. **Verified
-  end-to-end against a real machine**: `legacy_reboot` against `win95`
-  now genuinely power-cycles the VM and the agent comes back up on its
-  own afterward (see "Bugs found via live testing"). NT-family's own
-  `ExitWindowsEx` path is still unverified against a real installed
-  service — rebooting `cucm413`/`scm201` mid-session isn't something to
-  do just to prove the code path works.
+  end-to-end against real machines on both OS families**: `legacy_reboot`
+  against `win95` genuinely power-cycles the VM and the agent comes back
+  up on its own afterward (see "Bugs found via live testing"). Against
+  `scm201` (NT4 SP6), the direct `ExitWindowsEx` path worked correctly on
+  the very first attempt — no workaround needed, unlike 9x — with the
+  SCM-installed service surviving the reboot and coming back on its own,
+  and `legacy_enable_autologon`'s Winlogon autologon confirmed working
+  end-to-end for the first time: real desktop back and confirmed via
+  screenshot roughly 30 seconds after the reboot was triggered.
 - **`WINLIST`** uses `EnumWindows`/`GetWindowTextA`/`GetClassNameA`/
   `GetWindowRect` — plain user32 exports present since Windows 3.1/95/
   NT 3.1, safe to call directly with no dynamic resolution needed, unlike

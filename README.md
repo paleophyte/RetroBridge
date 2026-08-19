@@ -232,14 +232,18 @@ locally (this dev machine) at both the wire-protocol and bridge-tool
 level — including a real spawn → list → kill round trip, and a real
 registry write → read round trip against a disposable test key. Not yet
 tested against `cucm413` or any other real legacy target.
-`legacy_reboot` is verified end-to-end against a real Windows 9x machine
-(`win95`) — genuinely power-cycles the VM and the agent comes back up on
-its own afterward. Getting there took three live fix attempts; raw
+`legacy_reboot` is verified end-to-end against real machines on both OS
+families. Windows 9x (`win95`) took three live fix attempts — raw
 `ExitWindowsEx` turned out not to work from any process context on real
-Windows 9x, regardless of service-registration or message-queue state —
-see "Bugs found via live testing" in ARCHITECTURE.md. NT-family's
-`ExitWindowsEx` path (still the standard direct call there) and
-`legacy_shutdown` are implemented and build cleanly but haven't been
+Windows 9x, regardless of service-registration or message-queue state,
+and needed `rundll32.exe shell32.dll,SHExitWindowsEx` instead — see "Bugs
+found via live testing" in ARCHITECTURE.md. NT-family (`scm201`, NT4 SP6)
+worked correctly on the first attempt with no workaround needed: the
+direct `ExitWindowsEx` call, the SCM-installed service surviving the
+reboot, and `legacy_enable_autologon`'s Winlogon autologon all confirmed
+working together in one pass — real desktop back and confirmed via
+screenshot ~30 seconds after the reboot was triggered. `legacy_shutdown`
+is implemented and build-clean on both OS families but hasn't been
 invoked against a real machine yet. The `confirm=True` gate itself is
 verified: omitting it short-circuits before any network call happens at
 all.
