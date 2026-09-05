@@ -32,6 +32,38 @@ collide with anything else running on the box.
 MCP server, running on your modern control machine, that exposes the
 agent's commands as tools.
 
+## FreeDOS agent (`agent-dos/`)
+
+The same wire protocol is also implemented for FreeDOS in
+`agent-dos/llm_agent.c`, built with Open Watcom + Watt-32 against a
+packet-driver TSR. The bridge does not special-case DOS: unsupported
+commands simply return `ERR:not supported on DOS` from the agent.
+
+DOS capabilities that *are* implemented:
+
+- `PING` / auth / `QUIT`, `EXEC` (via `system()`/`COMSPEC` + temp-file
+  stdout capture), `PUT` / `GET`, `SYSINFO`, `REBOOT`
+- `SCREENSHOT` — read text-mode video memory at `B800:0000` (80×25) and
+  stream a rendered 24-bit BMP so existing bridge PNG conversion still
+  works
+- `KEY` / `TYPE` — stuff the BIOS keyboard buffer (INT 16h AH=05h)
+
+Not on DOS (by design for v1): `EXECDETACH`, `CLICK`, `WINLIST`,
+`CLIPSET`, `REGGET`/`REGSET`, `PSLIST`/`PSKILL`, `SHUTDOWN`, and the
+Windows service / `RunServices` autostart paths. Autostart is an
+`AUTOEXEC.BAT` line after the packet driver. See `agent-dos/README.md`
+for build and deploy.
+
+## OS/2 agent (`agent-os2/`)
+
+Same wire protocol for OS/2 2.11 in `agent-os2/llm_agent.c`, built with
+Open Watcom as a **16-bit OS/2 NE** executable linked against IBM
+**TCPIPDLL** (Socket/MPTS). Requires IFNDIS/INET up on the guest.
+
+Implemented: auth / `PING` / `QUIT`, `EXEC`, `PUT` / `GET`, `SYSINFO`
+(`os_family=os2`). Other commands return `ERR:not supported on OS/2`.
+See `agent-os2/README.md`.
+
 ## Screenshot/input: built into the agent, not VNC (revised)
 
 **Original decision**: use an externally-installed VNC server (TightVNC

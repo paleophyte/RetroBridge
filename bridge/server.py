@@ -1,6 +1,6 @@
 """MCP bridge exposing shell exec + file transfer + screenshot + input
-injection on legacy Windows boxes (95/98/ME/NT4/2000/XP) to an LLM
-tool-calling harness.
+injection on legacy Windows boxes (95/98/ME/NT4/2000/XP) and FreeDOS
+to an LLM tool-calling harness.
 
 Supports multiple legacy machines from one bridge process: each is a
 section in machines.ini (see machines.ini.example), and every tool takes
@@ -8,12 +8,14 @@ a `machine` argument naming which one to target. Call legacy_list_machines
 to discover what's configured.
 
 Everything goes through one channel per machine: llm_agent
-(agent/llm_agent.c), a tiny token-authed TCP service, assumed to be on an
-isolated lab/host-only network (see docs/ARCHITECTURE.md for the trust
-model). Screenshot/click/key/type are built into the agent itself (GDI
-capture + mouse_event/keybd_event injection) rather than requiring a
-separately-installed VNC server - see docs/ARCHITECTURE.md for why that
-changed from the original design.
+(agent/llm_agent.c on Windows, agent-dos/llm_agent.c on FreeDOS,
+agent-os2/llm_agent.c on OS/2), a tiny token-authed TCP service, assumed
+to be on an isolated lab/host-only network (see docs/ARCHITECTURE.md for
+the trust model). On Windows, screenshot/click/key/type are built into
+the agent itself (GDI capture + mouse_event/keybd_event). On FreeDOS,
+screenshot is a text-mode render and key/type stuff the BIOS keyboard
+buffer; on OS/2, exec/file/sysinfo are supported and several GUI/Windows
+tools return ERR - see docs/ARCHITECTURE.md / agent-dos / agent-os2.
 
 LEGACY_MACHINES_FILE points at the ini file; defaults to machines.ini next
 to this script.
@@ -57,15 +59,22 @@ def _machine(name: str) -> MachineConfig:
 srv = MCPServer(
     "retro-ssh-server",
     instructions=(
-        "Tools for driving legacy Windows machines (95/98/ME/NT4/2000/XP) "
-        "on an isolated lab network: run shell commands, transfer files, "
-        "take screenshots, and send mouse/keyboard input. Every tool takes "
-        "a `machine` argument naming which configured machine to target - "
-        "call legacy_list_machines first if you don't already know the "
-        "name. Use legacy_screenshot before legacy_click/legacy_key when "
-        "you don't already know current on-screen coordinates. Note: a "
+        "Tools for driving legacy machines on an isolated lab network: "
+        "Windows 95/98/ME/NT4/2000/XP, FreeDOS (agent-dos), and OS/2 2.x "
+        "(agent-os2). Run shell commands, transfer files, take screenshots, "
+        "and send keyboard input. Every tool takes a `machine` argument "
+        "naming which configured machine to target - call "
+        "legacy_list_machines first if you don't already know the name. "
+        "Use legacy_screenshot before legacy_click/legacy_key when you "
+        "don't already know current on-screen coordinates. FreeDOS agents "
+        "support ping/exec/upload/download/sysinfo/reboot plus text-mode "
+        "screenshot and key/type; OS/2 agents support ping/exec/upload/"
+        "download/sysinfo. click/winlist/clipboard/registry/pslist/pskill/"
+        "shutdown/exec_detach (and on OS/2 also screenshot/key/type/reboot) "
+        "return errors on those agents. FreeDOS screenshots are rendered "
+        "from the 80x25 text screen, not a GUI framebuffer. Note: a "
         "synthetic ctrl-alt-del will not unlock a locked/secure-desktop "
-        "screen - that's an OS security measure, not a bug. "
+        "Windows screen - that's an OS security measure, not a bug. "
         "legacy_reboot/legacy_shutdown require confirm=True - they take "
         "the target down immediately and interrupt anything in progress "
         "on it, so only pass that once you actually intend it."

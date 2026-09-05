@@ -1,0 +1,6 @@
+# FreeDOS lab: use DHCP (requires Watt-32 built with USE_DHCP).
+# pkt.vector must match how you loaded the packet driver (e.g. PCNTPK INT=0x60).
+# Optional: SET WATTCP.CFG=C:\LLMAGENT  (directory containing this file)
+
+my_ip = dhcp
+pkt.vector = 0x60

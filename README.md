@@ -1,22 +1,28 @@
 # retro-ssh-server
 
 A toolchain for giving an LLM agent hands-on access to legacy Windows boxes
-(95/98/ME/NT4/2000/XP) on an isolated lab network: run shell commands,
-transfer files, take screenshots, send mouse/keyboard input. Built after
-`freeSSHd` turned out to break other software (couldn't install MSSQL
-alongside it) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for why
-this isn't "just use a different SSH server."
+(95/98/ME/NT4/2000/XP) and FreeDOS on an isolated lab network: run shell
+commands, transfer files, take screenshots, send mouse/keyboard input.
+Built after `freeSSHd` turned out to break other software (couldn't install
+MSSQL alongside it) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
+why this isn't "just use a different SSH server."
 
-Two pieces:
+Pieces:
 
 - **`agent/`** — `llm_agent`, a single small C service you cross-compile
-  and copy onto the legacy machine. One token-authed TCP channel does
-  everything: runs commands, moves files, captures the screen, sends
+  and copy onto the legacy Windows machine. One token-authed TCP channel
+  does everything: runs commands, moves files, captures the screen, sends
   mouse/keyboard input. No third-party software required on the legacy
   box — screenshots/input are built straight into the agent with GDI and
   `mouse_event`/`keybd_event`, not a separately-installed VNC server. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#screenshotinput-built-into-the-agent-not-vnc-revised)
   for why (that started as a VNC-based design and changed).
+- **`agent-dos/`** — FreeDOS port of the same wire protocol (Open Watcom +
+  Watt-32). Supports exec/file transfer/sysinfo/reboot plus text-mode
+  screenshot and BIOS keyboard inject. See [agent-dos/README.md](agent-dos/README.md).
+- **`agent-os2/`** — OS/2 2.x port (Open Watcom 16-bit NE + IBM TCPIPDLL).
+  Supports exec/file transfer/sysinfo; GUI screenshot/input not yet.
+  See [agent-os2/README.md](agent-os2/README.md).
 - **`bridge/`** — an MCP server you run on your modern control machine,
   exposing the agent's commands as MCP tools.
 
