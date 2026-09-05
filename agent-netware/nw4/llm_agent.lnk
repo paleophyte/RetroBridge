@@ -1,0 +1,23 @@
+format novell nlm 'llm_agent'
+option nodefault
+option start=_Prelude
+option exit=_Stop
+option map=llm_agent.map
+option stack=65536
+option version=1.0.0
+option check=llm_agent_check
+libpath c:\watcom\lib386
+libpath c:\watcom\lib386\netware
+library clib3s
+file llm_agent.obj
+module clib
+import _StartNLM, _TerminateNLM, _SetupArgv, __Must_Have_Three_One_Or_Greater
+import Alloc, Free, AllocateResourceTag, atexit, ExitThread, stackavail
+import BeginThread, CloseLocalSemaphore, GetThreadID, OpenLocalSemaphore
+import SignalLocalSemaphore, ThreadSwitch, WaitOnLocalSemaphore
+import __STK, __get_errno_ptr, _exit, getche, isatty, lseek, read, write, sopen, tell
+import ConsolePrintf, system
+import socket, bind, listen, accept, send, recv, close, setsockopt
+import GetServerInformation, GetVolumeInfoWithNumber
+import vsprintf
+name LLMAGENT

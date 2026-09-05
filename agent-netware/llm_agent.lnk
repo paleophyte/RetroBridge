@@ -1,0 +1,26 @@
+format novell nlm 'llm_agent'
+option nodefault
+option start=_Prelude
+option exit=_Stop
+option map=llm_agent.map
+option stack=65536
+option version=1.0.0
+option copyright 'llm_agent for NetWare 3.12'
+option screenname 'None'
+option check=llm_agent_check
+file llm_agent.obj
+file vendor\imports\prelude.obj
+module clib
+import _StartNLM, _TerminateNLM, _SetupArgv
+import ConsolePrintf, ThreadSwitch, ThreadSwitchWithDelay, ioctl, system, AtUnload
+import socket, bind, listen, accept, send, recv, close, setsockopt
+import memset, memcpy, strcmp, strlen, strncmp, strncpy, strpbrk, strrchr, strstr
+import atoi, atol, sprintf, fprintf
+import fopen, fclose, fgets, fread, fwrite, fseek, ftell, fputs
+import GetServerInformation, GetVolumeInfoWithNumber
+import CreateScreen, CopyFromScreenMemory
+import GetCurrentScreen, GetSizeOfScreen, GetScreenInfo
+import SetCurrentScreen, ScanScreens, CheckIfScreenDisplayed, ungetch
+import DownFileServer
+import exit, delay
+name LLMAGENT

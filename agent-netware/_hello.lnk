@@ -1,0 +1,11 @@
+format novell nlm 'hello'
+option nodefault
+option start=_Prelude
+option exit=_Stop
+option version=1.0.0
+option copyright 'llm_agent netware proof'
+file _hello.obj
+file vendor\imports\prelude.obj
+module clib
+import _StartNLM, _TerminateNLM, _SetupArgv, printf
+name HELLO

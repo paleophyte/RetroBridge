@@ -221,8 +221,14 @@ class AgentClient:
     def click(self, x: int, y: int, button: int = 1) -> None:
         self._simple_command(f"CLICK {x} {y} {button}")
 
-    def key(self, keyspec: str) -> None:
-        self._simple_command(f"KEY {keyspec}")
+    def key(self, *keyspecs: str) -> None:
+        """Send one or more keys. NetWare batches them in a single StuffKey run."""
+        parts: list[str] = []
+        for k in keyspecs:
+            parts.extend(k.replace(",", " ").split())
+        if not parts:
+            raise ValueError("key() requires at least one keyspec")
+        self._simple_command("KEY " + " ".join(parts))
 
     def type_text(self, text: str) -> None:
         if "\n" in text or "\r" in text:
