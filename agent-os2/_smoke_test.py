@@ -103,12 +103,20 @@ def main() -> int:
         fail("PUT/GET", str(e))
 
     expect_err("GET missing", lambda: c.get(r"C:\NOPEZZZ.TXT", local_dn))
-    expect_err("TYPE unsupported", lambda: c.type_text("x"))
-    expect_err("KEY unsupported", lambda: c.key("enter"))
-    # EXECDETACH / CLICK / REBOOT / WINLIST are supported
     expect_err("CLIPSET unsupported", lambda: c.clipboard_set("x"))
-    expect_err("PSLIST unsupported", lambda: c.pslist())
     expect_err("SHUTDOWN unsupported", lambda: c.shutdown())
+
+    try:
+        c.key("esc")
+        ok("KEY esc", "OK")
+    except Exception as e:
+        fail("KEY esc", str(e))
+
+    try:
+        c.type_text("x")
+        ok("TYPE", "OK")
+    except Exception as e:
+        fail("TYPE", str(e))
 
     try:
         wins = c.winlist()
@@ -117,6 +125,16 @@ def main() -> int:
         ))
     except Exception as e:
         fail("WINLIST", str(e))
+
+    try:
+        procs = c.pslist()
+        if len(procs) < 1:
+            fail("PSLIST", "empty")
+        else:
+            sample = ", ".join(f"{p}:{n}" for p, n in procs[:8])
+            ok("PSLIST", f"{len(procs)} procs: {sample}")
+    except Exception as e:
+        fail("PSLIST", str(e))
 
     # SCREENSHOT — PM desktop capture as BMP
     try:

@@ -17,3 +17,4 @@ import recv        'SO32DLL'.RECV
 import soclose     'SO32DLL'.SOCLOSE
 import setsockopt  'SO32DLL'.SETSOCKOPT
 import sock_errno  'SO32DLL'.SOCK_ERRNO
+import DOSQPROCSTATUS DOSCALLS.154

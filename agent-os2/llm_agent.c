@@ -7,8 +7,9 @@
  * 32-bit OS/2 (LX) + IBM SO32DLL/TCP32DLL sockets + PM screen capture.
  *
  * Supported: auth, PING, QUIT, EXEC, EXECDETACH, PUT, GET, SYSINFO,
- *            SCREENSHOT, CLICK, KEY (esc), WINCLOSE, WINLIST, REBOOT
- * Unsupported: CLIPSET, REG*, PSLIST, PSKILL, SHUTDOWN, TYPE
+ *            SCREENSHOT, CLICK, KEY, TYPE, WINCLOSE, WINLIST, PSLIST,
+ *            PSKILL, REBOOT
+ * Unsupported: CLIPSET, REG*, SHUTDOWN
  */
 
 #define INCL_DOS
@@ -27,6 +28,72 @@
 #include <string.h>
 #include <ctype.h>
 #include <process.h>
+
+/*
+ * DosQProcStatus (DOSCALLS.154): undocumented OS/2 2.x process table dump.
+ * Layout from Rick Fishman / Hobbes procstat.h (32-bit PROCS.EXE).
+ */
+#define PROCESS_END_INDICATOR 3
+
+#pragma pack(1)
+typedef struct _THREADINFO {
+    ULONG  ulRecType;
+    USHORT tidWithinProcess;
+    USHORT usSlot;
+    ULONG  ulBlockId;
+    ULONG  ulPriority;
+    ULONG  ulSysTime;
+    ULONG  ulUserTime;
+    UCHAR  uchState;
+    UCHAR  uchPad;
+    USHORT usPad;
+} THREADINFO, *PTHREADINFO;
+
+typedef struct _PROCESSINFO {
+    ULONG       ulEndIndicator;
+    PTHREADINFO ptiFirst;
+    USHORT      pid;
+    USHORT      pidParent;
+    ULONG       ulType;
+    ULONG       ulStatus;
+    ULONG       idSession;
+    USHORT      hModRef;
+    USHORT      usThreadCount;
+    ULONG       ulReserved;
+    PVOID       pvReserved;
+    USHORT      usSem16Count;
+    USHORT      usDllCount;
+    USHORT      usShrMemHandles;
+    USHORT      usReserved;
+    PUSHORT     pusSem16TableAddr;
+    PUSHORT     pusDllTableAddr;
+    PUSHORT     pusShrMemTableAddr;
+} PROCESSINFO, *PPROCESSINFO;
+
+typedef struct _MODINFO {
+    struct _MODINFO *pNext;
+    USHORT hMod;
+    USHORT usModType;
+    ULONG  ulModRefCount;
+    ULONG  ulSegmentCount;
+    ULONG  ulDontKnow1;
+    PSZ    szModName;
+    USHORT usModRef[1];
+} MODINFO, *PMODINFO;
+
+typedef struct _BUFFHEADER {
+    PVOID         psumm;
+    PPROCESSINFO  ppi;
+    PVOID         psi;
+    PVOID         pDontKnow1;
+    PVOID         psmi;
+    PMODINFO      pmi;
+    PVOID         pDontKnow2;
+    PVOID         pDontKnow3;
+} BUFFHEADER, *PBUFFHEADER;
+#pragma pack()
+
+USHORT APIENTRY16 DosQProcStatus(PVOID pBuf, USHORT cbBuf);
 
 #include <types.h>
 #include <netinet/in.h>
@@ -407,6 +474,147 @@ static int handle_get(const char *path) {
     }
     fclose(f);
     return 0;
+}
+
+/* Basename of a path; also scrub tabs for the wire format. */
+static void path_basename(char *dst, size_t dstsz, const char *src) {
+    const char *base = src;
+    const char *p;
+    size_t n;
+    char *d;
+
+    if (!src) src = "";
+    for (p = src; *p; p++) {
+        if (*p == '\\' || *p == '/')
+            base = p + 1;
+    }
+    n = strlen(base);
+    if (n >= dstsz) n = dstsz - 1;
+    memcpy(dst, base, n);
+    dst[n] = '\0';
+    for (d = dst; *d; d++) {
+        if (*d == '\t' || *d == '\r' || *d == '\n')
+            *d = ' ';
+    }
+}
+
+/*
+ * PSLIST: "<pid>\t<name>\r\n" via DosQProcStatus (same wire format as
+ * Windows). Names come from the module table matched by hModRef.
+ */
+static int handle_pslist(void) {
+    static char out[32768];
+    char *raw = NULL;
+    PBUFFHEADER pbh;
+    PPROCESSINFO ppi;
+    PMODINFO pmi;
+    USHORT rc;
+    int len = 0;
+    char hdr[32];
+    char name[260];
+    int i, nproc;
+    struct {
+        USHORT pid;
+        USHORT hMod;
+        char name[128];
+    } *tbl = NULL;
+
+    raw = (char *)malloc(0xFFFF);
+    if (!raw) {
+        send_cstr("ERR:out of memory\n");
+        return -1;
+    }
+    memset(raw, 0, 0xFFFF);
+
+    rc = DosQProcStatus(raw, 0xFFFF);
+    if (rc != 0) {
+        free(raw);
+        sprintf(out, "ERR:DosQProcStatus rc=%u\n", (unsigned)rc);
+        send_cstr(out);
+        return -1;
+    }
+
+    pbh = (PBUFFHEADER)raw;
+    if (!pbh->ppi) {
+        free(raw);
+        send_cstr("ERR:DosQProcStatus empty process list\n");
+        return -1;
+    }
+
+    nproc = 0;
+    ppi = pbh->ppi;
+    while (ppi->ulEndIndicator != PROCESS_END_INDICATOR) {
+        nproc++;
+        ppi = (PPROCESSINFO)(ppi->ptiFirst + ppi->usThreadCount);
+    }
+    if (nproc <= 0) {
+        free(raw);
+        send_cstr("SIZE:0\n");
+        return 0;
+    }
+
+    tbl = (void *)calloc(nproc, sizeof(*tbl));
+    if (!tbl) {
+        free(raw);
+        send_cstr("ERR:out of memory\n");
+        return -1;
+    }
+
+    ppi = pbh->ppi;
+    for (i = 0; i < nproc; i++) {
+        tbl[i].pid = ppi->pid;
+        tbl[i].hMod = ppi->hModRef;
+        sprintf(tbl[i].name, "pid%u", (unsigned)ppi->pid);
+        ppi = (PPROCESSINFO)(ppi->ptiFirst + ppi->usThreadCount);
+    }
+
+    for (pmi = pbh->pmi; pmi != NULL; pmi = pmi->pNext) {
+        if (!pmi->szModName)
+            continue;
+        for (i = 0; i < nproc; i++) {
+            if (tbl[i].hMod == pmi->hMod) {
+                path_basename(tbl[i].name, sizeof(tbl[i].name),
+                              (const char *)pmi->szModName);
+            }
+        }
+    }
+
+    for (i = 0; i < nproc; i++) {
+        if (len > (int)sizeof(out) - 160)
+            break;
+        len += sprintf(out + len, "%u\t%s\r\n",
+                       (unsigned)tbl[i].pid, tbl[i].name);
+    }
+
+    free(tbl);
+    free(raw);
+
+    sprintf(hdr, "SIZE:%d\n", len);
+    if (send_cstr(hdr) < 0 || (len > 0 && send_all(out, len) < 0))
+        return -1;
+    return 0;
+}
+
+/* PSKILL <pid>: DosKillProcess — same trust model as EXEC. */
+static void handle_pskill(const char *args) {
+    PID pid;
+    APIRET rc;
+    char reply[64];
+
+    while (*args == ' ') args++;
+    pid = (PID)atol(args);
+    if (pid == 0) {
+        send_cstr("ERR:bad PID\n");
+        return;
+    }
+
+    rc = DosKillProcess(DKP_PROCESS, pid);
+    if (rc != 0) {
+        sprintf(reply, "ERR:DosKillProcess rc=%lu\n", (unsigned long)rc);
+        send_cstr(reply);
+        return;
+    }
+    send_cstr("OK\n");
 }
 
 static int handle_sysinfo(void) {
@@ -872,17 +1080,150 @@ static int close_frames_by_title(const char *want) {
     return n;
 }
 
-/* KEY escape/esc: dismiss active dialog + known blockers by title. */
-static void handle_key(const char *spec) {
+typedef struct { const char *name; USHORT vk; } Os2KeyName;
+
+/* Named keys for KEY <keyspec> — OS/2 VK_* codes (not Win32). */
+static const Os2KeyName OS2_KEY_NAMES[] = {
+    {"enter", VK_ENTER}, {"return", VK_ENTER},
+    {"esc", VK_ESC}, {"escape", VK_ESC},
+    {"tab", VK_TAB}, {"space", VK_SPACE},
+    {"backspace", VK_BACKSPACE}, {"bksp", VK_BACKSPACE},
+    {"delete", VK_DELETE}, {"del", VK_DELETE},
+    {"insert", VK_INSERT}, {"ins", VK_INSERT},
+    {"home", VK_HOME}, {"end", VK_END},
+    {"pageup", VK_PAGEUP}, {"pgup", VK_PAGEUP},
+    {"pagedown", VK_PAGEDOWN}, {"pgdn", VK_PAGEDOWN},
+    {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT},
+    {"f1", VK_F1}, {"f2", VK_F2}, {"f3", VK_F3}, {"f4", VK_F4},
+    {"f5", VK_F5}, {"f6", VK_F6}, {"f7", VK_F7}, {"f8", VK_F8},
+    {"f9", VK_F9}, {"f10", VK_F10}, {"f11", VK_F11}, {"f12", VK_F12},
+    {"pause", VK_PAUSE},
+    {NULL, 0}
+};
+
+static int lookup_os2_key(const char *tok, USHORT *vkOut) {
+    int i;
+    for (i = 0; OS2_KEY_NAMES[i].name; i++) {
+        if (stricmp(tok, OS2_KEY_NAMES[i].name) == 0) {
+            *vkOut = OS2_KEY_NAMES[i].vk;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Post a WM_CHAR (and WM_VIOCHAR) down/up pair to hwnd.
+ * mp1 = flags | (repeat/scancode); mp2 = char | virtual-key.
+ */
+static void post_wm_char(HWND hwnd, USHORT fs, USHORT ch, USHORT vk) {
+    MPARAM mp1, mp2;
+
+    if (hwnd == NULLHANDLE) return;
+    mp1 = MPFROM2SHORT(fs, 1); /* repeat count 1, scancode 0 */
+    mp2 = MPFROM2SHORT(ch, vk);
+    WinPostMsg(hwnd, WM_CHAR, mp1, mp2);
+    WinPostMsg(hwnd, WM_VIOCHAR, mp1, mp2);
+    DosSleep(10);
+    mp1 = MPFROM2SHORT((USHORT)(fs | KC_KEYUP | KC_PREVDOWN), 1);
+    WinPostMsg(hwnd, WM_CHAR, mp1, mp2);
+    WinPostMsg(hwnd, WM_VIOCHAR, mp1, mp2);
+}
+
+static HWND focus_hwnd(void) {
+    HWND hwnd = WinQueryFocus(HWND_DESKTOP);
+    if (hwnd == NULLHANDLE)
+        hwnd = WinQueryActiveWindow(HWND_DESKTOP);
+    return hwnd;
+}
+
+/*
+ * KEY <keyspec>: same grammar as Windows agent — "enter", "a", "shift-a",
+ * "ctrl-c", "alt-f4", "esc". Injects WM_CHAR to the focus window.
+ * Esc also tries dialog Cancel / close titled Search (legacy helper).
+ */
+static void handle_key(const char *keyspec) {
     HAB hab;
     HMQ hmq = NULLHANDLE;
-    HWND hwnd, frame, h;
-    int i, closed;
+    HWND hwnd;
+    char buf[128];
+    char tokens[8][32];
+    int ntok = 0, i;
+    int ctrl = 0, alt = 0, shift = 0;
+    char *tok;
+    USHORT vk = 0;
+    USHORT ch = 0;
+    USHORT fs = 0;
+    const char *base;
 
-    if (stricmp(spec, "esc") != 0 && stricmp(spec, "escape") != 0) {
-        send_cstr(ERR_NOSUP);
+    strncpy(buf, keyspec, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    /* trim trailing CR/spaces */
+    {
+        int n = (int)strlen(buf);
+        while (n > 0 && (buf[n - 1] == ' ' || buf[n - 1] == '\r' || buf[n - 1] == '\n'))
+            buf[--n] = '\0';
+    }
+
+    tok = strtok(buf, "-");
+    while (tok && ntok < 8) {
+        strncpy(tokens[ntok], tok, sizeof(tokens[0]) - 1);
+        tokens[ntok][sizeof(tokens[0]) - 1] = '\0';
+        ntok++;
+        tok = strtok(NULL, "-");
+    }
+    if (ntok == 0) {
+        send_cstr("ERR:empty key\n");
         return;
     }
+
+    for (i = 0; i < ntok - 1; i++) {
+        if (stricmp(tokens[i], "ctrl") == 0 || stricmp(tokens[i], "control") == 0)
+            ctrl = 1;
+        else if (stricmp(tokens[i], "alt") == 0)
+            alt = 1;
+        else if (stricmp(tokens[i], "shift") == 0)
+            shift = 1;
+        else {
+            send_cstr("ERR:unknown modifier\n");
+            return;
+        }
+    }
+
+    base = tokens[ntok - 1];
+    if (lookup_os2_key(base, &vk)) {
+        fs = KC_VIRTUALKEY;
+        ch = 0;
+        if (vk == VK_ENTER || vk == VK_NEWLINE) {
+            fs |= KC_CHAR;
+            ch = '\r';
+        } else if (vk == VK_TAB) {
+            fs |= KC_CHAR;
+            ch = '\t';
+        } else if (vk == VK_SPACE) {
+            fs |= KC_CHAR;
+            ch = ' ';
+        } else if (vk == VK_BACKSPACE) {
+            fs |= KC_CHAR;
+            ch = 0x08;
+        } else if (vk == VK_ESC) {
+            fs |= KC_CHAR;
+            ch = 0x1b;
+        }
+    } else if (strlen(base) == 1) {
+        ch = (USHORT)(unsigned char)base[0];
+        fs = KC_CHAR;
+        vk = 0;
+        if (ch >= 'A' && ch <= 'Z')
+            shift = 1;
+    } else {
+        send_cstr("ERR:unknown key name\n");
+        return;
+    }
+
+    if (ctrl) fs |= KC_CTRL;
+    if (alt) fs |= KC_ALT;
+    if (shift) fs |= KC_SHIFT;
 
     hab = WinInitialize(0);
     if (!hab) {
@@ -891,30 +1232,63 @@ static void handle_key(const char *spec) {
     }
     hmq = WinCreateMsgQueue(hab, 0);
 
-    closed = close_frames_by_title("Search");
+    hwnd = focus_hwnd();
+    if (hwnd == NULLHANDLE) {
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:no focus window\n");
+        return;
+    }
 
-    hwnd = WinQueryFocus(HWND_DESKTOP);
-    if (hwnd == NULLHANDLE) hwnd = WinQueryActiveWindow(HWND_DESKTOP);
-    if (hwnd != NULLHANDLE) {
-        frame = hwnd;
-        for (h = hwnd, i = 0; h != NULLHANDLE && i < 8; i++) {
-            frame = h;
-            h = WinQueryWindow(h, QW_PARENT);
-            if (h == NULLHANDLE || h == HWND_DESKTOP) break;
-        }
+    post_wm_char(hwnd, fs, ch, vk);
+
+    /* Esc: also nudge modal dialogs that ignore synthetic WM_CHAR. */
+    if (vk == VK_ESC) {
+        close_frames_by_title("Search");
         WinPostMsg(hwnd, WM_COMMAND, MPFROM2SHORT(2, 0), 0);
-        WinPostMsg(frame, WM_COMMAND, MPFROM2SHORT(2, 0), 0);
-        WinPostMsg(frame, WM_SYSCOMMAND, MPFROMSHORT(SC_CLOSE), 0);
-        WinPostMsg(frame, WM_CLOSE, 0, 0);
-        closed++;
     }
 
     if (hmq) WinDestroyMsgQueue(hmq);
     WinTerminate(hab);
-    if (closed)
-        send_cstr("OK\n");
-    else
-        send_cstr("ERR:nothing to close\n");
+    send_cstr("OK\n");
+}
+
+/* TYPE <text>: post each character as WM_CHAR to the focus window. */
+static void handle_type(const char *text) {
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    HWND hwnd;
+    const char *p;
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    hwnd = focus_hwnd();
+    if (hwnd == NULLHANDLE) {
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:no focus window\n");
+        return;
+    }
+
+    for (p = text; *p; p++) {
+        USHORT ch = (USHORT)(unsigned char)*p;
+        USHORT fs = KC_CHAR;
+        if (ch >= 'A' && ch <= 'Z')
+            fs |= KC_SHIFT;
+        if (ch == '\n' || ch == '\r')
+            continue; /* use KEY enter */
+        post_wm_char(hwnd, fs, ch, 0);
+        DosSleep(15);
+    }
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    send_cstr("OK\n");
 }
 
 /* WINCLOSE <title>: close top-level window(s) with that title. */
@@ -974,9 +1348,11 @@ static void handle_client(void) {
         } else if (strncmp(g_line, "WINCLOSE ", 9) == 0) {
             handle_winclose(g_line + 9);
         } else if (strncmp(g_line, "TYPE ", 5) == 0) {
-            send_cstr(ERR_NOSUP);
-        } else if (strcmp(g_line, "PSLIST") == 0 || strncmp(g_line, "PSKILL ", 7) == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_type(g_line + 5);
+        } else if (strcmp(g_line, "PSLIST") == 0) {
+            handle_pslist();
+        } else if (strncmp(g_line, "PSKILL ", 7) == 0) {
+            handle_pskill(g_line + 7);
         } else if (strcmp(g_line, "SYSINFO") == 0) {
             handle_sysinfo();
         } else if (strcmp(g_line, "REBOOT") == 0) {

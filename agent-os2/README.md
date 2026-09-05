@@ -19,8 +19,9 @@ desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 | `SYSINFO` | `os_family=os2`, version, C: disk space |
 | `SCREENSHOT` | Full PM desktop via `WinGetScreenPS` → 24-bit BMP |
 | `CLICK` | PM `WinSetPointerPos` + `BM_CLICK` / button up-down (top-left coords) |
-| `KEY` | `esc` / `escape` only — dismiss focused dialog / titled `Search` |
+| `KEY` / `TYPE` | `WM_CHAR` / `WM_VIOCHAR` to the focus window (same keyspec grammar as Windows) |
 | `WINLIST` | Switch-list entries (titles + top-left frame rects for CLICK) |
+| `PSLIST` / `PSKILL` | `DosQProcStatus` process table / `DosKillProcess` |
 | `REBOOT` | Detached `REBOOT.EXE` (OEMHLP/DOS$ IOCTL, then DOS `.COM` kbd reset) |
 | `EXECDETACH` | Independent session via `DosStartSession` (for `UPDATE.EXE` / `REBOOT.EXE`) |
 
@@ -34,8 +35,8 @@ swaps the binary, and restarts `LLMAGENT.EXE`.
 
 Reboot: also deploy `REBOOT.EXE` next to the agent (`build.bat` builds it).
 
-Everything else returns `ERR:not supported on OS/2` (including `TYPE` and
-most `KEY` specs).
+Everything else returns `ERR:not supported on OS/2` (including `CLIPSET` /
+`REG*` / `SHUTDOWN`).
 
 ## Build (Open Watcom on host)
 
