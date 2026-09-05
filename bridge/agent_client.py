@@ -13,7 +13,7 @@ Wire protocol, one connection = one session:
                        | "SHUTDOWN\\n" | "WINLIST\\n" | "CLIPSET <text>\\n"
                        | "REGGET\\t<root>\\t<subkey>\\t<valuename>\\n"
                        | "REGSET\\t<root>\\t<subkey>\\t<valuename>\\t<type>\\t<data>\\n"
-                       | "PING\\n" | "QUIT\\n"
+                       | "PING\\n" | "QUIT\\n" | "UPDATE\\n" | "AUTOEXEC\\n" | "DEBUG [0|1]\\n" | "SCREENS\\n"
     server -> client (EXEC): repeated "LEN:<n>\\n" + <n> raw bytes, then "EXIT:<code>\\n"
                              (LEN:0 with no bytes may appear as a heartbeat)
     server -> client (EXECDETACH): "OK pid=<pid>\\n" | "ERR:<msg>\\n"
@@ -31,6 +31,9 @@ Wire protocol, one connection = one session:
     server -> client (REGGET): "DWORD:<value>\\n" | "SIZE:<n>\\n" + <n> raw bytes | "ERR:<msg>\\n"
     server -> client (REGSET): "OK\\n" | "ERR:<msg>\\n"
     server -> client (PING): "PONG\\n"
+    server -> client (UPDATE): "OK\\n" | "ERR:<msg>\\n"
+    server -> client (DEBUG): "OK debug=<0|1>\\n" | "ERR:<msg>\\n"
+    server -> client (SCREENS): "SIZE:<n>\\n" + "<id>\\t<displayed>\\t<name>\\r\\n" lines
 """
 
 from __future__ import annotations
@@ -226,6 +229,31 @@ class AgentClient:
             raise ValueError("type_text() text must not contain newlines - use key('enter') instead")
         self._simple_command(f"TYPE {text}")
 
+    def screens(self) -> list[tuple[int, bool, str]]:
+        """NetWare: list CLIB screens as (id, displayed, name)."""
+        sock = self._connect()
+        try:
+            sock.sendall(b"SCREENS\n")
+            header = self._recv_line(sock)
+            if header.startswith("ERR:"):
+                raise AgentProtocolError(header)
+            if not header.startswith("SIZE:"):
+                raise AgentProtocolError(f"unexpected SCREENS response: {header!r}")
+            size = int(header[5:])
+            text = self._recv_exact(sock, size).decode("utf-8", "replace")
+            out: list[tuple[int, bool, str]] = []
+            for line in text.splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) != 3:
+                    continue
+                try:
+                    out.append((int(parts[0]), parts[1] != "0", parts[2]))
+                except ValueError:
+                    continue
+            return out
+        finally:
+            self._quit(sock)
+
     def pslist(self) -> list[tuple[int, str]]:
         """List running processes. Returns (pid, image_name) pairs."""
         sock = self._connect()
@@ -280,6 +308,49 @@ class AgentClient:
 
     def shutdown(self) -> None:
         self._simple_command("SHUTDOWN")
+
+    def update(self) -> None:
+        """Ask the agent to self-update (platform-specific helper)."""
+        self._simple_command("UPDATE")
+
+    def autoexec(self) -> str:
+        """Ensure NetWare AUTOEXEC.NCF loads the agent (and CLIBAUX).
+
+        Returns the OK payload (e.g. 'autoexec=added' or 'autoexec=present').
+        Other platforms may return ERR.
+        """
+        sock = self._connect()
+        try:
+            sock.sendall(b"AUTOEXEC\n")
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if not reply.startswith("OK "):
+                raise AgentProtocolError(f"unexpected AUTOEXEC response: {reply!r}")
+            return reply[3:]
+        finally:
+            self._quit(sock)
+
+    def debug(self, enabled: bool | None = None) -> int:
+        """Query or set agent verbose logging. Returns 0 or 1.
+
+        On NetWare, DEBUG 1 truncates SYS:SYSTEM\\LLMAGENT.LOG; pull it with
+        get() then DEBUG 0 when done. Other agents may return ERR.
+        """
+        sock = self._connect()
+        try:
+            if enabled is None:
+                sock.sendall(b"DEBUG\n")
+            else:
+                sock.sendall(f"DEBUG {1 if enabled else 0}\n".encode("ascii"))
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if not reply.startswith("OK debug="):
+                raise AgentProtocolError(f"unexpected DEBUG response: {reply!r}")
+            return int(reply[9:])
+        finally:
+            self._quit(sock)
 
     def winlist(self) -> list[WindowInfo]:
         """List visible top-level windows with a non-empty title."""

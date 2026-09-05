@@ -103,7 +103,13 @@ def main() -> int:
         fail("PUT/GET", str(e))
 
     expect_err("GET missing", lambda: c.get(r"C:\NOPEZZZ.TXT", local_dn))
-    expect_err("CLIPSET unsupported", lambda: c.clipboard_set("x"))
+
+    try:
+        c.clipboard_set("smoke-clip-os2")
+        ok("CLIPSET", "OK")
+    except Exception as e:
+        fail("CLIPSET", str(e))
+
     expect_err("SHUTDOWN unsupported", lambda: c.shutdown())
 
     try:

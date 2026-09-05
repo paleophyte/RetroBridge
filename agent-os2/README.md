@@ -23,6 +23,7 @@ desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 | `WINLIST` | Switch-list entries (titles + top-left frame rects for CLICK) |
 | `PSLIST` / `PSKILL` | `DosQProcStatus` process table / `DosKillProcess` |
 | `REBOOT` | Detached `REBOOT.EXE` (OEMHLP/DOS$ IOCTL, then DOS `.COM` kbd reset) |
+| `CLIPSET` | PM clipboard `CF_TEXT` via giveable shared mem (`CFI_POINTER`) |
 | `EXECDETACH` | Independent session via `DosStartSession` (for `UPDATE.EXE` / `REBOOT.EXE`) |
 
 The agent **minimizes itself** after listen (and `UPDATE.EXE` /
@@ -34,9 +35,18 @@ Self-update: build also produces `update.exe`. Bridge tool
 swaps the binary, and restarts `LLMAGENT.EXE`.
 
 Reboot: also deploy `REBOOT.EXE` next to the agent (`build.bat` builds it).
+Use `REBOOT` to cycle the guest. `SHUTDOWN` is **not supported** on OS/2
+2.11 here — `DosShutdown` hard-locks a painted desktop, and
+`WinShutdownSystem` blocks on per-session “close without saving?” dialogs
+that we could not auto-dismiss reliably.
 
-Everything else returns `ERR:not supported on OS/2` (including `CLIPSET` /
-`REG*` / `SHUTDOWN`).
+`CLIPSET` is verified by the agent returning `OK` after
+`WinSetClipbrdData`. Pair with `KEY ctrl-v` to paste. Do **not** run PM
+helpers under `EXEC` with stdout redirect — that has GPFd (`SYS3175`) on
+2.11.
+
+Everything else returns `ERR:not supported on OS/2` (including `REG*` /
+`SHUTDOWN`).
 
 ## Build (Open Watcom on host)
 

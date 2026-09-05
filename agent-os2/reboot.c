@@ -1,17 +1,15 @@
 /*
- * REBOOT.EXE (OS/2): actually reset the machine.
+ * REBOOT.EXE (OS/2): hardware reboot helper (detached from llm_agent).
  *
- * Launched via EXECDETACH from llm_agent after OK. Tries OEMHLP$/DOS$
- * IOCTLs, then runs a tiny DOS .COM (keyboard-controller reset) because
- * DOS$ D5/AB returns success without resetting on this guest, and
- * DosPortAccess is not available to 32-bit apps here.
+ * Usage:
+ *   REBOOT.EXE            — reboot (OEMHLP/DOS$ IOCTL, then kbd-controller .COM)
  *
- * Usage: REBOOT.EXE
- * Expects REBOOT.COM next to this EXE (written by build / deploy).
+ * Shutdown is not supported via this helper on OS/2 2.11 (see agent README).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define INCL_DOS
 #define INCL_DOSFILEMGR
@@ -45,7 +43,7 @@ static void set_paths(const char *argv0) {
     }
 }
 
-static APIRET ioctl_reboot(HFILE hf, ULONG cat, ULONG fn, const char *tag) {
+static APIRET ioctl_dev(HFILE hf, ULONG cat, ULONG fn, const char *tag) {
     ULONG plen = 0, dlen = 0;
     APIRET rc;
     char msg[96];
@@ -57,7 +55,7 @@ static APIRET ioctl_reboot(HFILE hf, ULONG cat, ULONG fn, const char *tag) {
     return rc;
 }
 
-static APIRET try_oemhlp(void) {
+static APIRET try_oemhlp_reboot(void) {
     HFILE hf = NULLHANDLE;
     ULONG action = 0;
     APIRET rc;
@@ -70,12 +68,12 @@ static APIRET try_oemhlp(void) {
     sprintf(msg, "DosOpen OEMHLP$ rc=%lu", (unsigned long)rc);
     log_line(msg);
     if (rc != 0) return rc;
-    rc = ioctl_reboot(hf, 0x80, 0x5D, "OEMHLP$ IOCTL 80/5D");
+    rc = ioctl_dev(hf, 0x80, 0x5D, "OEMHLP$ IOCTL 80/5D");
     DosClose(hf);
     return rc;
 }
 
-static APIRET try_dos(int do_shutdown) {
+static APIRET try_dos_reboot(void) {
     HFILE hf = NULLHANDLE;
     ULONG action = 0;
     APIRET rc;
@@ -94,19 +92,11 @@ static APIRET try_dos(int do_shutdown) {
     sprintf(msg, "DosOpen DOS$ rc=%lu", (unsigned long)rc);
     log_line(msg);
     if (rc != 0) return rc;
-
-    if (do_shutdown) {
-        rc = DosShutdown(0);
-        sprintf(msg, "DosShutdown rc=%lu", (unsigned long)rc);
-        log_line(msg);
-    }
-
-    rc = ioctl_reboot(hf, 0xD5, 0xAB, "DOS$ IOCTL D5/AB");
+    rc = ioctl_dev(hf, 0xD5, 0xAB, "DOS$ IOCTL D5/AB");
     DosClose(hf);
     return rc;
 }
 
-/* REBOOT.COM: mov al,0xFE / out 0x64,al / hlt / int 20h */
 static const unsigned char g_reboot_com[] = {
     0xB0, 0xFE,
     0xE6, 0x64,
@@ -114,21 +104,21 @@ static const unsigned char g_reboot_com[] = {
     0xCD, 0x20
 };
 
-static void ensure_reboot_com(char *com_path, size_t com_path_sz) {
+static void write_com(const char *name, const unsigned char *bytes, size_t n) {
+    char path[160];
     FILE *f;
-    sprintf(com_path, "%s\\REBOOT.COM", g_dir);
-    (void)com_path_sz;
-    f = fopen(com_path, "wb");
+    sprintf(path, "%s\\%s", g_dir, name);
+    f = fopen(path, "wb");
     if (!f) {
-        log_line("failed to write REBOOT.COM");
+        log_line("failed to write COM");
         return;
     }
-    fwrite(g_reboot_com, 1, sizeof(g_reboot_com), f);
+    fwrite(bytes, 1, n, f);
     fclose(f);
-    log_line("wrote REBOOT.COM");
+    log_line(name);
 }
 
-static APIRET try_dos_com_reset(void) {
+static APIRET start_vdm_com(const char *name) {
     char com_path[160];
     STARTDATA sd;
     ULONG sess_id = 0;
@@ -137,26 +127,25 @@ static APIRET try_dos_com_reset(void) {
     char obj[128];
     char msg[120];
 
-    ensure_reboot_com(com_path, sizeof(com_path));
-
+    sprintf(com_path, "%s\\%s", g_dir, name);
     memset(&sd, 0, sizeof(sd));
     sd.Length = sizeof(sd);
     sd.Related = SSF_RELATED_INDEPENDENT;
     sd.FgBg = SSF_FGBG_BACK;
     sd.TraceOpt = SSF_TRACEOPT_NONE;
-    sd.PgmTitle = "REBOOTCOM";
+    sd.PgmTitle = (PSZ)name;
     sd.PgmName = com_path;
     sd.PgmInputs = NULL;
     sd.TermQ = NULL;
     sd.Environment = NULL;
     sd.InheritOpt = SSF_INHERTOPT_PARENT;
-    /* DOS VDM session — .COM gets real I/O privilege. */
     sd.SessionType = SSF_TYPE_VDM;
     sd.PgmControl = SSF_CONTROL_MINIMIZE | SSF_CONTROL_INVISIBLE;
     sd.ObjectBuffer = obj;
     sd.ObjectBuffLen = sizeof(obj);
 
-    log_line("DosStartSession REBOOT.COM (VDM)");
+    sprintf(msg, "DosStartSession %s (VDM)", name);
+    log_line(msg);
     rc = DosStartSession(&sd, &sess_id, &pid);
     sprintf(msg, "  DosStartSession rc=%lu pid=%lu", (unsigned long)rc, (unsigned long)pid);
     log_line(msg);
@@ -166,14 +155,12 @@ static APIRET try_dos_com_reset(void) {
 int main(int argc, char **argv) {
     set_paths(argc > 0 ? argv[0] : NULL);
     log_line("=== REBOOT.EXE starting ===");
-
+    log_line("=== mode=reboot ===");
     DosSleep(1500);
-
-    try_oemhlp();
-    try_dos(0);
-    /* Last resort: DOS COM pulse-reset (IOCTL above is unreliable here). */
-    try_dos_com_reset();
-
+    try_oemhlp_reboot();
+    try_dos_reboot();
+    write_com("REBOOT.COM", g_reboot_com, sizeof(g_reboot_com));
+    start_vdm_com("REBOOT.COM");
     DosSleep(5000);
     log_line("=== REBOOT.EXE finished: still alive (FAILED) ===");
     return 1;

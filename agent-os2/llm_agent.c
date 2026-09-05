@@ -8,8 +8,8 @@
  *
  * Supported: auth, PING, QUIT, EXEC, EXECDETACH, PUT, GET, SYSINFO,
  *            SCREENSHOT, CLICK, KEY, TYPE, WINCLOSE, WINLIST, PSLIST,
- *            PSKILL, REBOOT
- * Unsupported: CLIPSET, REG*, SHUTDOWN
+ *            PSKILL, CLIPSET, REBOOT
+ * Unsupported: REG*, SHUTDOWN
  */
 
 #define INCL_DOS
@@ -17,8 +17,11 @@
 #define INCL_DOSDEVICES
 #define INCL_DOSPROCESS
 #define INCL_DOSSESMGR
+#define INCL_DOSMEMMGR
+#define INCL_DOSQUEUES
 #define INCL_WIN
 #define INCL_WINSWITCHLIST
+#define INCL_WINCLIPBOARD
 #define INCL_GPI
 #define INCL_DEV
 #include <os2.h>
@@ -125,9 +128,10 @@ static unsigned short local_htons(unsigned short x) {
 #define DEFAULT_PORT     2222
 #define LINE_MAX_LEN     512
 #define READ_CHUNK       4096
-#define OUT_TMP          "LLMOUT.TMP"
+#define OUT_TMP          "EXEC_OUT.TMP"
 #define PID_FILE         "AGENT.PID"
 #define ERR_NOSUP        "ERR:not supported on OS/2\n"
+#define OS2_CMD_EXE      "C:\\OS2\\CMD.EXE"
 
 static char g_token[128] = "";
 static unsigned short g_port = DEFAULT_PORT;
@@ -220,6 +224,17 @@ static void load_config(const char *argv0) {
         }
     }
     fclose(f);
+}
+
+/* DosStartSession relaunch often inherits an empty PATH/COMSPEC, which
+ * breaks Watcom system() (it looks up CMD.EXE via the environment). */
+static void ensure_shell_env(void) {
+    char *comspec = getenv("COMSPEC");
+    char *path = getenv("PATH");
+    if (!comspec || !comspec[0])
+        putenv("COMSPEC=C:\\OS2\\CMD.EXE");
+    if (!path || !path[0])
+        putenv("PATH=C:\\OS2;C:\\OS2\\SYSTEM;C:\\OS2\\MDOS;C:\\");
 }
 
 static void write_pid_file(void) {
@@ -352,28 +367,93 @@ static int run_exec_detach(const char *cmdline) {
     return 0;
 }
 
+#define OS2_CMD_EXE      "C:\\OS2\\CMD.EXE"
+#define EXEC_CMD_NAME    "LLMEXEC.CMD"
+#define EXEC_DONE_NAME   "LLMDONE.FLG"
+
 static int run_exec(const char *cmdline) {
     FILE *f;
-    int rc;
+    int exit_code = 0;
     size_t n;
-    char hdr[32];
+    char hdr[80];
+    char inputs[64];
+    char cmdpath[160];
+    char donepath[160];
+    char obj[128];
+    STARTDATA sd;
+    ULONG sess_id = 0;
+    PID pid = 0;
+    APIRET arc;
+    int i;
+    char *dir = g_exedir[0] ? g_exedir : "C:\\llmagent";
 
-    strcpy(g_tmppath, OUT_TMP);
-    if (strlen(cmdline) + strlen(g_tmppath) + 24 >= sizeof(g_cmd)) {
+    sprintf(g_tmppath, "%s\\%s", dir, OUT_TMP);
+    sprintf(cmdpath, "%s\\%s", dir, EXEC_CMD_NAME);
+    sprintf(donepath, "%s\\%s", dir, EXEC_DONE_NAME);
+
+    if (strlen(cmdline) + strlen(g_tmppath) + 32 >= 1000) {
         send_cstr("ERR:command too long (use a .CMD)\n");
         return -1;
     }
-    sprintf(g_cmd, "CMD.EXE /C \"%s > %s\"", cmdline, g_tmppath);
-    rc = system(g_cmd);
+
+    remove(g_tmppath);
+    remove(donepath);
+
+    /*
+     * DosExecPgm/system() are unreliable after DosStartSession relaunch.
+     * Independent StartSession works (see EXECDETACH) but returns pid=0 and
+     * TermQ never fires here — so wrap the command in a .CMD that writes a
+     * done flag when finished, then poll for that flag.
+     */
+    f = fopen(cmdpath, "wb");
+    if (!f) {
+        send_cstr("ERR:cannot write LLMEXEC.CMD\n");
+        return -1;
+    }
+    fprintf(f, "%s > %s\r\n", cmdline, g_tmppath);
+    fprintf(f, "echo done > %s\r\n", donepath);
+    fclose(f);
+
+    sprintf(inputs, " /C %s", cmdpath);
+
+    memset(&sd, 0, sizeof(sd));
+    sd.Length = sizeof(sd);
+    sd.Related = SSF_RELATED_INDEPENDENT;
+    sd.FgBg = SSF_FGBG_BACK;
+    sd.TraceOpt = SSF_TRACEOPT_NONE;
+    sd.PgmTitle = (PSZ)"llm_exec";
+    sd.PgmName = (PSZ)OS2_CMD_EXE;
+    sd.PgmInputs = (PBYTE)inputs;
+    sd.TermQ = NULL;
+    sd.Environment = NULL;
+    sd.InheritOpt = SSF_INHERTOPT_PARENT;
+    sd.SessionType = SSF_TYPE_WINDOWABLEVIO;
+    sd.PgmControl = SSF_CONTROL_MINIMIZE | SSF_CONTROL_INVISIBLE;
+    sd.ObjectBuffer = obj;
+    sd.ObjectBuffLen = sizeof(obj);
+
+    arc = DosStartSession(&sd, &sess_id, &pid);
+    if (arc != 0) {
+        sprintf(hdr, "ERR:DosStartSession EXEC rc=%lu\n", (unsigned long)arc);
+        send_cstr(hdr);
+        return -1;
+    }
+
+    for (i = 0; i < 600; i++) { /* ~60s */
+        f = fopen(donepath, "rb");
+        if (f) {
+            fclose(f);
+            DosSleep(150);
+            break;
+        }
+        DosSleep(100);
+    }
+    /* Leave LLMEXEC.CMD for diagnosis if output missing; always clear done. */
+    remove(donepath);
 
     f = fopen(g_tmppath, "rb");
     if (!f) {
-        sprintf(g_cmd, "CMD.EXE /C %s > %s", cmdline, g_tmppath);
-        rc = system(g_cmd);
-        f = fopen(g_tmppath, "rb");
-    }
-    if (!f) {
-        sprintf(hdr, "LEN:0\nEXIT:%d\n", rc);
+        sprintf(hdr, "LEN:0\nEXIT:%d\n", exit_code);
         send_cstr(hdr);
         return 0;
     }
@@ -387,7 +467,7 @@ static int run_exec(const char *cmdline) {
     }
     fclose(f);
     remove(g_tmppath);
-    sprintf(hdr, "EXIT:%d\n", rc);
+    sprintf(hdr, "EXIT:%d\n", exit_code);
     send_cstr(hdr);
     return 0;
 }
@@ -931,9 +1011,7 @@ done:
 }
 
 /*
- * Soft reboot: detach REBOOT.EXE so DosShutdown/IOCTL run in a process
- * with no listen socket. In-process DosShutdown wedged the guest (FS lock)
- * while DOS$ IOCTL alone returned 0 without actually resetting.
+ * Soft reboot: detach REBOOT.EXE (OEMHLP/DOS$ IOCTL, then kbd .COM).
  */
 static void handle_reboot(void) {
     char path[160];
@@ -942,7 +1020,7 @@ static void handle_reboot(void) {
     PID pid = 0;
     APIRET rc;
     char obj[128];
-    char reply[80];
+    char reply[96];
 
     sprintf(path, "%s\\REBOOT.EXE", g_exedir[0] ? g_exedir : "C:\\llmagent");
 
@@ -968,6 +1046,69 @@ static void handle_reboot(void) {
         send_cstr(reply);
         return;
     }
+    send_cstr("OK\n");
+}
+
+static void handle_shutdown(void) {
+    send_cstr(ERR_NOSUP);
+}
+
+/* CLIPSET <text>: put plain text on the PM clipboard (pair with KEY for paste). */
+static void handle_clipset(const char *text) {
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    char *mem = NULL;
+    size_t len;
+    ULONG alloc;
+    APIRET rc;
+    ULONG flags;
+
+    while (*text == ' ') text++;
+    len = strlen(text) + 1;
+    alloc = (ULONG)((len + 4095U) & ~4095U);
+    if (alloc == 0)
+        alloc = 4096;
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    /* Giveable+gettable so other processes can map the block. */
+    flags = PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GIVEABLE | OBJ_GETTABLE;
+    rc = DosAllocSharedMem((PPVOID)&mem, NULL, alloc, flags);
+    if (rc != 0 || !mem) {
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:DosAllocSharedMem failed\n");
+        return;
+    }
+    memset(mem, 0, alloc);
+    memcpy(mem, text, len);
+
+    if (!WinOpenClipbrd(hab)) {
+        DosFreeMem(mem);
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:WinOpenClipbrd failed\n");
+        return;
+    }
+    WinEmptyClipbrd(hab);
+    if (!WinSetClipbrdData(hab, (ULONG)mem, CF_TEXT, CFI_POINTER)) {
+        WinCloseClipbrd(hab);
+        DosFreeMem(mem);
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:WinSetClipbrdData failed\n");
+        return;
+    }
+    /* System owns mem after successful Set with CFI_POINTER. */
+    WinCloseClipbrd(hab);
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
     send_cstr("OK\n");
 }
 
@@ -1359,11 +1500,11 @@ static void handle_client(void) {
             handle_reboot();
             break;
         } else if (strcmp(g_line, "SHUTDOWN") == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_shutdown();
         } else if (strcmp(g_line, "WINLIST") == 0) {
             handle_winlist();
         } else if (strncmp(g_line, "CLIPSET ", 8) == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_clipset(g_line + 8);
         } else if (strncmp(g_line, "REGGET\t", 7) == 0 || strncmp(g_line, "REGSET\t", 7) == 0) {
             send_cstr(ERR_NOSUP);
         } else if (strcmp(g_line, "PING") == 0) {
@@ -1438,6 +1579,7 @@ int main(int argc, char **argv) {
     load_config(argc > 0 ? argv[0] : NULL);
     /* DosStartSession often leaves cwd as \, which breaks EXEC's LLMOUT.TMP */
     if (g_exedir[0]) DosSetCurrentDir(g_exedir);
+    ensure_shell_env();
     if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "/?") == 0)) {
         printf("llm_agent-os2 - OS/2 exec/file/screenshot agent (SO32DLL)\n");
         printf("Usage: LLMAGENT.EXE\n");
