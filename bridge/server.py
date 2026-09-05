@@ -1,6 +1,6 @@
 """MCP bridge exposing shell exec + file transfer + screenshot + input
-injection on legacy Windows boxes (95/98/ME/NT4/2000/XP) and FreeDOS
-to an LLM tool-calling harness.
+injection on legacy Windows boxes (95/98/ME/NT4/2000/XP), FreeDOS, and OS/2
+(1.3 and 2.11) to an LLM tool-calling harness.
 
 Supports multiple legacy machines from one bridge process: each is a
 section in machines.ini (see machines.ini.example), and every tool takes
@@ -9,13 +9,19 @@ to discover what's configured.
 
 Everything goes through one channel per machine: llm_agent
 (agent/llm_agent.c on Windows, agent-dos/llm_agent.c on FreeDOS,
-agent-os2/llm_agent.c on OS/2), a tiny token-authed TCP service, assumed
-to be on an isolated lab/host-only network (see docs/ARCHITECTURE.md for
-the trust model). On Windows, screenshot/click/key/type are built into
-the agent itself (GDI capture + mouse_event/keybd_event). On FreeDOS,
-screenshot is a text-mode render and key/type stuff the BIOS keyboard
-buffer; on OS/2, exec/file/sysinfo are supported and several GUI/Windows
-tools return ERR - see docs/ARCHITECTURE.md / agent-dos / agent-os2.
+agent-os2/llm_agent.c on OS/2 2.11, agent-os2-13/llm_agent.c on OS/2 1.3 -
+a separate 16-bit build, since 1.3 predates the 32-bit kernel entirely), a
+tiny token-authed TCP service, assumed to be on an isolated lab/host-only
+network (see docs/ARCHITECTURE.md for the trust model). On Windows,
+screenshot/click/key/type are built into the agent itself (GDI capture +
+mouse_event/keybd_event). On FreeDOS, screenshot is a text-mode render and
+key/type stuff the BIOS keyboard buffer; on OS/2 2.11, most GUI/window/
+process tools work over 32-bit PM, with registry/shutdown returning ERR;
+OS/2 1.3 supports the same set minus CLIPSET (no 16-bit equivalent
+found/validated yet); self-update works there but has one intermittent
+failure that rolls back safely, so check the result rather than looping on
+it - see agent-os2-13/README.md - see docs/ARCHITECTURE.md / agent-dos /
+agent-os2 / agent-os2-13.
 
 LEGACY_MACHINES_FILE points at the ini file; defaults to machines.ini next
 to this script.
@@ -60,19 +66,25 @@ srv = MCPServer(
     "retro-ssh-server",
     instructions=(
         "Tools for driving legacy machines on an isolated lab network: "
-        "Windows 95/98/ME/NT4/2000/XP, FreeDOS (agent-dos), and OS/2 2.x "
-        "(agent-os2). Run shell commands, transfer files, take screenshots, "
+        "Windows 95/98/ME/NT4/2000/XP, FreeDOS (agent-dos), OS/2 2.x "
+        "(agent-os2), and OS/2 1.3 (agent-os2-13, a separate 16-bit build). "
+        "Run shell commands, transfer files, take screenshots, "
         "and send keyboard input. Every tool takes a `machine` argument "
         "naming which configured machine to target - call "
         "legacy_list_machines first if you don't already know the name. "
         "Use legacy_screenshot before legacy_click/legacy_key when you "
         "don't already know current on-screen coordinates. FreeDOS agents "
         "support ping/exec/upload/download/sysinfo/reboot plus text-mode "
-        "screenshot and key/type; OS/2 agents support ping/exec/exec_detach/"
-        "upload/download/sysinfo/screenshot/click/key/type/winlist/pslist/"
-        "pskill/reboot/clipboard/self-update. FreeDOS "
-        "clipboard/registry/shutdown and OS/2 registry/shutdown still return "
-        "errors. FreeDOS "
+        "screenshot and key/type; OS/2 2.11 agents support ping/exec/"
+        "exec_detach/upload/download/sysinfo/screenshot/click/key/type/"
+        "winlist/pslist/pskill/reboot/clipboard/self-update; OS/2 1.3 "
+        "agents support the same set except clipboard (no 16-bit equivalent "
+        "available/validated yet - returns an error) and self-update "
+        "(works, but with one intermittent failure that rolls back "
+        "safely - check legacy_self_update's result rather than assuming "
+        "it succeeded). "
+        "FreeDOS clipboard/registry/shutdown and OS/2 registry/shutdown "
+        "still return errors. FreeDOS "
         "screenshots are "
         "rendered "
         "from the 80x25 text screen, not a GUI framebuffer. Note: a "
@@ -564,6 +576,78 @@ def legacy_disable_autologon(machine: str) -> str:
     return f"disabled Winlogon autologon on {machine}"
 
 
+def _read_agent_pid(agent: AgentClient, remote_dir: str) -> str | None:
+    """The PID the agent wrote to AGENT.PID when it started listening.
+
+    A bare ping is not a restart signal: the agent being replaced answers
+    it perfectly well right up until it exits, so polling for
+    reachability straight after launching the updater reports success
+    against the *outgoing* process. Confirmed live - two self-updates back
+    to back had the second one connect mid-swap and fail on a reset
+    connection. A changed PID is proof a new process is answering."""
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            local = Path(td) / "AGENT.PID"
+            agent.get(f"{remote_dir}\\AGENT.PID", local)
+            return local.read_text().strip() or None
+    except (AgentAuthError, AgentProtocolError, OSError):
+        return None
+
+
+def _wait_for_replaced_agent(
+    machine: str,
+    remote_dir: str,
+    old_pid: str | None,
+    timeout_seconds: int = 120,
+    interval_seconds: int = 5,
+    settle_seconds: int = 10,
+) -> str:
+    """Wait until a *different* agent process is answering on `machine`.
+
+    Sits out the first `settle_seconds` deliberately. The legacy agents
+    are single-threaded - one connection at a time - and during the swap
+    the one being replaced is busy exiting while the updater talks to it
+    over that same socket. Polling into that window is not free: an update
+    run that was polled every 3s from the moment it launched left the
+    updater dead just after SELFEXIT with no agent running at all, where
+    the same update with nothing connecting to it succeeded repeatedly.
+    Ten seconds is comfortably longer than a whole successful swap (~10s
+    end to end, of which the file work is a few hundred ms).
+
+    Falls back to plain reachability if the PID couldn't be read before
+    the swap, or if the agent doesn't publish one - better a weaker check
+    than a spurious failure."""
+    time.sleep(max(0, settle_seconds))
+    if old_pid is None:
+        return legacy_wait_for_agent(
+            machine, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds
+        )
+
+    deadline = time.time() + max(1, timeout_seconds)
+    interval = max(1, interval_seconds)
+    last = "no response yet"
+    attempts = 0
+    while time.time() < deadline:
+        attempts += 1
+        try:
+            new_pid = _read_agent_pid(_agent(machine), remote_dir)
+            if new_pid and new_pid != old_pid:
+                return (
+                    f"agent restarted on {machine} after {attempts} attempt(s): "
+                    f"pid {old_pid} -> {new_pid}"
+                )
+            last = f"still pid {new_pid}" if new_pid else "agent not answering"
+        except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+            last = str(e)
+        time.sleep(interval)
+    return (
+        f"timed out waiting for a restarted agent on {machine} "
+        f"(was pid {old_pid}); last: {last}"
+    )
+
+
 @srv.tool()
 def legacy_self_update(
     machine: str,
@@ -602,6 +686,7 @@ def legacy_self_update(
         agent = _agent(machine)
         agent.put(new_agent_local_path, remote_new_agent)
         agent.put(update_exe_local_path, remote_update_exe)
+        old_pid = _read_agent_pid(agent, remote_dir)
         result = agent.exec_detach(
             f'"{remote_update_exe}" "{remote_new_agent}" "{remote_target_agent}"'
         )
@@ -614,7 +699,7 @@ def legacy_self_update(
 
     msg = f"update launched on {machine}: {result.reply}"
     if wait_for_agent:
-        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=90, interval_seconds=3)
+        msg += "\n" + _wait_for_replaced_agent(machine, remote_dir, old_pid)
     return msg
 
 

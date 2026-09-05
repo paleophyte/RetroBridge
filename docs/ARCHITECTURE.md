@@ -72,6 +72,227 @@ OS/2` (`DosShutdown` hard-locks; `WinShutdownSystem` needs interactive
 session-close confirms we could not automate reliably). See
 `agent-os2/README.md`.
 
+## OS/2 1.3 agent (`agent-os2-13/`)
+
+Same wire protocol again, for OS/2 1.3 in `agent-os2-13/llm_agent.c` — a
+**separate, 16-bit** build, not a recompile of `agent-os2/` for a smaller
+target: OS/2 1.3 predates the 32-bit kernel entirely (that arrived with
+2.0), so there is no LX/SO32DLL option here at all.
+
+The 2.x agent's README asserts Watcom's PM headers are 32-bit-only. That's
+true of the specific header tree (`%WATCOM%\h\os2`) a 32-bit build points
+at — confirmed directly, it hard-errors (`E1091: This os2.h is for 32-bit
+development only!`) the moment `-bt=os2` (16-bit) is used, even for
+Dos-kernel-only code with no PM involved at all. But Open Watcom ships a
+second, separate 16-bit OS/2 1.x header tree, `%WATCOM%\h\os21x`, that the
+2.x port's own research never tried: a real Dos*/Win*/Gpi* API surface for
+16-bit OS/2, not a stub. Everything in `agent-os2-13/` — including
+screenshot/click/key/type/winlist — is built against those headers.
+
+Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH` (`spawnv`, not
+`DosStartSession` — simpler and needs none of that API's 16-bit
+`STARTDATA`/`PgmInputs` string-building), `PUT` / `GET`, `SYSINFO`
+(`DosGetVersion`), `SCREENSHOT` (16-bit PM `WinGetScreenPS`/`GpiBitBlt` →
+24-bit BMP, using the older non-`2` `BITMAPINFOHEADER` GPI 1.x layout),
+`CLICK`, `KEY`/`TYPE`, `WINCLOSE`, `WINLIST`, `PSLIST` (no
+`DosQProcStatus` equivalent exists in the 16-bit 1.x header set — that
+API is itself undocumented and 2.x-era — but OS/2 1.3 ships a real
+userspace diagnostic utility that solves the same problem: `PSLIST`
+shells out to `C:\OS2\PSTAT.EXE`, confirmed present on the real os2-13
+box, and parses its process/thread table), `PSKILL` (`DosKillProcess` —
+works given a PID from elsewhere, including `PSLIST`'s own output now),
+`REBOOT` (spawns `IORESET.EXE` detached, which calls `DosShutdown` and
+then pulses the 8042's reset line — `out 0xFE` to port `0x64` — from a
+ring-2 I/O privilege segment in `IOSEG.DLL`; see
+`agent-os2-13/README.md` "REBOOT, via a ring-2 I/O privilege segment"
+for the IOPL/call-gate mechanics and the `DosShutdown` ordering rules).
+The earlier real-mode-`.COM`-in-a-DOS-box approach described here could
+never have worked on this machine: its `CONFIG.SYS` has
+`PROTECTONLY=YES`, so there is no DOS compatibility box at all, and no
+DOS binary of any kind will start. Self-update follows the
+same `update.exe` pattern as the other agents — see "Bugs found via live
+testing on os2-13" below for why it ended up using `SELFEXIT` over the
+wire instead of `DosKillProcess`, and why it's still not reliable
+end-to-end.
+
+Not implemented: `CLIPSET` (16-bit PM's clipboard convention needs a
+giveable real-mode-style segment —
+`DosAllocSeg(SEG_GIVEABLE)`/`DosGiveSeg`/`CFI_HANDLE`, not 2.x's flat
+`DosAllocSharedMem`/`CFI_POINTER` — deliberately left unshipped rather than
+guessed at), `REG*`, `SHUTDOWN`.
+
+**Verification status**: link-tested (real `%WATCOM%\h\os21x` headers +
+`%WATCOM%\lib286\os2\os2.lib`, initially with a stub socket library, later
+against the guest's actual `TCPIPDLL.DLL`) before ever touching real
+hardware, then **run live against the real os2-13 box** (auth / `PING` /
+`QUIT`, `EXEC`, `PUT`/`GET`, `SYSINFO`, `EXECDETACH`, `KEY`/`TYPE`,
+`WINLIST`, `SCREENSHOT`, `PSLIST` — 15/15 in `agent-os2-13/_smoke_test.py`,
+including the PM-based commands this project's own 2.x research previously
+assumed needed 32-bit, and `PSLIST` end-to-end through `PSTAT.EXE`
+correctly reporting the agent's own process each run). `REBOOT` is also
+confirmed live end-to-end through the wire protocol: `OK`, box down ~20s
+later, `STARTUP.CMD` agent answering again ~60s after the command, and no
+`CHKDSK` on the way back up. `CLIPSET` remains unverified live (it isn't
+implemented at all — see above). Self-update is implemented but
+**confirmed broken** — see below.
+
+### Bugs found via live testing on os2-13 (not anticipated in advance)
+
+**Self-update's swap failure was the backup *filename*, not a file lock.**
+`update.exe` renamed the outgoing binary to `<target>.OLD` -
+`LLMAGENT.EXE.OLD` - and Watcom's 16-bit `rename()` rejects a second dot
+with `errno=1` on any file, locked or not, even though the volume is HPFS
+and CMD.EXE's own `REN` accepts that exact name. Every earlier
+investigation had tested the rename with `REN` (which works) while the
+code used `rename()` (which cannot), so the evidence pointed at a lock
+that was never there. Isolated with a throwaway file and no agent
+involved. Replacing the extension instead of appending to it
+(`LLMAGENT.BAK`) makes the swap succeed on the *first* attempt.
+
+Two things made this hard to see, both worth reusing. First, `SELFEXIT`
+kills the very agent you would use to observe the update, so diagnosis
+needed an **independent observer agent** - a second copy running from
+another directory on another port - to watch `PSLIST` and the filesystem
+from outside. That immediately showed the old agent leaving the process
+table ~5s in and an unrelated process renaming the file successfully ~2.4s
+later, which killed the lock theory. Second, two confident-sounding
+theories had to be discarded against measurements: that it was a timing
+race (widening the retry window 8s -> 30s changed nothing) and that it was
+caused by `update.exe` being the agent's child (the fixed version works
+fine while still being its child). **When a fix and a diagnosis disagree
+about the mechanism, test the mechanism directly on something trivial
+rather than re-testing the whole flow.**
+
+**Chained self-updates exhaust the agent's file handles, silently.** Each
+generation is spawned by `update.exe`, which was spawned by the previous
+agent, and OS/2 children inherit their parent's open handles; OS/2 1.x
+gives a process 20. Measured from a freshly booted machine, updating
+repeatedly: generations 1-3 healthy, generation 4 unable to open a file at
+all - it could not read back the `AGENT.PID` it had just written - and
+every generation after it dead on arrival. This is *not* a per-request
+leak: 125 requests across `PING`/`GET`/`PUT`/`SYSINFO`/`EXEC` on a single
+agent left it perfectly healthy. The failure mode is the dangerous kind -
+the agent keeps answering `PING` and `SYSINFO` while `PUT`/`GET`/`EXEC`
+all fail and `REBOOT` stops working, because that too has to spawn a
+helper. `update.c` now starts the new agent with
+`DosStartSession(SSF_RELATED_INDEPENDENT, SSF_INHERTOPT_SHELL)` so each
+generation inherits from the shell rather than from the update chain;
+**that fix is built but not yet confirmed live** - see
+`agent-os2-13/README.md`.
+
+**`REBOOT` could not possibly have worked, and the reason was one line of
+`CONFIG.SYS`.** The original implementation tried four genuinely different
+reset mechanisms (8042 pulse reset, Ctrl-Alt-Del scancode injection, BIOS
+warm-boot vector jump, `0xCF9` chipset reset) as real-mode DOS `.COM`
+stubs, and all four failed identically with no visible effect. That
+identical failure was itself the clue: the machine has
+**`PROTECTONLY=YES`**, so it has no DOS compatibility box at all and no
+DOS binary of any kind will start — three of the four never executed a
+single instruction. `spawnl`'s return code was discarded at every call
+site, so nothing ever reported it; a check that a `.COM` even launched
+would have collapsed the whole search immediately. The surviving lesson is
+narrow and practical: **when several independent mechanisms fail in
+exactly the same way, suspect the thing they share, and check the return
+codes you decided not to look at.** Fixed by doing the same 8042 pulse
+reset from protected mode instead, through an OS/2 1.x I/O privilege
+segment — a documented facility the machine was already configured for
+(`IOPL=YES` was in `CONFIG.SYS` all along). See
+`agent-os2-13/README.md`.
+
+**Resetting the hardware silently corrupted a file, then made `CHKDSK` run
+on every boot.** os2-13 runs HPFS386 with a ~4.9MB lazy-write cache. The
+first successful reset came seconds after a `PUT`, and the file came back
+the right length with 16,972 bytes of garbage in it — the directory entry
+had been committed, the data had not. `DosBufReset` is not a fix: it
+flushes file buffers, a layer above the HPFS386 cache, and does not clear
+the dirty-volume flag that `AUTOCHECK` keys on. `CACHE.EXE /LAZY:OFF`
+stops the data loss but still leaves the volume dirty. Only `DosShutdown`
+gives a clean boot — and it brings its own trap, since it leaves the
+filesystem read-only: **one log write after `DosShutdown` blocks forever**
+and the machine sits quiesced and wedged instead of resetting, which
+happened twice before the cause was clear. The IOPL segment likewise has
+to be preloaded *and* called once beforehand, or the first call after the
+shutdown demand-loads it from a disk that is no longer there.
+`IORESET.EXE` now arms a watchdog process before shutting down so the
+worst case is a late reset rather than a hang needing someone at the
+console.
+
+**`SYSINFO` reported `os2_major=30, os2_minor=10` for a real 1.30 system**
+— backwards and unscaled. The original code assumed `DosGetVersion`
+followed the DOS `int21h AH=30h` convention (low byte = major, high byte
+= minor). The real live value decodes as low byte = minor as-is (30),
+high byte = major *generation* number ×10 (10, i.e. "1.x") — confirmed
+against `EXEC ver`'s own report of "1.30" from the same machine at the
+same time. **Reproduced and fixed** — `os2_major`/`os2_minor` now read
+1/30 correctly, verified via a live `SELFEXIT`-driven redeploy (see
+below) and a follow-up `SYSINFO` call.
+
+**Self-update's `DosKillProcess` always failed with `ERROR_NOT_DESCENDANT`
+(rc=305)**, discovered the first time self-update was actually run live,
+not from code review — the exact class of bug this project's own
+"bugs found via live testing" sections keep surfacing. `update.exe` is
+launched via `EXECDETACH`, making it a *child* of the running agent; OS/2
+only allows `DosKillProcess` to kill descendants, never an ancestor, so
+`update.exe` trying to kill its own parent was structurally backwards
+from the start. (The 2.x agent's `update.exe` has the exact same
+`DosKillProcess(DKP_PROCESS, pid)` call and the exact same
+`EXECDETACH`-is-a-child relationship to its own agent — this may well be
+the same latent bug there, just never caught, since that self-update path
+was never confirmed working end-to-end live either.)
+
+Fixed with a new `SELFEXIT` wire command: `update.exe` connects to the
+running agent as an ordinary authenticated client (same token) and asks
+it to exit itself, sidestepping the kill-rights question entirely.
+**Confirmed working live**, twice (`selfexit: agent acknowledged` in
+`UPDATE.LOG`).
+
+**`SELFEXIT`'s first version connected to `127.0.0.1` and hung
+indefinitely.** This 16-bit TCP/IP stack's loopback interface doesn't
+appear to work (or isn't configured) - confirmed live: the connect never
+even errored out, it just hung, leaving an orphaned `update.exe` that
+never appeared in the OS/2 Window List (Ctrl-Esc) yet still held its own
+`.EXE` file locked (a subsequent `PUT` to the same filename failed with
+`ERR:write failed` until a different filename was used instead). Fixed
+by adding a required `host=` line to `LLMAGENT.INI` — the machine's real
+LAN address, which every external client (including this project's own
+bridge) had already been reaching successfully the whole time — read only
+by `update.exe`, not the agent itself. **Confirmed working live** after
+the fix: `SELFEXIT to 10.102.10.199:2222` → `selfexit: agent
+acknowledged`.
+
+**Even after a confirmed-clean `SELFEXIT`, renaming the new binary into
+place still fails - consistently, not intermittently.** Widening the
+retry window from ~8s to ~30s (150 attempts × 200ms) made no difference:
+`renamedOld=0 after 150 attempt(s)`, live, same as the original ~8s
+version. That rules out a simple "OS/2 hasn't released the file handle
+yet" timing race as the sole cause. Leading theory, **not confirmed**:
+`update.exe`'s `start_agent()` step runs unconditionally, even after a
+failed swap, immediately relaunching a fresh process from the same
+still-unswapped binary - so by the time the *next* round's rename is
+attempted, a new process may already hold the file open again, even
+though each individual round's own `SELFEXIT` genuinely killed its own
+target. Couldn't be confirmed at diagnosis time without process-level
+visibility - `PSLIST` didn't exist yet then. It does now (see above); a
+follow-up live attempt with `PSLIST` called before/during/after each step
+(watching for `LLMAGENT`/`LLMNEW` process count growing round over round)
+would likely settle this, but hasn't been done yet.
+**Not yet root-caused or fixed** - self-update remains unreliable
+end-to-end on os2-13 despite `SELFEXIT` itself working; recovering from a
+failed attempt needed manual console intervention (stop the stuck agent,
+`PUT` the new binary under a different name, rename and restart by hand)
+twice during this investigation. Treat `legacy_self_update` against
+`os2-13` as broken until this is root-caused with direct console
+observation during a live attempt.
+
+A related, smaller finding from the same session: a freshly `spawnl`'d
+agent occasionally failed its own `bind(2222)` immediately after the
+previous instance exited. Worked around with a ~60s bind retry loop in
+`server_main()` (same shape as the Windows agent's own
+`WSAStartup`/`bind` retry loop for its analogous early-boot race - see
+"Bugs found via live testing" further up) — but this alone did not fix
+the rename problem above, confirming they're at least partly separate
+issues.
+
 ## Screenshot/input: built into the agent, not VNC (revised)
 
 **Original decision**: use an externally-installed VNC server (TightVNC
