@@ -68,10 +68,12 @@ srv = MCPServer(
         "Use legacy_screenshot before legacy_click/legacy_key when you "
         "don't already know current on-screen coordinates. FreeDOS agents "
         "support ping/exec/upload/download/sysinfo/reboot plus text-mode "
-        "screenshot and key/type; OS/2 agents support ping/exec/upload/"
-        "download/sysinfo. click/winlist/clipboard/registry/pslist/pskill/"
-        "shutdown/exec_detach (and on OS/2 also screenshot/key/type/reboot) "
-        "return errors on those agents. FreeDOS screenshots are rendered "
+        "screenshot and key/type; OS/2 agents support ping/exec/exec_detach/"
+        "upload/download/sysinfo/screenshot/click/reboot/self-update (and "
+        "KEY esc). winlist/clipboard/registry/pslist/pskill/shutdown/type "
+        "(and most KEY specs) return errors on those agents. FreeDOS "
+        "screenshots are "
+        "rendered "
         "from the 80x25 text screen, not a GUI framebuffer. Note: a "
         "synthetic ctrl-alt-del will not unlock a locked/secure-desktop "
         "Windows screen - that's an OS security measure, not a bug. "
@@ -568,26 +570,32 @@ def legacy_self_update(
     update_exe_local_path: str,
     remote_dir: str,
     wait_for_agent: bool = True,
+    new_agent_name: str = "llm_agent_new.exe",
+    update_exe_name: str = "update.exe",
+    target_agent_name: str = "llm_agent.exe",
 ) -> str:
     """Update the agent on the named legacy machine in place: uploads a
-    new llm_agent.exe and update.exe (build both with `make` in agent/),
-    then launches update.exe detached to stop the running agent
-    (SCM stop+poll on NT-family, process kill on 9x), swap the binary,
-    and restart it. remote_dir is the absolute directory the agent is
-    currently deployed in (e.g. wherever llm_agent.ini lives) - there's
-    no remote way to ask the agent where it's installed, so this has to
-    be supplied. The connection carrying this call completes and closes
-    cleanly before the old agent process actually stops, so the update
-    itself won't be interrupted by its own triggering request. If
-    wait_for_agent is True, polls afterward (like legacy_wait_for_agent)
-    until the new agent responds - useful confirmation the swap actually
-    worked, since a failed swap leaves the OLD agent running (update.exe
-    restores its backup on failure) rather than leaving the machine with
-    no agent at all."""
+    new agent binary and update helper, then launches the helper detached
+    to stop the running agent, swap the binary, and restart it.
+
+    On Windows, build both with `make` in agent/. On OS/2, build with
+    agent-os2/build.bat (produces llm_agent.exe + update.exe). remote_dir
+    is the absolute directory the agent is currently deployed in (e.g.
+    C:\\llmagent) - there's no remote way to ask the agent where it's
+    installed, so this has to be supplied.
+
+    Optional *_name args set the remote filenames (defaults match the
+    Windows layout). For OS/2 8.3 deploys use e.g. new_agent_name=
+    'LLMNEW.EXE', update_exe_name='UPDATE.EXE', target_agent_name=
+    'LLMAGENT.EXE'.
+
+    The connection carrying this call completes and closes cleanly before
+    the old agent process actually stops. If wait_for_agent is True, polls
+    afterward until the new agent responds."""
     remote_dir = remote_dir.rstrip("\\")
-    remote_new_agent = f"{remote_dir}\\llm_agent_new.exe"
-    remote_update_exe = f"{remote_dir}\\update.exe"
-    remote_target_agent = f"{remote_dir}\\llm_agent.exe"
+    remote_new_agent = f"{remote_dir}\\{new_agent_name}"
+    remote_update_exe = f"{remote_dir}\\{update_exe_name}"
+    remote_target_agent = f"{remote_dir}\\{target_agent_name}"
 
     try:
         agent = _agent(machine)
@@ -605,7 +613,7 @@ def legacy_self_update(
 
     msg = f"update launched on {machine}: {result.reply}"
     if wait_for_agent:
-        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=60, interval_seconds=3)
+        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=90, interval_seconds=3)
     return msg
 
 

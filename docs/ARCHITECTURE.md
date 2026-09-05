@@ -60,8 +60,11 @@ Same wire protocol for OS/2 2.11 in `agent-os2/llm_agent.c`, built with
 Open Watcom as a **32-bit OS/2 LX** executable linked against IBM
 **SO32DLL**/**TCP32DLL** (Socket/MPTS) and PM for screenshots.
 
-Implemented: auth / `PING` / `QUIT`, `EXEC`, `PUT` / `GET`, `SYSINFO`
-(`os_family=os2`), `SCREENSHOT` (PM desktop → 24-bit BMP). Other commands
+Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH`, `PUT` / `GET`, `SYSINFO`
+(`os_family=os2`), `SCREENSHOT` (PM desktop → 24-bit BMP), `CLICK`, `KEY`
+(`esc`/`escape`), `REBOOT` (`DosShutdown` + `DOS$` IOCTL). Self-update uses a
+separate `update.exe` helper (same pattern as Windows `agent/update.c`), driven
+by `legacy_self_update`. Other commands
 return `ERR:not supported on OS/2`. See `agent-os2/README.md`.
 
 ## Screenshot/input: built into the agent, not VNC (revised)
@@ -239,8 +242,16 @@ stop the old process, swap the file, start the new one. Deliberately a
 can't overwrite an EXE file while it's the one currently executing, so
 something *other than* the running agent has to do the swap.
 
+OS/2 has the same helper under `agent-os2/update.c` (`UPDATE.EXE`): the
+agent writes `AGENT.PID` on listen; the helper `DosKillProcess`es that
+PID, renames with rollback, and `DosStartSession`s the new binary.
+`EXECDETACH` on OS/2 uses an independent `DosStartSession` so the helper
+survives the kill. `legacy_self_update` accepts optional remote filename
+overrides for 8.3 names (`LLMNEW.EXE` / `UPDATE.EXE` / `LLMAGENT.EXE`).
+
 Usage: `update.exe <new-exe-path> [target-exe-path]`. `target-exe-path`
-defaults to `llm_agent.exe` next to `update.exe` itself if omitted. Both
+defaults to `llm_agent.exe` next to `update.exe` itself if omitted (Windows
+only — OS/2 requires both paths). Both
 paths must be absolute — a service's default working directory is
 `system32`, not wherever the agent/update.exe actually live (the same
 gotcha `load_config()` already has to work around for

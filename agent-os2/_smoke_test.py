@@ -105,8 +105,7 @@ def main() -> int:
     expect_err("GET missing", lambda: c.get(r"C:\NOPEZZZ.TXT", local_dn))
     expect_err("TYPE unsupported", lambda: c.type_text("x"))
     expect_err("KEY unsupported", lambda: c.key("enter"))
-    expect_err("EXECDETACH unsupported", lambda: c.exec_detach("echo hi"))
-    expect_err("CLICK unsupported", lambda: c.click(10, 10))
+    # EXECDETACH / CLICK are supported
     expect_err("WINLIST unsupported", lambda: c.winlist())
     expect_err("CLIPSET unsupported", lambda: c.clipboard_set("x"))
     expect_err("PSLIST unsupported", lambda: c.pslist())

@@ -18,8 +18,21 @@ desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 | `PUT` / `GET` | File transfer |
 | `SYSINFO` | `os_family=os2`, version, C: disk space |
 | `SCREENSHOT` | Full PM desktop via `WinGetScreenPS` → 24-bit BMP |
+| `CLICK` | PM `WinSetPointerPos` + `BM_CLICK` / button up-down (top-left coords) |
+| `KEY` | `esc` / `escape` only — dismiss focused dialog / titled `Search` |
+| `REBOOT` | Soft reset via `DosShutdown` + `DOS$` IOCTL (`DOS.SYS`) |
+| `EXECDETACH` | Independent session via `DosStartSession` (for `UPDATE.EXE`) |
 
-Everything else returns `ERR:not supported on OS/2`.
+The agent **minimizes itself** after listen (and `UPDATE.EXE` /
+`EXECDETACH` / `STARTUP.CMD` start it with `/MIN` or `SSF_CONTROL_MINIMIZE`).
+
+Self-update: build also produces `update.exe`. Bridge tool
+`legacy_self_update` PUTs `LLMNEW.EXE` + `UPDATE.EXE`, then
+`EXECDETACH`s the helper, which kills the old agent via `AGENT.PID`,
+swaps the binary, and restarts `LLMAGENT.EXE`.
+
+Everything else returns `ERR:not supported on OS/2` (including `TYPE` /
+`WINLIST` / most `KEY` specs).
 
 ## Build (Open Watcom on host)
 
@@ -33,7 +46,7 @@ cd C:\Users\admin\code\retro-ssh-server\agent-os2
 build.bat
 ```
 
-Produces `llm_agent.exe` (OS/2 LX). Floppy:
+Produces `llm_agent.exe` and `update.exe` (OS/2 LX). Floppy:
 
 ```bat
 ..\bridge\.venv\Scripts\python.exe make_floppy.py
@@ -42,8 +55,18 @@ Produces `llm_agent.exe` (OS/2 LX). Floppy:
 ## Deploy
 
 1. TCP/IP up; `SO32DLL.DLL` on `LIBPATH` (normally `C:\MPTN\DLL`).
-2. Copy `LLMAGENT.EXE` + `LLMAGENT.INI` to e.g. `C:\LLM\`.
-3. Run `LLMAGENT.EXE` from an OS/2 window.
+2. Copy `LLMAGENT.EXE` + `LLMAGENT.INI` to e.g. `C:\llmagent\`.
+3. Run `LLMAGENT.EXE` from an OS/2 window (or `STARTUP.CMD`).
+
+## Self-update (from host)
+
+```python
+# after build.bat — use 8.3 names matching the guest deploy
+from agent_client import AgentClient
+# or bridge tool legacy_self_update(..., remote_dir=r"C:\llmagent",
+#   new_agent_name="LLMNEW.EXE", update_exe_name="UPDATE.EXE",
+#   target_agent_name="LLMAGENT.EXE")
+```
 
 ## Why 32-bit?
 

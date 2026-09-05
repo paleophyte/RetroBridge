@@ -30,3 +30,10 @@ wlink @llm_agent.lnk
 if errorlevel 1 exit /b 1
 echo Built llm_agent.exe ^(32-bit OS/2 LX^)
 dir llm_agent.exe
+
+wcc386 -bt=os2v2 -zq -i=c:\watcom\h\os2 update.c
+if errorlevel 1 exit /b 1
+wlink @update.lnk
+if errorlevel 1 exit /b 1
+echo Built update.exe ^(self-update helper^)
+dir update.exe

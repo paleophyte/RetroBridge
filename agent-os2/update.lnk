@@ -1,0 +1,5 @@
+system os2v2
+option quiet
+option stack=16384
+name update
+file update

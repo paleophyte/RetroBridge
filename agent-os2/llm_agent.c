@@ -6,14 +6,18 @@
  *
  * 32-bit OS/2 (LX) + IBM SO32DLL/TCP32DLL sockets + PM screen capture.
  *
- * Supported: auth, PING, QUIT, EXEC, PUT, GET, SYSINFO, SCREENSHOT
- * Unsupported: EXECDETACH, CLICK, WINLIST, CLIPSET, REG*, PSLIST,
- *              PSKILL, SHUTDOWN, KEY, TYPE, REBOOT
+ * Supported: auth, PING, QUIT, EXEC, EXECDETACH, PUT, GET, SYSINFO,
+ *            SCREENSHOT, CLICK, KEY (esc), WINCLOSE, REBOOT
+ * Unsupported: WINLIST, CLIPSET, REG*, PSLIST, PSKILL, SHUTDOWN, TYPE
  */
 
 #define INCL_DOS
+#define INCL_DOSFILEMGR
+#define INCL_DOSDEVICES
 #define INCL_DOSPROCESS
+#define INCL_DOSSESMGR
 #define INCL_WIN
+#define INCL_WINSWITCHLIST
 #define INCL_GPI
 #define INCL_DEV
 #include <os2.h>
@@ -55,6 +59,7 @@ static unsigned short local_htons(unsigned short x) {
 #define LINE_MAX_LEN     512
 #define READ_CHUNK       4096
 #define OUT_TMP          "LLMOUT.TMP"
+#define PID_FILE         "AGENT.PID"
 #define ERR_NOSUP        "ERR:not supported on OS/2\n"
 
 static char g_token[128] = "";
@@ -148,6 +153,136 @@ static void load_config(const char *argv0) {
         }
     }
     fclose(f);
+}
+
+static void write_pid_file(void) {
+    char path[160];
+    FILE *f;
+    PTIB ptib = NULL;
+    PPIB ppib = NULL;
+    PID pid = 0;
+
+    if (DosGetInfoBlocks(&ptib, &ppib) == 0 && ppib) {
+        pid = ppib->pib_ulpid;
+    }
+    sprintf(path, "%s\\%s", g_exedir, PID_FILE);
+    f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "%lu\n", (unsigned long)pid);
+    fclose(f);
+}
+
+/* Collapse our VIO session to the Minimized Window Viewer so a normal
+ * boot/self-update doesn't leave a console covering the desktop. */
+static void minimize_self(void) {
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    PTIB ptib = NULL;
+    PPIB ppib = NULL;
+    PID pid;
+    HSWITCH hsw;
+    SWCNTRL swctl;
+
+    if (DosGetInfoBlocks(&ptib, &ppib) != 0 || !ppib) return;
+    pid = ppib->pib_ulpid;
+
+    hab = WinInitialize(0);
+    if (!hab) return;
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    DosSleep(200); /* let the frame finish creating before we poke it */
+
+    hsw = WinQuerySwitchHandle(NULLHANDLE, pid);
+    if (hsw != NULLHANDLE) {
+        memset(&swctl, 0, sizeof(swctl));
+        if (WinQuerySwitchEntry(hsw, &swctl) == 0 && swctl.hwnd != NULLHANDLE) {
+            WinSetWindowPos(swctl.hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                            SWP_MINIMIZE | SWP_DEACTIVATE);
+        }
+    }
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+}
+
+/*
+ * EXECDETACH: independent session via DosStartSession so the child
+ * survives when we later kill this agent (needed for UPDATE.EXE).
+ * Command line may use "quoted" program/arg tokens like the Windows agent.
+ */
+static int next_token(const char **p, char *buf, int buflen) {
+    int i = 0;
+    while (**p == ' ' || **p == '\t') (*p)++;
+    if (**p == '\0') {
+        buf[0] = '\0';
+        return 0;
+    }
+    if (**p == '"') {
+        (*p)++;
+        while (**p && **p != '"' && i < buflen - 1) buf[i++] = *(*p)++;
+        if (**p == '"') (*p)++;
+    } else {
+        while (**p && **p != ' ' && **p != '\t' && i < buflen - 1) buf[i++] = *(*p)++;
+    }
+    buf[i] = '\0';
+    return 1;
+}
+
+static int run_exec_detach(const char *cmdline) {
+    char pgm[260];
+    char inputs[LINE_MAX_LEN];
+    const char *p = cmdline;
+    STARTDATA sd;
+    ULONG sess_id = 0;
+    PID pid = 0;
+    APIRET rc;
+    char reply[64];
+    char obj[260];
+
+    if (!next_token(&p, pgm, sizeof(pgm)) || pgm[0] == '\0') {
+        send_cstr("ERR:empty EXECDETACH command\n");
+        return -1;
+    }
+
+    /* DosStartSession wants PgmInputs starting with a blank. */
+    inputs[0] = ' ';
+    inputs[1] = '\0';
+    {
+        int n = (int)strlen(p);
+        while (n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\t')) n--;
+        if (n > 0 && n < (int)sizeof(inputs) - 2) {
+            memcpy(inputs + 1, p, n);
+            inputs[1 + n] = '\0';
+        }
+    }
+
+    memset(&sd, 0, sizeof(sd));
+    sd.Length = sizeof(sd);
+    sd.Related = SSF_RELATED_INDEPENDENT;
+    sd.FgBg = SSF_FGBG_BACK;
+    sd.TraceOpt = SSF_TRACEOPT_NONE;
+    sd.PgmTitle = (PSZ)"llm_detach";
+    sd.PgmName = (PSZ)pgm;
+    sd.PgmInputs = (PBYTE)inputs;
+    sd.TermQ = NULL;
+    sd.Environment = NULL;
+    sd.InheritOpt = SSF_INHERTOPT_PARENT;
+    sd.SessionType = SSF_TYPE_WINDOWABLEVIO;
+    sd.IconFile = NULL;
+    sd.PgmHandle = 0;
+    sd.PgmControl = SSF_CONTROL_MINIMIZE;
+    sd.ObjectBuffer = obj;
+    sd.ObjectBuffLen = sizeof(obj);
+
+    rc = DosStartSession(&sd, &sess_id, &pid);
+    if (rc != 0) {
+        sprintf(reply, "ERR:DosStartSession rc=%lu\n", (unsigned long)rc);
+        send_cstr(reply);
+        return -1;
+    }
+    sprintf(reply, "OK pid=%lu\n", (unsigned long)pid);
+    send_cstr(reply);
+    return 0;
 }
 
 static int run_exec(const char *cmdline) {
@@ -466,6 +601,226 @@ done:
     return rc;
 }
 
+/*
+ * Soft reboot via DOS.SYS (present on stock OS/2 2.x as DEVICE=...\DOS.SYS).
+ * Category 0xD5 / function 0xAB is the classic "Reboot/2" IOCTL; flush the
+ * filesystem with DosShutdown first. Same pattern as the Hobbes REBOOT.C
+ * sample, ported to the 32-bit DosOpen/DosDevIOCtl signatures.
+ */
+static void handle_reboot(void) {
+    HFILE hf = NULLHANDLE;
+    ULONG action = 0;
+    APIRET rc;
+
+    rc = DosOpen("DOS$", &hf, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_OPEN_IF_EXISTS,
+                 OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE | OPEN_FLAGS_FAIL_ON_ERROR,
+                 NULL);
+    if (rc != 0) {
+        rc = DosOpen("\\DEV\\DOS$", &hf, &action, 0, FILE_NORMAL,
+                     OPEN_ACTION_OPEN_IF_EXISTS,
+                     OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE | OPEN_FLAGS_FAIL_ON_ERROR,
+                     NULL);
+    }
+    if (rc != 0) {
+        send_cstr("ERR:DosOpen DOS$ failed\n");
+        return;
+    }
+
+    send_cstr("OK\n");
+    DosSleep(500); /* let OK clear the NIC before we reset */
+
+    DosShutdown(0);
+    DosDevIOCtl(hf, 0xD5, 0xAB, NULL, 0, NULL, NULL, 0, NULL);
+
+    for (;;) {
+        DosSleep(1000); /* IOCTL should not return; park if it does */
+    }
+}
+
+/*
+ * CLICK <x> <y> <button>: wire coords are top-left origin (same as our BMP
+ * screenshots). PM pointer coords are bottom-left — convert before use.
+ *
+ * Cross-session VIO→PM: also BM_CLICK the window under the pointer
+ * (do not walk parents — that hits a dialog's default pushbutton).
+ */
+static void handle_click(const char *args) {
+    int x = 0, y = 0, button = 1;
+    int n;
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    LONG cy;
+    POINTL ptl, ptlScreen;
+    HWND hwnd;
+    ULONG msgDown, msgUp;
+
+    n = sscanf(args, "%d %d %d", &x, &y, &button);
+    if (n < 2) {
+        send_cstr("ERR:bad CLICK syntax\n");
+        return;
+    }
+    if (n < 3) button = 1;
+    if (button < 1 || button > 3) {
+        send_cstr("ERR:bad button (use 1/2/3)\n");
+        return;
+    }
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    cy = WinQuerySysValue(HWND_DESKTOP, SV_CYSCREEN);
+    if (cy <= 0) cy = 480;
+    ptlScreen.x = x;
+    /* Match screenshot top-left ↔ PM bottom-left (no off-by-one). */
+    ptlScreen.y = cy - y;
+    ptl = ptlScreen;
+
+    if (!WinSetPointerPos(HWND_DESKTOP, ptl.x, ptl.y)) {
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:WinSetPointerPos failed\n");
+        return;
+    }
+    DosSleep(30);
+
+    hwnd = WinWindowFromPoint(HWND_DESKTOP, &ptlScreen, TRUE);
+    if (hwnd == NULLHANDLE) {
+        if (hmq) WinDestroyMsgQueue(hmq);
+        WinTerminate(hab);
+        send_cstr("ERR:no window under point\n");
+        return;
+    }
+
+    WinSetActiveWindow(HWND_DESKTOP, hwnd);
+    WinFocusChange(HWND_DESKTOP, hwnd, 0);
+
+    /* Only BM_CLICK the window under the pointer — walking parents hits
+     * the dialog's default pushbutton (e.g. Search instead of Cancel). */
+    WinPostMsg(hwnd, BM_CLICK, 0, 0);
+
+    ptl = ptlScreen;
+    WinMapWindowPoints(HWND_DESKTOP, hwnd, &ptl, 1);
+    if (button == 1) {
+        msgDown = WM_BUTTON1DOWN;
+        msgUp = WM_BUTTON1UP;
+    } else if (button == 2) {
+        msgDown = WM_BUTTON2DOWN;
+        msgUp = WM_BUTTON2UP;
+    } else {
+        msgDown = WM_BUTTON3DOWN;
+        msgUp = WM_BUTTON3UP;
+    }
+    WinPostMsg(hwnd, msgDown, MPFROM2SHORT((SHORT)ptl.x, (SHORT)ptl.y), 0);
+    DosSleep(40);
+    WinPostMsg(hwnd, msgUp, MPFROM2SHORT((SHORT)ptl.x, (SHORT)ptl.y), 0);
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    send_cstr("OK\n");
+}
+
+/* Close every top-level frame whose title matches (case-insensitive). */
+static int close_frames_by_title(const char *want) {
+    HWND h;
+    int n = 0;
+    char title[160];
+
+    h = WinQueryWindow(HWND_DESKTOP, QW_TOP);
+    while (h != NULLHANDLE) {
+        title[0] = '\0';
+        WinQueryWindowText(h, sizeof(title), title);
+        if (title[0] && stricmp(title, want) == 0) {
+            WinSetActiveWindow(HWND_DESKTOP, h);
+            /* Dialogs often want DID_CANCEL; frames want SC_CLOSE/WM_CLOSE. */
+            WinPostMsg(h, WM_COMMAND, MPFROM2SHORT(2, 0), 0);
+            WinPostMsg(h, WM_SYSCOMMAND, MPFROMSHORT(SC_CLOSE), 0);
+            WinPostMsg(h, WM_CLOSE, 0, 0);
+            n++;
+        }
+        h = WinQueryWindow(h, QW_NEXT);
+    }
+    return n;
+}
+
+/* KEY escape/esc: dismiss active dialog + known blockers by title. */
+static void handle_key(const char *spec) {
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    HWND hwnd, frame, h;
+    int i, closed;
+
+    if (stricmp(spec, "esc") != 0 && stricmp(spec, "escape") != 0) {
+        send_cstr(ERR_NOSUP);
+        return;
+    }
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    closed = close_frames_by_title("Search");
+
+    hwnd = WinQueryFocus(HWND_DESKTOP);
+    if (hwnd == NULLHANDLE) hwnd = WinQueryActiveWindow(HWND_DESKTOP);
+    if (hwnd != NULLHANDLE) {
+        frame = hwnd;
+        for (h = hwnd, i = 0; h != NULLHANDLE && i < 8; i++) {
+            frame = h;
+            h = WinQueryWindow(h, QW_PARENT);
+            if (h == NULLHANDLE || h == HWND_DESKTOP) break;
+        }
+        WinPostMsg(hwnd, WM_COMMAND, MPFROM2SHORT(2, 0), 0);
+        WinPostMsg(frame, WM_COMMAND, MPFROM2SHORT(2, 0), 0);
+        WinPostMsg(frame, WM_SYSCOMMAND, MPFROMSHORT(SC_CLOSE), 0);
+        WinPostMsg(frame, WM_CLOSE, 0, 0);
+        closed++;
+    }
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    if (closed)
+        send_cstr("OK\n");
+    else
+        send_cstr("ERR:nothing to close\n");
+}
+
+/* WINCLOSE <title>: close top-level window(s) with that title. */
+static void handle_winclose(const char *title) {
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    int n;
+
+    while (*title == ' ') title++;
+    if (!*title) {
+        send_cstr("ERR:need window title\n");
+        return;
+    }
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    n = close_frames_by_title(title);
+
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    if (n)
+        send_cstr("OK\n");
+    else
+        send_cstr("ERR:no matching window\n");
+}
+
 static void handle_client(void) {
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
@@ -478,7 +833,7 @@ static void handle_client(void) {
         if (recv_line(g_line, sizeof(g_line)) < 0) break;
 
         if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
-            send_cstr(ERR_NOSUP);
+            run_exec_detach(g_line + 11);
         } else if (strncmp(g_line, "EXEC ", 5) == 0) {
             run_exec(g_line + 5);
         } else if (strncmp(g_line, "PUT ", 4) == 0) {
@@ -488,9 +843,11 @@ static void handle_client(void) {
         } else if (strcmp(g_line, "SCREENSHOT") == 0) {
             handle_screenshot();
         } else if (strncmp(g_line, "CLICK ", 6) == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_click(g_line + 6);
         } else if (strncmp(g_line, "KEY ", 4) == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_key(g_line + 4);
+        } else if (strncmp(g_line, "WINCLOSE ", 9) == 0) {
+            handle_winclose(g_line + 9);
         } else if (strncmp(g_line, "TYPE ", 5) == 0) {
             send_cstr(ERR_NOSUP);
         } else if (strcmp(g_line, "PSLIST") == 0 || strncmp(g_line, "PSKILL ", 7) == 0) {
@@ -498,7 +855,8 @@ static void handle_client(void) {
         } else if (strcmp(g_line, "SYSINFO") == 0) {
             handle_sysinfo();
         } else if (strcmp(g_line, "REBOOT") == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_reboot();
+            break;
         } else if (strcmp(g_line, "SHUTDOWN") == 0) {
             send_cstr(ERR_NOSUP);
         } else if (strcmp(g_line, "WINLIST") == 0) {
@@ -557,6 +915,8 @@ static int server_main(void) {
     printf("llm_agent-os2: listening on port %u (32-bit + PM screenshot)\n", (unsigned)g_port);
     printf("token configured: %s\n", g_token[0] ? "yes" : "NO - set token= in LLMAGENT.INI");
     fflush(stdout);
+    write_pid_file();
+    minimize_self();
 
     for (;;) {
         struct os2_sockaddr_in peer;
@@ -575,6 +935,8 @@ static int server_main(void) {
 
 int main(int argc, char **argv) {
     load_config(argc > 0 ? argv[0] : NULL);
+    /* DosStartSession often leaves cwd as \, which breaks EXEC's LLMOUT.TMP */
+    if (g_exedir[0]) DosSetCurrentDir(g_exedir);
     if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "/?") == 0)) {
         printf("llm_agent-os2 - OS/2 exec/file/screenshot agent (SO32DLL)\n");
         printf("Usage: LLMAGENT.EXE\n");
