@@ -62,9 +62,10 @@ Open Watcom as a **32-bit OS/2 LX** executable linked against IBM
 
 Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH`, `PUT` / `GET`, `SYSINFO`
 (`os_family=os2`), `SCREENSHOT` (PM desktop → 24-bit BMP), `CLICK`, `KEY`
-(`esc`/`escape`), `REBOOT` (`DosShutdown` + `DOS$` IOCTL). Self-update uses a
-separate `update.exe` helper (same pattern as Windows `agent/update.c`), driven
-by `legacy_self_update`. Other commands
+(`esc`/`escape`), `WINLIST`, `REBOOT` (detached `REBOOT.EXE`: IOCTL then DOS
+`.COM` keyboard-controller pulse). Self-update uses a separate `update.exe`
+helper (same pattern as Windows `agent/update.c`), driven by
+`legacy_self_update`. Other commands
 return `ERR:not supported on OS/2`. See `agent-os2/README.md`.
 
 ## Screenshot/input: built into the agent, not VNC (revised)

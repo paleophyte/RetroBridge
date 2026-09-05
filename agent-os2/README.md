@@ -20,8 +20,9 @@ desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 | `SCREENSHOT` | Full PM desktop via `WinGetScreenPS` → 24-bit BMP |
 | `CLICK` | PM `WinSetPointerPos` + `BM_CLICK` / button up-down (top-left coords) |
 | `KEY` | `esc` / `escape` only — dismiss focused dialog / titled `Search` |
-| `REBOOT` | Soft reset via `DosShutdown` + `DOS$` IOCTL (`DOS.SYS`) |
-| `EXECDETACH` | Independent session via `DosStartSession` (for `UPDATE.EXE`) |
+| `WINLIST` | Switch-list entries (titles + top-left frame rects for CLICK) |
+| `REBOOT` | Detached `REBOOT.EXE` (OEMHLP/DOS$ IOCTL, then DOS `.COM` kbd reset) |
+| `EXECDETACH` | Independent session via `DosStartSession` (for `UPDATE.EXE` / `REBOOT.EXE`) |
 
 The agent **minimizes itself** after listen (and `UPDATE.EXE` /
 `EXECDETACH` / `STARTUP.CMD` start it with `/MIN` or `SSF_CONTROL_MINIMIZE`).
@@ -31,8 +32,10 @@ Self-update: build also produces `update.exe`. Bridge tool
 `EXECDETACH`s the helper, which kills the old agent via `AGENT.PID`,
 swaps the binary, and restarts `LLMAGENT.EXE`.
 
-Everything else returns `ERR:not supported on OS/2` (including `TYPE` /
-`WINLIST` / most `KEY` specs).
+Reboot: also deploy `REBOOT.EXE` next to the agent (`build.bat` builds it).
+
+Everything else returns `ERR:not supported on OS/2` (including `TYPE` and
+most `KEY` specs).
 
 ## Build (Open Watcom on host)
 

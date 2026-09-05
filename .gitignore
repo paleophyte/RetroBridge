@@ -16,6 +16,7 @@ agent-os2/*.map
 agent-os2/*.flp
 agent-os2/LLMAGENT.INI
 agent-os2/UPDATE.LOG
+agent-os2/REBOOT.LOG
 agent-os2/last_screenshot.bmp
 agent-os2/last_screenshot.png
 agent-os2/last_screenshot_*.png

@@ -105,12 +105,18 @@ def main() -> int:
     expect_err("GET missing", lambda: c.get(r"C:\NOPEZZZ.TXT", local_dn))
     expect_err("TYPE unsupported", lambda: c.type_text("x"))
     expect_err("KEY unsupported", lambda: c.key("enter"))
-    # EXECDETACH / CLICK are supported
-    expect_err("WINLIST unsupported", lambda: c.winlist())
+    # EXECDETACH / CLICK / REBOOT / WINLIST are supported
     expect_err("CLIPSET unsupported", lambda: c.clipboard_set("x"))
     expect_err("PSLIST unsupported", lambda: c.pslist())
     expect_err("SHUTDOWN unsupported", lambda: c.shutdown())
-    expect_err("REBOOT unsupported", lambda: c.reboot())
+
+    try:
+        wins = c.winlist()
+        ok("WINLIST", f"{len(wins)} windows: " + ", ".join(
+            f"{w.title!r}@({w.x},{w.y},{w.width}x{w.height})" for w in wins[:8]
+        ))
+    except Exception as e:
+        fail("WINLIST", str(e))
 
     # SCREENSHOT — PM desktop capture as BMP
     try:

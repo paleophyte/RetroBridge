@@ -37,3 +37,10 @@ wlink @update.lnk
 if errorlevel 1 exit /b 1
 echo Built update.exe ^(self-update helper^)
 dir update.exe
+
+wcc386 -bt=os2v2 -zq -i=c:\watcom\h\os2 reboot.c
+if errorlevel 1 exit /b 1
+wlink @reboot.lnk
+if errorlevel 1 exit /b 1
+echo Built reboot.exe ^(detached reboot helper^)
+dir reboot.exe

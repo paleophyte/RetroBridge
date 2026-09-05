@@ -7,8 +7,8 @@
  * 32-bit OS/2 (LX) + IBM SO32DLL/TCP32DLL sockets + PM screen capture.
  *
  * Supported: auth, PING, QUIT, EXEC, EXECDETACH, PUT, GET, SYSINFO,
- *            SCREENSHOT, CLICK, KEY (esc), WINCLOSE, REBOOT
- * Unsupported: WINLIST, CLIPSET, REG*, PSLIST, PSKILL, SHUTDOWN, TYPE
+ *            SCREENSHOT, CLICK, KEY (esc), WINCLOSE, WINLIST, REBOOT
+ * Unsupported: CLIPSET, REG*, PSLIST, PSKILL, SHUTDOWN, TYPE
  */
 
 #define INCL_DOS
@@ -446,6 +446,127 @@ static int handle_sysinfo(void) {
     return 0;
 }
 
+/* Scrub tabs/CR/LF so WINLIST wire lines stay 7 tab-separated fields. */
+static void scrub_field(char *s) {
+    for (; *s; s++) {
+        if (*s == '\t' || *s == '\r' || *s == '\n')
+            *s = ' ';
+    }
+}
+
+/*
+ * WINLIST: same wire format as Windows agent —
+ *   "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n"
+ * Coords are top-left origin (match SCREENSHOT / CLICK).
+ *
+ * Enumerate via WinQuerySwitchList (Window List entries) — a plain
+ * WinBeginEnumWindows walk from a VIO agent sees no titled PM frames.
+ */
+static int handle_winlist(void) {
+    static char buf[32768];
+    HAB hab;
+    HMQ hmq = NULLHANDLE;
+    ULONG cb;
+    ULONG nentries;
+    PSWBLOCK psw = NULL;
+    LONG cy;
+    int len = 0;
+    char hdr[32];
+    char cls[128];
+    ULONG i;
+    int rc_out = -1;
+
+    hab = WinInitialize(0);
+    if (!hab) {
+        send_cstr("ERR:WinInitialize failed\n");
+        return -1;
+    }
+    hmq = WinCreateMsgQueue(hab, 0);
+
+    cy = WinQuerySysValue(HWND_DESKTOP, SV_CYSCREEN);
+    if (cy <= 0) cy = 480;
+
+    /* First call returns entry COUNT (not bytes). HAB may be 0. */
+    nentries = WinQuerySwitchList(NULLHANDLE, NULL, 0);
+    if (nentries == 0)
+        nentries = WinQuerySwitchList(hab, NULL, 0);
+    if (nentries == 0) {
+        send_cstr("ERR:WinQuerySwitchList empty\n");
+        goto done;
+    }
+    cb = sizeof(ULONG) + (nentries + 2) * sizeof(SWENTRY);
+    psw = (PSWBLOCK)malloc(cb);
+    if (!psw) {
+        send_cstr("ERR:out of memory\n");
+        goto done;
+    }
+    nentries = WinQuerySwitchList(NULLHANDLE, psw, cb);
+    if (nentries == 0)
+        nentries = WinQuerySwitchList(hab, psw, cb);
+    if (nentries == 0 || psw->cswentry == 0) {
+        send_cstr("ERR:WinQuerySwitchList failed\n");
+        goto done;
+    }
+
+    for (i = 0; i < psw->cswentry; i++) {
+        SWCNTRL *sw = &psw->aswentry[i].swctl;
+        HWND hwnd = sw->hwnd;
+        RECTL rcl;
+        int x, y, w, h;
+        char title[MAXNAMEL + 8];
+
+        if (sw->uchVisibility == SWL_INVISIBLE)
+            continue;
+
+        strncpy(title, sw->szSwtitle, sizeof(title) - 1);
+        title[sizeof(title) - 1] = '\0';
+        if (title[0] == '\0' && hwnd != NULLHANDLE)
+            WinQueryWindowText(hwnd, sizeof(title), title);
+        if (title[0] == '\0')
+            continue;
+
+        cls[0] = '\0';
+        if (hwnd != NULLHANDLE)
+            WinQueryClassName(hwnd, sizeof(cls), cls);
+        if (cls[0] == '\0')
+            strcpy(cls, "switch");
+
+        memset(&rcl, 0, sizeof(rcl));
+        x = y = w = h = 0;
+        if (hwnd != NULLHANDLE && WinQueryWindowRect(hwnd, &rcl)) {
+            /* Rect is relative to parent; map to desktop for top-level. */
+            WinMapWindowPoints(WinQueryWindow(hwnd, QW_PARENT), HWND_DESKTOP,
+                               (PPOINTL)&rcl, 2);
+            x = (int)rcl.xLeft;
+            w = (int)(rcl.xRight - rcl.xLeft);
+            h = (int)(rcl.yTop - rcl.yBottom);
+            y = (int)(cy - rcl.yTop);
+            if (w < 0) w = 0;
+            if (h < 0) h = 0;
+        }
+
+        scrub_field(title);
+        scrub_field(cls);
+
+        if (len > (int)sizeof(buf) - 512)
+            break;
+
+        len += sprintf(buf + len, "%lu\t%d\t%d\t%d\t%d\t%s\t%s\r\n",
+                       (unsigned long)hwnd, x, y, w, h, cls, title);
+    }
+
+    sprintf(hdr, "SIZE:%d\n", len);
+    if (send_cstr(hdr) < 0 || (len > 0 && send_all(buf, len) < 0))
+        goto done;
+    rc_out = 0;
+
+done:
+    if (psw) free(psw);
+    if (hmq) WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    return rc_out;
+}
+
 /* ---- SCREENSHOT: PM desktop via WinGetScreenPS → 24-bit BMP ---- */
 
 static int handle_screenshot(void) {
@@ -602,40 +723,44 @@ done:
 }
 
 /*
- * Soft reboot via DOS.SYS (present on stock OS/2 2.x as DEVICE=...\DOS.SYS).
- * Category 0xD5 / function 0xAB is the classic "Reboot/2" IOCTL; flush the
- * filesystem with DosShutdown first. Same pattern as the Hobbes REBOOT.C
- * sample, ported to the 32-bit DosOpen/DosDevIOCtl signatures.
+ * Soft reboot: detach REBOOT.EXE so DosShutdown/IOCTL run in a process
+ * with no listen socket. In-process DosShutdown wedged the guest (FS lock)
+ * while DOS$ IOCTL alone returned 0 without actually resetting.
  */
 static void handle_reboot(void) {
-    HFILE hf = NULLHANDLE;
-    ULONG action = 0;
+    char path[160];
+    STARTDATA sd;
+    ULONG sess_id = 0;
+    PID pid = 0;
     APIRET rc;
+    char obj[128];
+    char reply[80];
 
-    rc = DosOpen("DOS$", &hf, &action, 0, FILE_NORMAL,
-                 OPEN_ACTION_OPEN_IF_EXISTS,
-                 OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE | OPEN_FLAGS_FAIL_ON_ERROR,
-                 NULL);
+    sprintf(path, "%s\\REBOOT.EXE", g_exedir[0] ? g_exedir : "C:\\llmagent");
+
+    memset(&sd, 0, sizeof(sd));
+    sd.Length = sizeof(sd);
+    sd.Related = SSF_RELATED_INDEPENDENT;
+    sd.FgBg = SSF_FGBG_BACK;
+    sd.TraceOpt = SSF_TRACEOPT_NONE;
+    sd.PgmTitle = "REBOOT";
+    sd.PgmName = path;
+    sd.PgmInputs = NULL;
+    sd.TermQ = NULL;
+    sd.Environment = NULL;
+    sd.InheritOpt = SSF_INHERTOPT_PARENT;
+    sd.SessionType = SSF_TYPE_WINDOWABLEVIO;
+    sd.PgmControl = SSF_CONTROL_MINIMIZE | SSF_CONTROL_INVISIBLE;
+    sd.ObjectBuffer = obj;
+    sd.ObjectBuffLen = sizeof(obj);
+
+    rc = DosStartSession(&sd, &sess_id, &pid);
     if (rc != 0) {
-        rc = DosOpen("\\DEV\\DOS$", &hf, &action, 0, FILE_NORMAL,
-                     OPEN_ACTION_OPEN_IF_EXISTS,
-                     OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE | OPEN_FLAGS_FAIL_ON_ERROR,
-                     NULL);
-    }
-    if (rc != 0) {
-        send_cstr("ERR:DosOpen DOS$ failed\n");
+        sprintf(reply, "ERR:DosStartSession REBOOT.EXE rc=%lu\n", (unsigned long)rc);
+        send_cstr(reply);
         return;
     }
-
     send_cstr("OK\n");
-    DosSleep(500); /* let OK clear the NIC before we reset */
-
-    DosShutdown(0);
-    DosDevIOCtl(hf, 0xD5, 0xAB, NULL, 0, NULL, NULL, 0, NULL);
-
-    for (;;) {
-        DosSleep(1000); /* IOCTL should not return; park if it does */
-    }
 }
 
 /*
@@ -860,7 +985,7 @@ static void handle_client(void) {
         } else if (strcmp(g_line, "SHUTDOWN") == 0) {
             send_cstr(ERR_NOSUP);
         } else if (strcmp(g_line, "WINLIST") == 0) {
-            send_cstr(ERR_NOSUP);
+            handle_winlist();
         } else if (strncmp(g_line, "CLIPSET ", 8) == 0) {
             send_cstr(ERR_NOSUP);
         } else if (strncmp(g_line, "REGGET\t", 7) == 0 || strncmp(g_line, "REGSET\t", 7) == 0) {
