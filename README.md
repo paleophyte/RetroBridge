@@ -20,9 +20,11 @@ Pieces:
 - **`agent-dos/`** — FreeDOS port of the same wire protocol (Open Watcom +
   Watt-32). Supports exec/file transfer/sysinfo/reboot plus text-mode
   screenshot and BIOS keyboard inject. See [agent-dos/README.md](agent-dos/README.md).
-- **`agent-os2/`** — OS/2 2.x port (Open Watcom 16-bit NE + IBM TCPIPDLL).
-  Supports exec/file transfer/sysinfo; GUI screenshot/input not yet.
+- **`agent-os2/`** — OS/2 2.x port (Open Watcom 32-bit LX + SO32DLL + PM).
+  Supports exec/file/sysinfo plus full desktop `SCREENSHOT`.
   See [agent-os2/README.md](agent-os2/README.md).
+- **`agent-netware/`** — NetWare 3.12+ NLM port (Open Watcom + CLIB BSD
+  sockets). See [agent-netware/README.md](agent-netware/README.md).
 - **`bridge/`** — an MCP server you run on your modern control machine,
   exposing the agent's commands as MCP tools.
 

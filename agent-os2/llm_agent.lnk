@@ -1,0 +1,19 @@
+system os2v2
+option map
+option stack=65536
+option quiet
+name llm_agent
+file llm_agent
+libpath vendor
+library so32dll
+library tcp32dll
+import sock_init   'SO32DLL'.SOCK_INIT
+import socket      'SO32DLL'.SOCKET
+import bind        'SO32DLL'.BIND
+import listen      'SO32DLL'.LISTEN
+import accept      'SO32DLL'.ACCEPT
+import send        'SO32DLL'.SEND
+import recv        'SO32DLL'.RECV
+import soclose     'SO32DLL'.SOCLOSE
+import setsockopt  'SO32DLL'.SETSOCKOPT
+import sock_errno  'SO32DLL'.SOCK_ERRNO

@@ -22,3 +22,8 @@ exec_token = change-me-freedos-shared-secret
 [os2-1]
 host = 192.168.56.21
 exec_token = change-me-os2-shared-secret
+
+# NetWare 3.12+ guest running agent-netware/LLMAGENT.NLM (CLIB BSD sockets).
+[netware-1]
+host = 192.168.56.30
+exec_token = change-me-netware-shared-secret

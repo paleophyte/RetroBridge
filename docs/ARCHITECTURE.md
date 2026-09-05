@@ -57,12 +57,12 @@ for build and deploy.
 ## OS/2 agent (`agent-os2/`)
 
 Same wire protocol for OS/2 2.11 in `agent-os2/llm_agent.c`, built with
-Open Watcom as a **16-bit OS/2 NE** executable linked against IBM
-**TCPIPDLL** (Socket/MPTS). Requires IFNDIS/INET up on the guest.
+Open Watcom as a **32-bit OS/2 LX** executable linked against IBM
+**SO32DLL**/**TCP32DLL** (Socket/MPTS) and PM for screenshots.
 
 Implemented: auth / `PING` / `QUIT`, `EXEC`, `PUT` / `GET`, `SYSINFO`
-(`os_family=os2`). Other commands return `ERR:not supported on OS/2`.
-See `agent-os2/README.md`.
+(`os_family=os2`), `SCREENSHOT` (PM desktop → 24-bit BMP). Other commands
+return `ERR:not supported on OS/2`. See `agent-os2/README.md`.
 
 ## Screenshot/input: built into the agent, not VNC (revised)
 

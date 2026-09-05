@@ -103,7 +103,6 @@ def main() -> int:
         fail("PUT/GET", str(e))
 
     expect_err("GET missing", lambda: c.get(r"C:\NOPEZZZ.TXT", local_dn))
-    expect_err("SCREENSHOT unsupported", lambda: c.screenshot())
     expect_err("TYPE unsupported", lambda: c.type_text("x"))
     expect_err("KEY unsupported", lambda: c.key("enter"))
     expect_err("EXECDETACH unsupported", lambda: c.exec_detach("echo hi"))
@@ -113,6 +112,21 @@ def main() -> int:
     expect_err("PSLIST unsupported", lambda: c.pslist())
     expect_err("SHUTDOWN unsupported", lambda: c.shutdown())
     expect_err("REBOOT unsupported", lambda: c.reboot())
+
+    # SCREENSHOT — PM desktop capture as BMP
+    try:
+        bmp = c.screenshot()
+        out = Path(__file__).resolve().parent / "last_screenshot.bmp"
+        out.write_bytes(bmp)
+        if len(bmp) < 54 or bmp[:2] != b"BM":
+            fail("SCREENSHOT", f"not BMP, len={len(bmp)}")
+        else:
+            import struct
+            w, h = struct.unpack_from("<ii", bmp, 18)
+            bpp = struct.unpack_from("<H", bmp, 28)[0]
+            ok("SCREENSHOT", f"len={len(bmp)} {w}x{abs(h)} {bpp}bpp -> {out.name}")
+    except Exception as e:
+        fail("SCREENSHOT", str(e))
 
     try:
         c.exec(r"del C:\AGTEST.TMP")
