@@ -1,6 +1,6 @@
 @echo off
 REM Build llm_agent.exe for 16-bit DOS (Open Watcom + Watt-32 large model).
-REM Prefer this over Makefile on Windows — wmake treats \ as an escape.
+REM Prefer this over Makefile on Windows -- wmake treats \ as an escape.
 
 if "%WATT32%"=="" set "WATT32=C:\Users\admin\code\Watt-32"
 if not exist "%WATT32%\lib\wattcpwl.lib" (
@@ -13,13 +13,13 @@ if not exist "%WATT32%\inc\tcp.h" (
   exit /b 1
 )
 if not exist "%WATT32%\inc\sys\watcom.err" (
-  echo ERROR: "%WATT32%\inc\sys\watcom.err" missing — run configur.bat watcom in Watt-32\src
+  echo ERROR: "%WATT32%\inc\sys\watcom.err" missing -- run configur.bat watcom in Watt-32\src
   exit /b 1
 )
 
 call c:\watcom\owsetenv.bat
-if errorlevel 1 (
-  echo ERROR: c:\watcom\owsetenv.bat failed — edit WATCOM path in build.bat
+if "%WATCOM%"=="" (
+  echo ERROR: WATCOM is not set after c:\watcom\owsetenv.bat -- edit WATCOM path in build.bat
   exit /b 1
 )
 

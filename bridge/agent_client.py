@@ -358,11 +358,18 @@ class AgentClient:
         finally:
             self._quit(sock)
 
-    def winlist(self) -> list[WindowInfo]:
-        """List visible top-level windows with a non-empty title."""
+    def winlist(self, parent_hwnd: int | None = None) -> list[WindowInfo]:
+        """List visible top-level windows with a non-empty title.
+
+        Pass parent_hwnd (from a prior winlist() result) to instead list
+        that window's immediate children -- supported by the Win16 agent
+        for inspecting a dialog's controls; title comes back as
+        "<control id>:<text>" in that case.
+        """
         sock = self._connect()
         try:
-            sock.sendall(b"WINLIST\n")
+            cmd = f"WINLIST {parent_hwnd}\n" if parent_hwnd is not None else "WINLIST\n"
+            sock.sendall(cmd.encode("ascii"))
             header = self._recv_line(sock)
             if header.startswith("ERR:"):
                 raise AgentProtocolError(header)
@@ -381,6 +388,72 @@ class AgentClient:
                 except ValueError:
                     continue
             return windows
+        finally:
+            self._quit(sock)
+
+    def winmsg(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+        """Win16 agent only: raw SendMessage(hwnd, msg, wparam, lparam)
+        passthrough. Returns the LRESULT. A thin, general primitive --
+        the caller supplies whichever message/params accomplish a given
+        UI action (e.g. BM_SETCHECK to toggle a checkbox, or a
+        WM_LBUTTONDOWN/WM_LBUTTONUP pair sent to a button's own hwnd to
+        make it click itself and notify its parent)."""
+        sock = self._connect()
+        try:
+            sock.sendall(f"WINMSG {hwnd} {msg} {wparam} {lparam}\n".encode("ascii"))
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if not reply.startswith("OK:"):
+                raise AgentProtocolError(f"unexpected WINMSG response: {reply!r}")
+            return int(reply[3:])
+        finally:
+            self._quit(sock)
+
+    def postmsg(self, hwnd: int, msg: int, wparam: int, lparam: int) -> None:
+        """Win16 agent only: raw PostMessage(hwnd, msg, wparam, lparam)
+        passthrough -- returns the instant the message is queued,
+        without waiting for it to be processed. Use this instead of
+        winmsg() (SendMessage) for anything that might open a modal
+        dialog: SendMessage blocks the caller until the ENTIRE receiving
+        chain finishes processing, nested DialogBox() calls included, so
+        e.g. double-clicking a Control Panel applet via winmsg() wedges
+        this agent for as long as the resulting dialog stays open. Even
+        a button's own internal click handling notifies its parent via
+        SendMessage synchronously, so postmsg() has to be the entry
+        point, not just the last step: post WM_LBUTTONDOWN then
+        WM_LBUTTONUP to press a button, or post WM_COMMAND with an
+        LBN_DBLCLK notification to activate a listbox item, and whatever
+        dialog that opens runs on the normal message pump's own time,
+        decoupled from this call entirely."""
+        sock = self._connect()
+        try:
+            sock.sendall(f"POSTMSG {hwnd} {msg} {wparam} {lparam}\n".encode("ascii"))
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if reply != "OK":
+                raise AgentProtocolError(f"unexpected POSTMSG response: {reply!r}")
+        finally:
+            self._quit(sock)
+
+    def lbgettext(self, hwnd: int, index: int) -> str:
+        """Win16 agent only: LB_GETTEXT passthrough -- read a listbox
+        item's text by index. WINMSG can't carry this directly (its
+        lParam would need to be a buffer pointer, not a plain integer),
+        so it's its own command. Useful for Control-Panel-style
+        owner-drawn icon lists: read items by index to find which one is
+        e.g. "Network" before selecting it by index via
+        winmsg(hwnd, LB_SETCURSEL, index, 0)."""
+        sock = self._connect()
+        try:
+            sock.sendall(f"LBGETTEXT {hwnd} {index}\n".encode("ascii"))
+            reply = self._recv_line(sock)
+            if reply.startswith("ERR:"):
+                raise AgentProtocolError(reply)
+            if not reply.startswith("OK:"):
+                raise AgentProtocolError(f"unexpected LBGETTEXT response: {reply!r}")
+            return reply[3:]
         finally:
             self._quit(sock)
 

@@ -776,10 +776,13 @@ static int wait_established(void) {
 }
 
 static int server_main(void) {
+    char ipbuf[16];
+
     printf("llm_agent-dos: Watt-32 init...\n");
     sock_init();
     /* Classic WatTCP sock_init() is void and exits on fatal failure.
        Watt-32's sock_init macro returns int; a zero return means ready. */
+    printf("llm_agent-dos: IP address %s\n", _inet_ntoa(ipbuf, my_ip_addr));
     printf("llm_agent-dos: listening on port %u\n", (unsigned)g_port);
     printf("token configured: %s\n", g_token[0] ? "yes" : "NO - set token= in LLMAGENT.INI");
 

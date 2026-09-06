@@ -9,6 +9,13 @@ agent-dos/*.err
 agent-dos/*.flp
 agent-dos/last_screenshot.bmp
 agent-dos/last_screenshot.png
+agent-win16/llm_agent.ini
+agent-win16/*.exe
+agent-win16/*.obj
+agent-win16/*.map
+agent-win16/*.flp
+agent-win16/last_screenshot.bmp
+agent-win16/last_screenshot.png
 agent-os2/*.exe
 agent-os2/*.obj
 agent-os2/*.err
