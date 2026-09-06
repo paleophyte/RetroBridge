@@ -15,14 +15,37 @@ can drive a WFW guest with no protocol fork.
 | `SYSINFO` | Windows/DOS version, free system resources %, C: disk space |
 | `SCREENSHOT` | Whole-desktop `BitBlt` rendered to a 24-bit BMP |
 | `REBOOT` | `ExitWindows(EW_REBOOTSYSTEM)` -- a real machine reset, not just "exit to DOS" |
+| `SHUTDOWN` | `ExitWindows(0)` -- **not a real power-off, see warning below** |
 | `KEY` / `TYPE` / `CLICK` | `WH_JOURNALPLAYBACK` input injection -- **unreliable, see warning below** |
 | `WINLIST [hwnd]` | Enumerate top-level windows, or a window's children if `hwnd` given -- read-only, always safe |
 | `WINMSG <hwnd> <msg> <wparam> <lparam>` | Raw `SendMessage()` -- **never for anything that might open a dialog, see warning below** |
 | `POSTMSG <hwnd> <msg> <wparam> <lparam>` | Raw `PostMessage()` -- use this instead of `WINMSG` for button presses / listbox activation |
 | `LBGETTEXT <hwnd> <index>` | Read a listbox item's text by index (read-only) |
 
-Everything else (`CLIPSET`, `REG*`, `PSLIST`, `PSKILL`, `SHUTDOWN`)
+Everything else (`CLIPSET`, `REG*`, `PSLIST`, `PSKILL`)
 returns `ERR:not supported on Windows 3.11`.
+
+### ⚠ SHUTDOWN doesn't power off the VM -- and EW_RESTARTWINDOWS is a trap
+
+Windows 3.1 predates ACPI/APM in its own API surface -- there is no Win16
+equivalent of Win32's `ExitWindowsEx(EWX_POWEROFF)`, and no VMware Tools
+exist for a DOS/Win3.1x guest to ask the hypervisor for a real power-off
+either. `SHUTDOWN` calls `ExitWindows(0, 0)`, the same thing Program
+Manager's File > Exit Windows does: it drops back to a DOS prompt and
+stays there, leaving the VM itself running. That's the most "shut
+down"-like gesture available on this OS, but treat it as "exit Windows
+to DOS", not "power off the machine".
+
+The obvious-looking alternative, `ExitWindows(EW_RESTARTWINDOWS, 0)`, is
+a trap -- despite reading like "just exit, don't reboot", it means
+exactly what its name says: **restart Windows**. Confirmed by direct
+testing: sending it looked identical to `REBOOT` from the console, and
+the agent came back on its own moments later with no manual
+intervention. `ExitWindows()`'s low word is normally just an MS-DOS
+errorlevel; `EW_RESTARTWINDOWS` (0x42) and `EW_REBOOTSYSTEM` (0x43,
+which is what `REBOOT` uses) are the only two values it special-cases,
+and both mean "reload", not "exit and stay out". Plain `0` is what
+actually exits to DOS and stays there.
 
 The status window also has an **Exit** button -- clicking it calls
 `DestroyWindow()`, funneling through the exact same `WM_DESTROY`

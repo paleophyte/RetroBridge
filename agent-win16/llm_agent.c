@@ -1090,6 +1090,41 @@ static int handle_reboot(void) {
     return -1;
 }
 
+/* ---- SHUTDOWN via ExitWindows(0) -- Windows 3.1 predates ACPI/APM power
+   management in the OS API surface entirely, so there is no Win16
+   equivalent of Win32's ExitWindowsEx(EWX_POWEROFF); this VM also has no
+   VMware Tools available for a DOS/Win3.1x guest to request a real
+   power-off from the hypervisor.
+
+   ExitWindows()'s low word is normally just an MS-DOS errorlevel handed
+   back to whatever continues after Windows exits -- EW_RESTARTWINDOWS
+   (0x42) and EW_REBOOTSYSTEM (0x43) are the only two values it
+   special-cases, both of which mean "reload/reset", not "exit and stay
+   out". Confirmed by direct testing: passing EW_RESTARTWINDOWS here
+   looked identical to REBOOT from the console (agent came back on its
+   own within moments) -- exactly what its name says it does, restart
+   Windows, not drop to DOS. Plain 0 is what actually exits to a DOS
+   prompt and stays there, the same as Program Manager's File > Exit
+   Windows, without powering off or resetting the VM itself. ---- */
+
+static int handle_shutdown(void) {
+    int i;
+
+    send_cstr("OK\r\n");
+    for (i = 0; i < 20; i++) {
+        MSG msg;
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        Yield();
+    }
+    ExitWindows(0, 0);
+    /* Only reached if Windows refused to exit (e.g. an app vetoed
+       WM_QUERYENDSESSION). */
+    return -1;
+}
+
 /* ---- session ---- */
 
 static void handle_client(void) {
@@ -1119,6 +1154,8 @@ static void handle_client(void) {
             break;
         } else if (strcmp(g_line, "REBOOT") == 0) {
             handle_reboot();
+        } else if (strcmp(g_line, "SHUTDOWN") == 0) {
+            handle_shutdown();
         } else if (strncmp(g_line, "KEY ", 4) == 0) {
             handle_key(g_line + 4);
         } else if (strncmp(g_line, "TYPE ", 5) == 0) {
@@ -1139,7 +1176,6 @@ static void handle_client(void) {
             handle_execdetach(g_line + 11);
         } else if (strcmp(g_line, "PSLIST") == 0 ||
                    strncmp(g_line, "PSKILL ", 7) == 0 ||
-                   strcmp(g_line, "SHUTDOWN") == 0 ||
                    strncmp(g_line, "CLIPSET ", 8) == 0 ||
                    strncmp(g_line, "REGGET\t", 7) == 0 ||
                    strncmp(g_line, "REGSET\t", 7) == 0) {
