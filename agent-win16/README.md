@@ -12,7 +12,7 @@ can drive a WFW guest with no protocol fork.
 | `EXEC` | `REDIR.EXE <outfile> <cmd>` (native DOS helper, see warning below), then `LEN:`/`EXIT:` -- **DOS-style console commands only** |
 | `EXECDETACH` | `WinExec()` directly, no DOS box, fire-and-forget -- use for any native Windows program |
 | `PUT` / `GET` | File transfer |
-| `SYSINFO` | Windows/DOS version, free system resources %, C: disk space |
+| `SYSINFO` | Windows/DOS version, free system resources %, real RAM total/free (ToolHelp `MemManInfo`), C: disk space |
 | `SCREENSHOT` | Whole-desktop `BitBlt` rendered to a 24-bit BMP |
 | `REBOOT` | `ExitWindows(EW_REBOOTSYSTEM)` -- a real machine reset, not just "exit to DOS" |
 | `SHUTDOWN` | `ExitWindows(0)` -- **not a real power-off, see warning below** |
@@ -43,6 +43,17 @@ isn't found. Confirmed via direct testing: launching and then
 `WINLIST` with no crash dialog and no effect on the agent's own
 responsiveness -- `NO_UAE_BOX` genuinely suppresses the GPF-style dialog
 a forced kill would otherwise show.
+
+### SYSINFO's mem_* fields, and a ToolHelp naming gotcha
+
+`SYSINFO` also reports `mem_total_kb`/`mem_free_kb` (real physical RAM,
+via ToolHelp's `MemManInfo()`) and `mem_swapfile_capacity_kb`. That last
+one is **not** "how much is currently swapped out" despite how it reads
+at a glance -- `MEMMANINFO.dwSwapFilePages` is documented as pages
+*available for* the 386 enhanced mode swap file, i.e. its configured
+capacity. Confirmed suspicious by testing: it came back as exactly
+49152 KB (48MB) on this box, a suspiciously round number for live usage,
+consistent with it being a configured size rather than a measurement.
 
 ### ⚠ SHUTDOWN doesn't power off the VM -- and EW_RESTARTWINDOWS is a trap
 

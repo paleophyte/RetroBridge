@@ -444,6 +444,34 @@ static int handle_sysinfo(void) {
     len += sprintf(buf + len, "free_system_resources_pct=%u\r\n",
                    (unsigned)GetFreeSystemResources(GFSR_SYSTEMRESOURCES));
 
+    /* GetFreeSystemResources() above is GDI/USER heap %, not physical
+       memory -- ToolHelp's MemManInfo() is the real memory picture:
+       total/free RAM in pages, converted here to KB. dwSwapFilePages is
+       the 386 enhanced mode swap file's configured CAPACITY (pages
+       available for it to grow into), not how much of it is currently
+       in use -- confirmed suspicious by testing: it came back as exactly
+       49152 KB (48MB), a suspiciously round number for "currently
+       swapped", matching this field's documented meaning of capacity
+       rather than live usage. Don't rename this to imply "in use". */
+    {
+        MEMMANINFO mmi;
+        mmi.dwSize = sizeof(MEMMANINFO);
+        if (MemManInfo(&mmi)) {
+            unsigned long page_kb = (unsigned long)mmi.wPageSize / 1024UL;
+            if (page_kb == 0) page_kb = 4; /* 4K pages if wPageSize < 1024 for any reason */
+            len += sprintf(buf + len, "mem_total_kb=%lu\r\n",
+                           (unsigned long)mmi.dwTotalPages * page_kb);
+            len += sprintf(buf + len, "mem_free_kb=%lu\r\n",
+                           (unsigned long)mmi.dwFreePages * page_kb);
+            len += sprintf(buf + len, "mem_swapfile_capacity_kb=%lu\r\n",
+                           (unsigned long)mmi.dwSwapFilePages * page_kb);
+        } else {
+            len += sprintf(buf + len, "mem_total_kb=?\r\n");
+            len += sprintf(buf + len, "mem_free_kb=?\r\n");
+            len += sprintf(buf + len, "mem_swapfile_capacity_kb=?\r\n");
+        }
+    }
+
     r.h.ah = 0x36;
     r.h.dl = 3; /* C: */
     int86(0x21, &r, &r);
