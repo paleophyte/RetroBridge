@@ -1,32 +1,55 @@
 # retro-ssh-server
 
-A toolchain for giving an LLM agent hands-on access to legacy Windows boxes
-(95/98/ME/NT4/2000/XP) and FreeDOS on an isolated lab network: run shell
-commands, transfer files, take screenshots, send mouse/keyboard input.
+A toolchain for giving an LLM tool-calling client hands-on access to legacy
+machines — Windows for Workgroups 3.11, Windows 95/98/ME/NT4/2000/XP,
+FreeDOS, OS/2, and NetWare — on an isolated lab network: run shell commands,
+transfer files, take screenshots, send mouse/keyboard input.
 Built after `freeSSHd` turned out to break other software (couldn't install
 MSSQL alongside it) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
 why this isn't "just use a different SSH server."
 
+## Nomenclature
+
+This repo has three distinct layers:
+
+- **Target agents** — the small `llm_agent` binaries that run on the legacy
+  machines. These speak this repo's private TCP wire protocol.
+- **MCP bridge / MCP server** — `bridge/server.py`, which runs on the modern
+  control machine and translates MCP tool calls into target-agent protocol
+  commands.
+- **MCP tools** — the individual `legacy_*` functions exposed by the bridge,
+  such as `legacy_exec`, `legacy_screenshot`, and `legacy_upload`.
+
+So the short version is: **run a target agent on each legacy machine; run the
+MCP bridge on the modern host; call the `legacy_*` MCP tools from your LLM
+client.**
+
 Pieces:
 
-- **`agent/`** — `llm_agent`, a single small C service you cross-compile
-  and copy onto the legacy Windows machine. One token-authed TCP channel
+- **`agent/`** — the Windows target agent: `llm_agent`, a single small C
+  service you cross-compile and copy onto the legacy Windows machine. One
+  token-authed TCP channel
   does everything: runs commands, moves files, captures the screen, sends
   mouse/keyboard input. No third-party software required on the legacy
   box — screenshots/input are built straight into the agent with GDI and
   `mouse_event`/`keybd_event`, not a separately-installed VNC server. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#screenshotinput-built-into-the-agent-not-vnc-revised)
   for why (that started as a VNC-based design and changed).
-- **`agent-dos/`** — FreeDOS port of the same wire protocol (Open Watcom +
-  Watt-32). Supports exec/file transfer/sysinfo/reboot plus text-mode
+- **`agent-dos/`** — FreeDOS target-agent port of the same wire protocol
+  (Open Watcom + Watt-32). Supports exec/file transfer/sysinfo/reboot plus text-mode
   screenshot and BIOS keyboard inject. See [agent-dos/README.md](agent-dos/README.md).
-- **`agent-os2/`** — OS/2 2.x port (Open Watcom 32-bit LX + SO32DLL + PM).
-  Supports exec/file/sysinfo plus full desktop `SCREENSHOT`.
+- **`agent-os2/`** — OS/2 2.x target-agent port (Open Watcom 32-bit LX +
+  SO32DLL + PM). Supports exec/file/sysinfo plus full desktop `SCREENSHOT`.
   See [agent-os2/README.md](agent-os2/README.md).
-- **`agent-netware/`** — NetWare 3.12+ NLM port (Open Watcom + CLIB BSD
-  sockets). See [agent-netware/README.md](agent-netware/README.md).
-- **`bridge/`** — an MCP server you run on your modern control machine,
-  exposing the agent's commands as MCP tools.
+- **`agent-os2-13/`** — OS/2 1.3 target-agent port, a separate 16-bit NE
+  build because OS/2 1.x predates the 32-bit kernel. See
+  [agent-os2-13/README.md](agent-os2-13/README.md).
+- **`agent-win16/`** — Windows for Workgroups 3.11 target-agent port
+  (Win16 + Winsock 1.1). See [agent-win16/README.md](agent-win16/README.md).
+- **`agent-netware/`** — NetWare 3.12+ NLM target-agent port (Open Watcom +
+  CLIB BSD sockets). See [agent-netware/README.md](agent-netware/README.md).
+- **`bridge/`** — the MCP bridge/server you run on your modern control
+  machine, exposing target-agent commands as MCP tools.
 
 If you also want to *watch* the box yourself, live, independent of the
 LLM tooling — RDP or your hypervisor's console both work fine and don't
@@ -38,7 +61,7 @@ a different session than what `legacy_screenshot` sees.
 machine. Only put this on an isolated host-only/lab network — see
 [docs/ARCHITECTURE.md#trust-model](docs/ARCHITECTURE.md#trust-model).
 
-## 1. Build the agent
+## 1. Build a target agent
 
 Requires the MSYS2 `mingw-w64-i686` environment (not `ucrt64`/`mingw64` —
 those target Vista+):

@@ -1,10 +1,11 @@
 # llm_agent for OS/2 1.3
 
-**16-bit OS/2 1.x port** of [`../agent/llm_agent.c`](../agent/llm_agent.c),
-sibling to [`../agent-os2`](../agent-os2) (OS/2 2.11, 32-bit). Speaks the
-**same** token-authed TCP wire protocol, so
-[`../bridge/server.py`](../bridge/server.py) can drive an OS/2 1.3 VM with
-no protocol fork.
+**16-bit OS/2 1.x target-agent port** of
+[`../agent/llm_agent.c`](../agent/llm_agent.c), sibling to
+[`../agent-os2`](../agent-os2) (OS/2 2.11, 32-bit). It is not an MCP server
+itself; it speaks the **same** token-authed TCP wire protocol, so
+[`../bridge/server.py`](../bridge/server.py) can expose it through the repo's
+`legacy_*` MCP tools with no protocol fork.
 
 This is a genuinely separate build, not a recompile of `../agent-os2` for a
 smaller target: **OS/2 1.3 has no 32-bit kernel at all** (that arrived with

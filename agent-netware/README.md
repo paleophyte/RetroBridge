@@ -1,9 +1,9 @@
 # llm_agent for NetWare 3.12+
 
-32-bit NLM port of [`../agent/llm_agent.c`](../agent/llm_agent.c). Speaks the
-**same** token-authed TCP wire protocol as FreeDOS/OS/2/Windows, so
-[`../bridge/server.py`](../bridge/server.py) can drive a NetWare server with no
-protocol fork.
+32-bit NLM target-agent port of [`../agent/llm_agent.c`](../agent/llm_agent.c).
+It is not an MCP server itself; it speaks the **same** token-authed TCP wire
+protocol as FreeDOS/OS/2/Windows, so [`../bridge/server.py`](../bridge/server.py)
+can expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 
 Uses Novell **CLIB** BSD sockets. Guest must already have TCP/IP loaded
 (`TCPIP` / your usual stack) and `CLIB.NLM` available (autoload via the NLM

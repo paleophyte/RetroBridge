@@ -7,8 +7,10 @@ bridge can drive it with **no protocol fork**.
 
 ## What this project is
 
-An LLM tool-calling harness for legacy VMs — not SSH. A small TCP agent
-on the guest + `bridge/server.py` (MCP) on the host.
+An LLM tool-calling setup for legacy VMs — not SSH. A small target agent
+on the guest + `bridge/server.py` as the MCP bridge/server on the host.
+The bridge exposes `legacy_*` MCP tools; the guest agent itself is not an
+MCP server.
 
 | Piece | Path |
 |---|---|
@@ -16,7 +18,7 @@ on the guest + `bridge/server.py` (MCP) on the host.
 | FreeDOS agent (done, working) | `agent-dos/llm_agent.c` |
 | **OS/2 2.11 agent** | `agent-os2/llm_agent.c` |
 | Wire protocol client | `bridge/agent_client.py` |
-| MCP tools | `bridge/server.py` |
+| MCP bridge/server + `legacy_*` MCP tools | `bridge/server.py` |
 | Architecture notes | `docs/ARCHITECTURE.md` |
 | Host machine config | `C:\Users\admin\.retro-ssh-server\machines.ini` |
 

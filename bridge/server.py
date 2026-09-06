@@ -1,13 +1,13 @@
-"""MCP bridge exposing shell exec + file transfer + screenshot + input
-injection on legacy Windows boxes (95/98/ME/NT4/2000/XP), FreeDOS, and OS/2
-(1.3 and 2.11) to an LLM tool-calling harness.
+"""MCP bridge/server exposing shell exec + file transfer + screenshot +
+input injection on legacy Windows boxes (WFW 3.11, 95/98/ME/NT4/2000/XP),
+FreeDOS, OS/2 (1.3 and 2.11), and NetWare to an LLM tool-calling client.
 
 Supports multiple legacy machines from one bridge process: each is a
 section in machines.ini (see machines.ini.example), and every tool takes
 a `machine` argument naming which one to target. Call legacy_list_machines
 to discover what's configured.
 
-Everything goes through one channel per machine: llm_agent
+Everything goes through one target-agent channel per machine: llm_agent
 (agent/llm_agent.c on Windows, agent-dos/llm_agent.c on FreeDOS,
 agent-os2/llm_agent.c on OS/2 2.11, agent-os2-13/llm_agent.c on OS/2 1.3 -
 a separate 16-bit build, since 1.3 predates the 32-bit kernel entirely), a
@@ -65,9 +65,12 @@ def _machine(name: str) -> MachineConfig:
 srv = MCPServer(
     "retro-ssh-server",
     instructions=(
-        "Tools for driving legacy machines on an isolated lab network: "
-        "Windows 95/98/ME/NT4/2000/XP, FreeDOS (agent-dos), OS/2 2.x "
-        "(agent-os2), and OS/2 1.3 (agent-os2-13, a separate 16-bit build). "
+        "MCP tools for driving legacy machines through small target agents "
+        "on an isolated lab network: "
+        "Windows 95/98/ME/NT4/2000/XP, Windows for Workgroups 3.11 "
+        "(agent-win16), FreeDOS (agent-dos), OS/2 2.x "
+        "(agent-os2), OS/2 1.3 (agent-os2-13, a separate 16-bit build), "
+        "and NetWare 3.12+ (agent-netware). "
         "Run shell commands, transfer files, take screenshots, "
         "and send keyboard input. Every tool takes a `machine` argument "
         "naming which configured machine to target - call "

@@ -9,7 +9,7 @@ around 2013, predating Ed25519/Curve25519/ChaCha20-Poly1305. Bitvise and
 similar modern servers refuse to install below XP SP3.
 
 But the real requirement underneath "SSH server" turned out to be narrower:
-**an LLM tool-calling harness needs to run commands, move files, see the
+**an LLM tool-calling client needs to run commands, move files, see the
 screen, and send input on a legacy box.** That's not what SSH is for. SSH's
 value is a general-purpose encrypted multiplexed terminal for human
 interactive sessions — host key exchange, PTY allocation, agent
@@ -23,14 +23,24 @@ So this project splits the actual requirement into two much smaller,
 narrower pieces instead of one do-everything SSH-alike:
 
 **Command execution + file transfer + screenshot + input** all live in one
-place — `agent/llm_agent.c` (`llm_agent`): a single-purpose,
-single-threaded TCP service. No session multiplexing, no PTY, no
+place on the legacy machine — `agent/llm_agent.c` (`llm_agent`): a
+single-purpose, single-threaded target-agent TCP service. No session
+multiplexing, no PTY, no
 auth-subsystem hooks. Small surface area means small opportunity to
 collide with anything else running on the box.
 
-`bridge/server.py` is the piece that actually talks to an LLM harness: an
-MCP server, running on your modern control machine, that exposes the
-agent's commands as tools.
+`bridge/server.py` is the piece that actually talks to an LLM tool-calling
+client: an MCP bridge/server, running on your modern control machine, that
+exposes target-agent commands as MCP tools.
+
+Terminology used throughout the repo:
+
+- **Target agent**: a legacy-machine `llm_agent` binary that speaks this
+  repo's private TCP wire protocol.
+- **MCP bridge / MCP server**: the modern-host Python process in
+  `bridge/server.py`.
+- **MCP tools**: the `legacy_*` functions registered by `bridge/server.py`,
+  such as `legacy_exec`, `legacy_screenshot`, and `legacy_reboot`.
 
 ## FreeDOS agent (`agent-dos/`)
 

@@ -1,8 +1,9 @@
 # llm_agent for FreeDOS
 
-DOS port of [`../agent/llm_agent.c`](../agent/llm_agent.c). Speaks the **same**
-token-authed TCP wire protocol, so [`../bridge/server.py`](../bridge/server.py)
-can drive a FreeDOS VM with no protocol fork.
+FreeDOS target-agent port of [`../agent/llm_agent.c`](../agent/llm_agent.c).
+It is not an MCP server itself; it speaks the **same** token-authed TCP wire
+protocol, so [`../bridge/server.py`](../bridge/server.py) can expose it through
+the repo's `legacy_*` MCP tools with no protocol fork.
 
 ## What works
 

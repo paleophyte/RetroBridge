@@ -1,9 +1,10 @@
 # llm_agent for OS/2 2.x
 
-**32-bit OS/2 (LX)** port of [`../agent/llm_agent.c`](../agent/llm_agent.c). Speaks the
-**same** token-authed TCP wire protocol as FreeDOS/Windows, so
-[`../bridge/server.py`](../bridge/server.py) can drive an OS/2 2.11 VM with no
-protocol fork.
+**32-bit OS/2 (LX)** target-agent port of
+[`../agent/llm_agent.c`](../agent/llm_agent.c). It is not an MCP server itself;
+it speaks the **same** token-authed TCP wire protocol as FreeDOS/Windows, so
+[`../bridge/server.py`](../bridge/server.py) can expose it through the repo's
+`legacy_*` MCP tools with no protocol fork.
 
 Uses IBM **SO32DLL** / **TCP32DLL** (Socket/MPTS) and PM (`PMWIN`/`PMGPI`) for
 desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
