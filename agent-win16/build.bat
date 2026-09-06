@@ -16,6 +16,8 @@ REM it, <windows.h> resolves to the H\NT (Win32/NT) copy instead, which is
 REM missing every Win16-only symbol this agent needs (GetModuleUsage,
 REM GetFreeSystemResources, GFSR_SYSTEMRESOURCES, ...).
 REM winsock.lib: not part of the -l=windows default set, add explicitly.
+REM toolhelp.lib: same story, needed for PSLIST/PSKILL's TaskFirst/
+REM TaskNext/ModuleFindHandle/TerminateApp (TOOLHELP.DLL).
 REM -fm: emit a linker map so a GPF's "module:offset" can be traced back
 REM to a function if this ever crashes again.
 REM Stack size: Watcom's default for this target is 8K, which a GPF
@@ -27,7 +29,7 @@ REM (wcl's DOS-oriented shortcut) has no effect combined with -l=windows
 REM for this NE target -- pass wlink's own OPTION STACK directive
 REM straight through instead (any arg wcl doesn't recognize goes to the
 REM linker unchanged).
-wcl -zq -zW -bt=windows -os -w4 -fm=llm_agent.map -i="%WATCOM%\H\WIN" -i="%WATCOM%\H" llm_agent.c -fe=llm_agent.exe -l=windows winsock.lib -"OPTION STACK=16384"
+wcl -zq -zW -bt=windows -os -w4 -fm=llm_agent.map -i="%WATCOM%\H\WIN" -i="%WATCOM%\H" llm_agent.c -fe=llm_agent.exe -l=windows winsock.lib toolhelp.lib -"OPTION STACK=16384"
 if errorlevel 1 exit /b 1
 echo OK: llm_agent.exe
 dir llm_agent.exe

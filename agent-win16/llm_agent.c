@@ -57,6 +57,7 @@
 
 #include <windows.h>
 #include <winsock.h>
+#include <toolhelp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1125,6 +1126,96 @@ static int handle_shutdown(void) {
     return -1;
 }
 
+/* ---- PSLIST / PSKILL via ToolHelp -- Windows 3.1 has no real process
+   model (no isolated address spaces, no PIDs), but it does have "tasks",
+   and TOOLHELP.DLL is the documented, official API for enumerating and
+   terminating them -- it's what Windows 3.1's own Task List (Ctrl+Esc)
+   and the Ctrl+Alt+Del handler use internally. HTASK stands in for a
+   PID: it's just a 16-bit handle, but it's the closest thing this OS
+   has, and it's what TerminateApp()/TaskFindHandle() key off. ---- */
+
+/* Basename of a path, with tabs/CR/LF scrubbed to keep the wire format's
+   tab-delimited lines intact regardless of what a module's path contains. */
+static void path_basename(char *dst, size_t dstsz, const char *src) {
+    const char *base = src;
+    const char *p;
+    size_t n;
+    char *d;
+
+    if (!src) src = "";
+    for (p = src; *p; p++) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    n = strlen(base);
+    if (n >= dstsz) n = dstsz - 1;
+    memcpy(dst, base, n);
+    dst[n] = '\0';
+    for (d = dst; *d; d++) {
+        if (*d == '\t' || *d == '\r' || *d == '\n') *d = ' ';
+    }
+}
+
+static int handle_pslist(void) {
+    static char out[8192];
+    int len = 0;
+    char hdr[32];
+    char name[MAX_PATH + 1];
+    TASKENTRY te;
+    MODULEENTRY me;
+    BOOL ok;
+
+    te.dwSize = sizeof(TASKENTRY);
+    for (ok = TaskFirst(&te); ok; ok = TaskNext(&te)) {
+        me.dwSize = sizeof(MODULEENTRY);
+        if (ModuleFindHandle(&me, te.hModule)) {
+            path_basename(name, sizeof(name), me.szExePath);
+        } else {
+            path_basename(name, sizeof(name), te.szModule);
+        }
+        if (len > (int)sizeof(out) - 160) break;
+        len += sprintf(out + len, "%u\t%s\r\n", (unsigned)te.hTask, name);
+    }
+
+    sprintf(hdr, "SIZE:%d\n", len);
+    if (send_cstr(hdr) < 0) return -1;
+    if (len > 0 && send_all(out, len) < 0) return -1;
+    return 0;
+}
+
+/* PSKILL <hTask>: TerminateApp(hTask, NO_UAE_BOX) -- the same call
+   Windows 3.1's own Task List "End Task" button and Ctrl+Alt+Del use.
+   NO_UAE_BOX suppresses the "has caused a General Protection Fault"
+   dialog a forced kill would otherwise show, so this doesn't leave a
+   blocking dialog behind the way the crashes earlier in this file's
+   history did -- confirmed no such dialog appears via direct testing.
+   Refuses to kill this agent's own task; TerminateApp on yourself would
+   just silently drop the connection with none of server_main()'s normal
+   socket cleanup. */
+static void handle_pskill(const char *args) {
+    HTASK hTask;
+    TASKENTRY te;
+
+    while (*args == ' ') args++;
+    hTask = (HTASK)atoi(args);
+    if (hTask == 0) {
+        send_cstr("ERR:bad PID\r\n");
+        return;
+    }
+    if (hTask == GetCurrentTask()) {
+        send_cstr("ERR:refusing to kill this agent's own task\r\n");
+        return;
+    }
+
+    te.dwSize = sizeof(TASKENTRY);
+    if (!TaskFindHandle(&te, hTask)) {
+        send_cstr("ERR:no such task\r\n");
+        return;
+    }
+
+    TerminateApp(hTask, NO_UAE_BOX);
+    send_cstr("OK\r\n");
+}
+
 /* ---- session ---- */
 
 static void handle_client(void) {
@@ -1174,9 +1265,11 @@ static void handle_client(void) {
             handle_lbgettext(g_line + 10);
         } else if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
             handle_execdetach(g_line + 11);
-        } else if (strcmp(g_line, "PSLIST") == 0 ||
-                   strncmp(g_line, "PSKILL ", 7) == 0 ||
-                   strncmp(g_line, "CLIPSET ", 8) == 0 ||
+        } else if (strcmp(g_line, "PSLIST") == 0) {
+            handle_pslist();
+        } else if (strncmp(g_line, "PSKILL ", 7) == 0) {
+            handle_pskill(g_line + 7);
+        } else if (strncmp(g_line, "CLIPSET ", 8) == 0 ||
                    strncmp(g_line, "REGGET\t", 7) == 0 ||
                    strncmp(g_line, "REGSET\t", 7) == 0) {
             send_cstr(ERR_NOSUP);

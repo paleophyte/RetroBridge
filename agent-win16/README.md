@@ -21,9 +21,28 @@ can drive a WFW guest with no protocol fork.
 | `WINMSG <hwnd> <msg> <wparam> <lparam>` | Raw `SendMessage()` -- **never for anything that might open a dialog, see warning below** |
 | `POSTMSG <hwnd> <msg> <wparam> <lparam>` | Raw `PostMessage()` -- use this instead of `WINMSG` for button presses / listbox activation |
 | `LBGETTEXT <hwnd> <index>` | Read a listbox item's text by index (read-only) |
+| `PSLIST` | `TaskFirst`/`TaskNext` + `ModuleFindHandle` (ToolHelp) -- a real Task List view, `<hTask>\t<exe basename>` per line |
+| `PSKILL <hTask>` | `TerminateApp(hTask, NO_UAE_BOX)` (ToolHelp) -- same call Task List's "End Task" uses; refuses to kill this agent's own task |
 
-Everything else (`CLIPSET`, `REG*`, `PSLIST`, `PSKILL`)
-returns `ERR:not supported on Windows 3.11`.
+Everything else (`CLIPSET`, `REG*`) returns `ERR:not supported on Windows 3.11`.
+
+### PSLIST/PSKILL use HTASK as the "PID"
+
+Windows 3.1 has no real process model -- no isolated address spaces, no
+PIDs -- but it does have "tasks", and TOOLHELP.DLL (linked via
+`toolhelp.lib`, not part of the default `-l=windows` set, same as
+`winsock.lib`) is the documented, official API Windows 3.1's own Task
+List (Ctrl+Esc) and Ctrl+Alt+Del handler use internally to enumerate and
+terminate them. `HTASK` (a 16-bit handle) stands in for a PID -- it's
+what `TerminateApp()`/`TaskFindHandle()` key off, and it's what
+`PSLIST` reports in the pid column. `PSLIST` resolves each task's full
+EXE path via `ModuleFindHandle()` where possible, falling back to
+`TASKENTRY.szModule` (an 8-char internal module name) if a module entry
+isn't found. Confirmed via direct testing: launching and then
+`PSKILL`ing `CLOCK.EXE` removed it cleanly from both `PSLIST` and
+`WINLIST` with no crash dialog and no effect on the agent's own
+responsiveness -- `NO_UAE_BOX` genuinely suppresses the GPF-style dialog
+a forced kill would otherwise show.
 
 ### ⚠ SHUTDOWN doesn't power off the VM -- and EW_RESTARTWINDOWS is a trap
 
