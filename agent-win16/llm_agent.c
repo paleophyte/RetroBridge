@@ -1154,6 +1154,69 @@ static int handle_shutdown(void) {
     return -1;
 }
 
+/* ---- UPDATE: self-update without a full system REBOOT. Overwriting
+   LLMAGENT.EXE on disk (PUT) never took effect for an already-running
+   instance before this existed -- Win16 keeps a module's code resident
+   in memory by name until every instance of it has exited
+   (GetModuleUsage() hits zero), so WinExec()'ing the same path again
+   while we're still up would just hand back another instance of the
+   OLD code already loaded, not the new bytes on disk. RESTART.EXE
+   (restart.c, a separate tiny helper, built via build_restart.bat) is
+   the piece that has to outlive us: it polls for our module's usage
+   count to actually reach zero, then launches a fresh copy. We can't do
+   that waiting ourselves, since we won't exist anymore once we exit.
+
+   Does NOT call DestroyWindow() to reuse the Exit button's WM_DESTROY
+   cleanup path, despite how tempting that looked -- confirmed by direct
+   testing that calling DestroyWindow() from this deep, non-WndProc call
+   stack (accept() -> handle_client() -> handle_update()) GPFs inside
+   the C runtime's own _exit_ cleanup once WinMain eventually returns
+   (crash address traced via llm_agent.map to fall inside _exit_'s
+   range). The Exit button's identical-looking DestroyWindow() call
+   never crashed because it runs from *within* WndProc's own WM_COMMAND
+   handling, a context Windows actually expects a window to destroy
+   itself from -- ours isn't that.
+
+   Also does NOT manually closesocket() g_client/g_listen the way
+   WM_DESTROY does, despite how closely that seems to mirror it -- a
+   first version of this did exactly that and froze the ENTIRE desktop
+   solid (not just this agent), needing a VM reboot to recover.
+   WM_DESTROY's force-close exists to unblock a call that's genuinely
+   *blocked* elsewhere (accept()/recv() during an async WM_DESTROY
+   delivered mid-block). handle_update() isn't in that situation -- it
+   runs synchronously, already past accept() and deep inside
+   handle_client()'s own command loop, and server_main()'s existing
+   fall-through cleanup closes both sockets exactly once anyway
+   (closesocket(g_client) unconditionally right after handle_client()
+   returns; closesocket(g_listen) once the outer loop notices
+   g_shutdown). Closing them here too double-closed both handles.
+   WINSOCK.DLL's state is shared system-wide across every Win16 app,
+   not per-process -- corrupting it doesn't stay contained to this
+   agent, which is almost certainly why the whole desktop froze rather
+   than just this one task. Setting the flag and returning is
+   sufficient; let the normal path do the rest exactly once. ---- */
+
+static int handle_update(void) {
+    char cmd[288];
+    int i;
+
+    send_cstr("OK\r\n");
+    for (i = 0; i < 10; i++) {
+        MSG msg;
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        Yield();
+    }
+
+    sprintf(cmd, "%s\\RESTART.EXE %s\\LLMAGENT.EXE", g_exedir, g_exedir);
+    WinExec(cmd, SW_SHOWMINNOACTIVE);
+
+    g_shutdown = 1;
+    return 0;
+}
+
 /* ---- PSLIST / PSKILL via ToolHelp -- Windows 3.1 has no real process
    model (no isolated address spaces, no PIDs), but it does have "tasks",
    and TOOLHELP.DLL is the documented, official API for enumerating and
@@ -1275,6 +1338,8 @@ static void handle_client(void) {
             handle_reboot();
         } else if (strcmp(g_line, "SHUTDOWN") == 0) {
             handle_shutdown();
+        } else if (strcmp(g_line, "UPDATE") == 0) {
+            handle_update();
         } else if (strncmp(g_line, "KEY ", 4) == 0) {
             handle_key(g_line + 4);
         } else if (strncmp(g_line, "TYPE ", 5) == 0) {
@@ -1399,12 +1464,54 @@ static int server_main(void) {
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(g_port);
 
-        if (bind(g_listen, (struct sockaddr FAR *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-            MessageBox(g_hwnd, "bind() failed -- is the port already in use?",
+        /* Retry bind() for a few seconds instead of failing immediately.
+           Right after UPDATE's self-relaunch, the just-exited old
+           instance's listening socket on this same port isn't always
+           released by WINSOCK.DLL's TCP/IP stack instantly -- the same
+           shape of lag the OS/2 agent's self-update hit and documented
+           against real hardware (see agent-os2-13/llm_agent.c). Without
+           this, an ordinary UPDATE could intermittently land on a
+           blocking MessageBox needing a manual dismiss for no reason
+           other than timing. */
+        {
+            int attempt;
+            int bound = 0;
+            for (attempt = 0; attempt < 10; attempt++) {
+                if (bind(g_listen, (struct sockaddr FAR *)&addr, sizeof(addr)) != SOCKET_ERROR) {
+                    bound = 1;
+                    break;
+                }
+                {
+                    DWORD start = GetTickCount();
+                    while (GetTickCount() - start < 500UL) {
+                        MSG msg;
+                        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&msg);
+                            DispatchMessage(&msg);
+                        }
+                        Yield();
+                    }
+                }
+            }
+            if (!bound) {
+                MessageBox(g_hwnd, "bind() failed -- is the port already in use?",
+                           "llm_agent-win16", MB_OK | MB_ICONHAND);
+                return 1;
+            }
+        }
+        if (listen(g_listen, 1) == SOCKET_ERROR) {
+            /* Previously unchecked -- a silent failure here left the
+               status window painting its normal "listening on port"
+               text (that text is static/config-derived, not tied to
+               actual bind/listen success) while nothing was really
+               bound, so a client saw connection-refused with no visible
+               sign anything was wrong on the console. */
+            MessageBox(g_hwnd, "listen() failed after a successful bind()",
                        "llm_agent-win16", MB_OK | MB_ICONHAND);
+            closesocket(g_listen);
+            g_listen = INVALID_SOCKET;
             return 1;
         }
-        listen(g_listen, 1);
 
         while (!g_shutdown) {
             g_client = accept(g_listen, NULL, NULL);

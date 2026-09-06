@@ -23,8 +23,66 @@ can drive a WFW guest with no protocol fork.
 | `LBGETTEXT <hwnd> <index>` | Read a listbox item's text by index (read-only) |
 | `PSLIST` | `TaskFirst`/`TaskNext` + `ModuleFindHandle` (ToolHelp) -- a real Task List view, `<hTask>\t<exe basename>` per line |
 | `PSKILL <hTask>` | `TerminateApp(hTask, NO_UAE_BOX)` (ToolHelp) -- same call Task List's "End Task" uses; refuses to kill this agent's own task |
+| `UPDATE` | Self-update without a full system REBOOT -- **read the warning below before touching this** |
 
 Everything else (`CLIPSET`, `REG*`) returns `ERR:not supported on Windows 3.11`.
+
+### UPDATE: self-update without a full REBOOT
+
+`PUT`ting a new `LLMAGENT.EXE` over the running one never took effect on
+its own -- Windows 3.1 keeps a module's code resident in memory by name
+until every instance of it has exited (`GetModuleUsage()` hits zero), so
+`WinExec()`ing the same path again while the old instance is still up
+just hands back another instance of the OLD code already loaded, not
+the new bytes on disk. `UPDATE` launches `RESTART.EXE` (`restart.c`, a
+separate tiny helper built via `build_restart.bat`) and then exits
+itself; `RESTART.EXE` is the piece that has to outlive the old agent and
+launch the fresh copy once it's safe to.
+
+Getting there took three rounds, each surfacing a different failure:
+
+1. **First version** had `UPDATE` call `DestroyWindow()` to reuse the
+   Exit button's `WM_DESTROY` cleanup path. That GPFs -- confirmed via
+   the linker map, inside the C runtime's own `_exit_` -- because
+   `DestroyWindow()` here runs from deep inside `accept()` ->
+   `handle_client()` -> `handle_update()`, not from *within* `WndProc`'s
+   own `WM_COMMAND` handling the way the Exit button's identical-looking
+   call does. Worse, the resulting crash dialog blocked
+   `GetModuleUsage()` from ever reaching zero until a human dismissed
+   it, defeating the entire point.
+2. **Second version** dropped `DestroyWindow()` in favor of manually
+   force-closing `g_client`/`g_listen`, mirroring `WM_DESTROY`. That
+   froze the *entire desktop*, not just this agent, needing a VM reboot
+   to recover -- `server_main()`'s own loop already closes both sockets
+   exactly once as `handle_update()`'s synchronous return unwinds
+   through it (unlike `WM_DESTROY`'s case, which really is async and
+   mid-`accept()`), so this was a silent double-`closesocket()`.
+   `WINSOCK.DLL`'s state is shared system-wide across every Win16 app,
+   not per-process, which is almost certainly why a bug here didn't
+   stay contained to just this agent. Fix: `handle_update()` just sets
+   `g_shutdown = 1` and returns -- nothing else.
+3. **Third version** (`RESTART.EXE` itself) polled
+   `GetModuleHandle("LLMAGENT")`/`GetModuleUsage()` in a tight
+   `Yield()`-driven loop waiting for the old instance to unload. That
+   was intermittently fatal too -- a different fault each time (a GPF
+   inside `_exit_` once, an illegal instruction inside `strpbrk_`
+   another time), always right around when this poll loop was actively
+   querying the old task's module state while it was mid-teardown.
+   Fixed by removing the polling entirely: `RESTART.EXE` now just waits
+   a flat 10 seconds, touching nothing about the old task's state at
+   all, before launching the fresh copy. Confirmed reliable three times
+   in a row after this change (zero successes in a row before it).
+
+Net effect: `UPDATE` now takes about 10 seconds (the flat delay) instead
+of the ~2 seconds the polling version achieved when it worked, but it
+actually works -- confirmed three clean runs in a row after the fix,
+versus roughly 50% of attempts needing a manual GPF-dialog dismiss
+before it. If a GPF dialog somehow still appears after `UPDATE` (hasn't
+recurred since this fix, but this OS has earned the caveat), it'll block
+`RESTART.EXE`'s relaunch the same way it always did -- dismiss it by
+hand and the new instance should come up right after, or fall back to
+`REBOOT` if it doesn't.
+
 
 ### PSLIST/PSKILL use HTASK as the "PID"
 
