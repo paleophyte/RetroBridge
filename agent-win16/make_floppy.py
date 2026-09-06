@@ -8,6 +8,7 @@ root = Path(__file__).resolve().parent
 out = root / "llm_agent_win16.flp"
 exe = root / "llm_agent.exe"
 redir_exe = root / "redir.exe"
+restart_exe = root / "restart.exe"
 
 FLOPPY_SIZE = 1474560  # 1.44MB
 
@@ -24,6 +25,10 @@ Files on this disk:
                   must sit next to LLMAGENT.EXE (see agent-win16/README.md's
                   "EXEC's redirection workaround" section for why this
                   exists -- EXEC will fail without it)
+  RESTART.EXE   - helper UPDATE uses to relaunch a fresh copy after a
+                  self-update; must also sit next to LLMAGENT.EXE (see
+                  the "UPDATE: self-update without a full REBOOT" section
+                  -- UPDATE will not bring the agent back without it)
   LLMAGENT.INI  - port= / token=
   README.TXT    - this file
 
@@ -32,6 +37,7 @@ Files on this disk:
      MKDIR C:\\LLMWIN
      COPY A:\\LLMAGENT.EXE C:\\LLMWIN\\
      COPY A:\\REDIR.EXE C:\\LLMWIN\\
+     COPY A:\\RESTART.EXE C:\\LLMWIN\\
      COPY A:\\LLMAGENT.INI C:\\LLMWIN\\
 2. Make sure NET START succeeded for this boot (WFW's own NDIS network
    stack -- see agent-dos/README.md's boot menu section) before starting
@@ -63,6 +69,8 @@ def main() -> None:
         raise SystemExit(f"missing {exe} — build with build.bat first")
     if not redir_exe.is_file():
         raise SystemExit(f"missing {redir_exe} — build with build_redir.bat first")
+    if not restart_exe.is_file():
+        raise SystemExit(f"missing {restart_exe} — build with build_restart.bat first")
 
     if out.exists():
         out.unlink()
@@ -87,6 +95,7 @@ def main() -> None:
     try:
         fs.writebytes("LLMAGENT.EXE", exe.read_bytes())
         fs.writebytes("REDIR.EXE", redir_exe.read_bytes())
+        fs.writebytes("RESTART.EXE", restart_exe.read_bytes())
         fs.writetext("LLMAGENT.INI", INI, encoding="ascii", errors="strict")
         fs.writetext("README.TXT", README, encoding="ascii", errors="strict")
         print("Files on floppy:", fs.listdir("/"))
