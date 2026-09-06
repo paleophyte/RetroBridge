@@ -1,8 +1,8 @@
 # llm_agent for NetWare 3.12+
 
-32-bit NLM target-agent port of [`../agent/llm_agent.c`](../agent/llm_agent.c).
+32-bit NLM target-agent port of [`../agent-win32/llm_agent.c`](../agent-win32/llm_agent.c).
 It is not an MCP server itself; it speaks the **same** token-authed TCP wire
-protocol as FreeDOS/OS/2/Windows, so [`../bridge/server.py`](../bridge/server.py)
+protocol as FreeDOS/OS/2/Windows, so [`../mcp-server/server.py`](../mcp-server/server.py)
 can expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 
 Uses Novell **CLIB** BSD sockets. Guest must already have TCP/IP loaded
@@ -144,7 +144,7 @@ and `nw4\build.bat` — kept separate so the 3.12 path stays clean.
 
    ```bat
    set NW_HOST=192.168.56.30
-   ..\bridge\.venv\Scripts\python.exe _smoke_test.py
+   ..\mcp-server\.venv\Scripts\python.exe _smoke_test.py
    ```
 
 Unload with `UNLOAD LLMAGENT` (warns if a client is connected).

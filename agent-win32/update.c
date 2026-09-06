@@ -9,7 +9,7 @@
  * Usage: update.exe <new-exe-path> [target-exe-path]
  * Both paths must be absolute. target-exe-path defaults to "llm_agent.exe"
  * in update.exe's own directory - a service's default working directory
- * is system32, not wherever the agent/update.exe actually live, so a
+ * is system32, not wherever the agent binary and update.exe actually live, so a
  * relative path here would silently resolve to the wrong place.
  *
  * Same -march=i486 / no-CRT-formatted-IO discipline as llm_agent.c - see

@@ -1,7 +1,7 @@
 /*
  * llm_agent (Win16): Windows for Workgroups 3.11 port of the legacy
  * Windows llm_agent. Speaks the same token-authed TCP wire protocol as
- * agent/llm_agent.c and agent-dos/llm_agent.c so bridge/server.py can
+ * agent-win32/llm_agent.c and agent-dos/llm_agent.c so mcp-server/server.py can
  * drive a WFW guest with no protocol fork.
  *
  * Networking uses WFW's own Winsock 1.1 stack (WINSOCK.DLL) -- no packet

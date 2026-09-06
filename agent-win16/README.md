@@ -1,8 +1,8 @@
 # llm_agent for Windows for Workgroups 3.11
 
-Win16 target-agent port of [`../agent/llm_agent.c`](../agent/llm_agent.c). It is
+Win16 target-agent port of [`../agent-win32/llm_agent.c`](../agent-win32/llm_agent.c). It is
 not an MCP server itself; it speaks the **same** token-authed TCP wire protocol,
-so [`../bridge/server.py`](../bridge/server.py) can expose it through the repo's
+so [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through the repo's
 `legacy_*` MCP tools with no protocol fork.
 
 ## What works

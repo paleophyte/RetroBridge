@@ -1,4 +1,4 @@
-"""TCP client for the llm_agent protocol (see agent/llm_agent.c for the
+"""TCP client for the llm_agent protocol (see agent-win32/llm_agent.c for the
 authoritative wire protocol docs - this is a summary, not the source of
 truth for edge cases).
 

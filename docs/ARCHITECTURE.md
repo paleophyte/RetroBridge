@@ -23,13 +23,13 @@ So this project splits the actual requirement into two much smaller,
 narrower pieces instead of one do-everything SSH-alike:
 
 **Command execution + file transfer + screenshot + input** all live in one
-place on the legacy machine — `agent/llm_agent.c` (`llm_agent`): a
+place on the legacy machine — `agent-win32/llm_agent.c` (`llm_agent`): a
 single-purpose, single-threaded target-agent TCP service. No session
 multiplexing, no PTY, no
 auth-subsystem hooks. Small surface area means small opportunity to
 collide with anything else running on the box.
 
-`bridge/server.py` is the piece that actually talks to an LLM tool-calling
+`mcp-server/server.py` is the piece that actually talks to an LLM tool-calling
 client: an MCP bridge/server, running on your modern control machine, that
 exposes target-agent commands as MCP tools.
 
@@ -38,8 +38,8 @@ Terminology used throughout the repo:
 - **Target agent**: a legacy-machine `llm_agent` binary that speaks this
   repo's private TCP wire protocol.
 - **MCP bridge / MCP server**: the modern-host Python process in
-  `bridge/server.py`.
-- **MCP tools**: the `legacy_*` functions registered by `bridge/server.py`,
+  `mcp-server/server.py`.
+- **MCP tools**: the `legacy_*` functions registered by `mcp-server/server.py`,
   such as `legacy_exec`, `legacy_screenshot`, and `legacy_reboot`.
 
 ## FreeDOS agent (`agent-dos/`)
@@ -76,7 +76,7 @@ Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH`, `PUT` / `GET`, `SYSIN
 (`DosQProcStatus` / `DosKillProcess`), `CLIPSET` (PM `CF_TEXT` /
 `DosAllocSharedMem` + `CFI_POINTER`), `REBOOT` (detached `REBOOT.EXE`:
 keyboard-controller `.COM`). Self-update uses a separate `update.exe`
-helper (same pattern as Windows `agent/update.c`), driven by
+helper (same pattern as Windows `agent-win32/update.c`), driven by
 `legacy_self_update`. `REG*` and `SHUTDOWN` return `ERR:not supported on
 OS/2` (`DosShutdown` hard-locks; `WinShutdownSystem` needs interactive
 session-close confirms we could not automate reliably). See
@@ -470,7 +470,7 @@ reliably present before 2000). Design specifics that mattered:
 
 ## Self-update
 
-`agent/update.c` compiles to a second binary, `update.exe`, whose only
+`agent-win32/update.c` compiles to a second binary, `update.exe`, whose only
 job is replacing a running `llm_agent` installation with a new one:
 stop the old process, swap the file, start the new one. Deliberately a
 *separate* small program rather than a `SELFUPDATE` command bolted onto
@@ -489,12 +489,12 @@ Usage: `update.exe <new-exe-path> [target-exe-path]`. `target-exe-path`
 defaults to `llm_agent.exe` next to `update.exe` itself if omitted (Windows
 only — OS/2 requires both paths). Both
 paths must be absolute — a service's default working directory is
-`system32`, not wherever the agent/update.exe actually live (the same
+`system32`, not wherever the target agent and update helper actually live (the same
 gotcha `load_config()` already has to work around for
 `llm_agent.ini`), so any relative path here would silently resolve to
 the wrong place.
 
-Sequencing, driven by `bridge/server.py`'s `legacy_self_update`:
+Sequencing, driven by `mcp-server/server.py`'s `legacy_self_update`:
 
 1. `PUT` the new `llm_agent.exe` to `<remote_dir>\llm_agent_new.exe`
    (not directly over the live file — see above) and `update.exe` to
@@ -674,7 +674,7 @@ one function or one command.
 
 Fix, in two parts:
 
-1. `agent/Makefile` now passes `-march=i486` explicitly, which disables
+1. `agent-win32/Makefile` now passes `-march=i486` explicitly, which disables
    MMX/SSE/SSE2 (and the Pentium-Pro-only `cmov`) for anything compiled
    fresh from `llm_agent.c`.
 2. That alone wasn't enough — `-march` only affects code GCC compiles
@@ -969,7 +969,7 @@ against its own version and refuses ("is not a valid Win32 application")
 — with a misleading error that looks like a corrupt binary, not a version
 mismatch.
 
-The fix, in `agent/Makefile`:
+The fix, in `agent-win32/Makefile`:
 
 - Use the MSYS2 **`mingw-w64-i686`** environment, not `ucrt64`/`mingw64`.
   UCRT-linked binaries depend on `ucrtbase.dll`, which doesn't exist before

@@ -1,7 +1,7 @@
 /*
  * UPDATE.EXE (OS/2): replace a running llm_agent with a new binary.
  *
- * Same role as agent/update.c on Windows. Launched via EXECDETACH so it
+ * Same role as agent-win32/update.c on Windows. Launched via EXECDETACH so it
  * outlives the agent it is about to stop.
  *
  * Usage: UPDATE.EXE <new-exe-path> <target-exe-path>

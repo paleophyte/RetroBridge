@@ -1,7 +1,7 @@
 /*
  * llm_agent (NetWare NLM): NetWare 3.12+ port of the legacy llm_agent.
  *
- * Same wire protocol as agent/llm_agent.c so bridge/server.py can drive a
+ * Same wire protocol as agent-win32/llm_agent.c so mcp-server/server.py can drive a
  * NetWare server without a protocol fork. Uses CLIB BSD sockets (TCP/IP
  * Transport must already be loaded).
  *

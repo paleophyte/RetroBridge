@@ -28,7 +28,7 @@ wlink @llm_agent.lnk
 if errorlevel 1 exit /b 1
 
 set PYTHON=python
-if exist ..\bridge\.venv\Scripts\python.exe set PYTHON=..\bridge\.venv\Scripts\python.exe
+if exist ..\mcp-server\.venv\Scripts\python.exe set PYTHON=..\mcp-server\.venv\Scripts\python.exe
 %PYTHON% fix_nlm_imports.py LLMAGENT.NLM
 if errorlevel 1 exit /b 1
 

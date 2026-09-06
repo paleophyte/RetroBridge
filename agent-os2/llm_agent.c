@@ -1,7 +1,7 @@
 /*
  * llm_agent (OS/2): OS/2 2.x port of the legacy Windows / FreeDOS llm_agent.
  *
- * Same wire protocol as agent/llm_agent.c so bridge/server.py can drive an
+ * Same wire protocol as agent-win32/llm_agent.c so mcp-server/server.py can drive an
  * OS/2 VM without a protocol fork.
  *
  * 32-bit OS/2 (LX) + IBM SO32DLL/TCP32DLL sockets + PM screen capture.

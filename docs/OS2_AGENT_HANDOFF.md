@@ -8,17 +8,17 @@ bridge can drive it with **no protocol fork**.
 ## What this project is
 
 An LLM tool-calling setup for legacy VMs — not SSH. A small target agent
-on the guest + `bridge/server.py` as the MCP bridge/server on the host.
+on the guest + `mcp-server/server.py` as the MCP bridge/server on the host.
 The bridge exposes `legacy_*` MCP tools; the guest agent itself is not an
 MCP server.
 
 | Piece | Path |
 |---|---|
-| Windows reference agent | `agent/llm_agent.c` |
+| Windows reference agent | `agent-win32/llm_agent.c` |
 | FreeDOS agent (done, working) | `agent-dos/llm_agent.c` |
 | **OS/2 2.11 agent** | `agent-os2/llm_agent.c` |
-| Wire protocol client | `bridge/agent_client.py` |
-| MCP bridge/server + `legacy_*` MCP tools | `bridge/server.py` |
+| Wire protocol client | `mcp-server/agent_client.py` |
+| MCP bridge/server + `legacy_*` MCP tools | `mcp-server/server.py` |
 | Architecture notes | `docs/ARCHITECTURE.md` |
 | Host machine config | `C:\Users\admin\.retro-ssh-server\machines.ini` |
 
@@ -28,7 +28,7 @@ Cleartext TCP, lab network only:
 
 1. Client connects → sends `token\n` → expects `OK\n` (else `FAIL`)
 2. Commands are one line; binary payloads framed with `LEN:` / `SIZE:` etc.
-3. See header comments in `bridge/agent_client.py` and FreeDOS
+3. See header comments in `mcp-server/agent_client.py` and FreeDOS
    `agent-dos/llm_agent.c` for the full command set.
 
 **MVP (OS/2):**
@@ -72,7 +72,7 @@ FreeDOS agent is **live and smoke-tested** against `[dos]` in
 ```bat
 cd agent-os2
 build.bat
-..\bridge\.venv\Scripts\python.exe make_floppy.py
+..\mcp-server\.venv\Scripts\python.exe make_floppy.py
 ```
 
 On guest: copy from floppy → `C:\LLM\`, run `LLMAGENT.EXE` with TCP up.

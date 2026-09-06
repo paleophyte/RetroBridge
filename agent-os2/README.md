@@ -1,9 +1,9 @@
 # llm_agent for OS/2 2.x
 
 **32-bit OS/2 (LX)** target-agent port of
-[`../agent/llm_agent.c`](../agent/llm_agent.c). It is not an MCP server itself;
+[`../agent-win32/llm_agent.c`](../agent-win32/llm_agent.c). It is not an MCP server itself;
 it speaks the **same** token-authed TCP wire protocol as FreeDOS/Windows, so
-[`../bridge/server.py`](../bridge/server.py) can expose it through the repo's
+[`../mcp-server/server.py`](../mcp-server/server.py) can expose it through the repo's
 `legacy_*` MCP tools with no protocol fork.
 
 Uses IBM **SO32DLL** / **TCP32DLL** (Socket/MPTS) and PM (`PMWIN`/`PMGPI`) for
@@ -64,7 +64,7 @@ build.bat
 Produces `llm_agent.exe` and `update.exe` (OS/2 LX). Floppy:
 
 ```bat
-..\bridge\.venv\Scripts\python.exe make_floppy.py
+..\mcp-server\.venv\Scripts\python.exe make_floppy.py
 ```
 
 ## Deploy

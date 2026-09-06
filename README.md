@@ -14,7 +14,7 @@ This repo has three distinct layers:
 
 - **Target agents** — the small `llm_agent` binaries that run on the legacy
   machines. These speak this repo's private TCP wire protocol.
-- **MCP bridge / MCP server** — `bridge/server.py`, which runs on the modern
+- **MCP bridge / MCP server** — `mcp-server/server.py`, which runs on the modern
   control machine and translates MCP tool calls into target-agent protocol
   commands.
 - **MCP tools** — the individual `legacy_*` functions exposed by the bridge,
@@ -26,7 +26,7 @@ client.**
 
 Pieces:
 
-- **`agent/`** — the Windows target agent: `llm_agent`, a single small C
+- **`agent-win32/`** — the Win32 target agent: `llm_agent`, a single small C
   service you cross-compile and copy onto the legacy Windows machine. One
   token-authed TCP channel
   does everything: runs commands, moves files, captures the screen, sends
@@ -48,7 +48,7 @@ Pieces:
   (Win16 + Winsock 1.1). See [agent-win16/README.md](agent-win16/README.md).
 - **`agent-netware/`** — NetWare 3.12+ NLM target-agent port (Open Watcom +
   CLIB BSD sockets). See [agent-netware/README.md](agent-netware/README.md).
-- **`bridge/`** — the MCP bridge/server you run on your modern control
+- **`mcp-server/`** — the MCP bridge/server you run on your modern control
   machine, exposing target-agent commands as MCP tools.
 
 If you also want to *watch* the box yourself, live, independent of the
@@ -71,7 +71,7 @@ pacman -S --needed mingw-w64-i686-gcc mingw-w64-i686-binutils
 ```
 
 ```bash
-cd agent
+cd agent-win32
 PATH="/c/msys64/mingw32/bin:$PATH" make
 ```
 
@@ -80,7 +80,7 @@ PATH="/c/msys64/mingw32/bin:$PATH" make
 directory has to be on `PATH` for the *whole* build, not just for finding
 `gcc` itself — a silent, no-error-message failure otherwise.)
 
-This produces `agent/llm_agent.exe` and `agent/update.exe` (see
+This produces `agent-win32/llm_agent.exe` and `agent-win32/update.exe` (see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update) — used for
 in-place updates, not part of normal deployment), both 32-bit PE binaries
 stamped for Windows 4.0 (95/NT4-era) so the loader on old targets will
@@ -92,7 +92,7 @@ read `PE32 executable for MS Windows 4.00 (console)`.
 Repeat this for every legacy box you want the bridge to reach — each one
 needs its own copy of the agent and, ideally, its own token.
 
-Copy `llm_agent.exe` and `agent/llm_agent.ini.example` (renamed to
+Copy `llm_agent.exe` and `agent-win32/llm_agent.ini.example` (renamed to
 `llm_agent.ini`) to the target machine, in the same directory. Edit
 `llm_agent.ini`:
 
@@ -125,7 +125,7 @@ registration, not an in-place binary swap.
 ## 3. Set up the bridge
 
 ```bash
-cd bridge
+cd mcp-server
 python -m venv .venv
 ./.venv/Scripts/pip install -r requirements.txt
 ```
@@ -150,8 +150,8 @@ to `2222`).
 
 **Put your real `machines.ini` outside the repo**, e.g.
 `~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at
-it (rather than the in-repo default of `bridge/machines.ini`). This isn't
-just tidiness — anything under `bridge/` is fair game for scratch/test
+it (rather than the in-repo default of `mcp-server/machines.ini`). This isn't
+just tidiness — anything under `mcp-server/` is fair game for scratch/test
 files during development on this repo itself, and a real config sitting
 at the same default path a quick local test would use is a live token
 one `rm`/overwrite away from being gone, with no git history to recover
@@ -165,8 +165,8 @@ server:
 {
   "mcpServers": {
     "retro-ssh-server": {
-      "command": "C:\\path\\to\\retro-ssh-server\\bridge\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\retro-ssh-server\\bridge\\server.py"],
+      "command": "C:\\path\\to\\retro-ssh-server\\mcp-server\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\retro-ssh-server\\mcp-server\\server.py"],
       "env": {
         "LEGACY_MACHINES_FILE": "C:\\Users\\you\\.retro-ssh-server\\machines.ini"
       }

@@ -1,7 +1,7 @@
 /*
  * llm_agent (DOS): FreeDOS / MS-DOS port of the legacy Windows llm_agent.
  *
- * Same wire protocol as agent/llm_agent.c so bridge/server.py can drive a
+ * Same wire protocol as agent-win32/llm_agent.c so mcp-server/server.py can drive a
  * FreeDOS VM without a protocol fork. Unsupported Windows-only commands
  * return "ERR:not supported on DOS\n".
  *

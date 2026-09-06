@@ -1,6 +1,6 @@
-agent/llm_agent.ini
-agent/*.exe
-agent/*.o
+agent-win32/llm_agent.ini
+agent-win32/*.exe
+agent-win32/*.o
 agent-dos/llm_agent.ini
 agent-dos/WATTCP.CFG
 agent-dos/*.exe
@@ -57,13 +57,6 @@ agent-os2-13/vendor/*.lib
 agent-os2-13/vendor/*.lst
 agent-os2-13/last_screenshot.bmp
 
-os2idle/*.exe
-os2idle/*.sys
-os2idle/*.obj
-os2idle/*.err
-os2idle/*.map
-os2idle/*.lst
-os2idle/*.flp
 agent-os2-13/last_screenshot.png
 agent-os2-13/__pycache__/
 agent-netware/*.nlm
@@ -118,8 +111,8 @@ agent-netware/nw4/*.obj
 agent-netware/nw4/*.map
 agent-netware/vendor/clib-sdk/
 agent-netware/vendor/novell-clib-devel.zip
-bridge/machines.ini
-bridge/.venv/
-bridge/__pycache__/
-bridge/screenshots/
+mcp-server/machines.ini
+mcp-server/.venv/
+mcp-server/__pycache__/
+mcp-server/screenshots/
 *.pyc

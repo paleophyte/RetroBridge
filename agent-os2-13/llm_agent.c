@@ -2,7 +2,7 @@
  * llm_agent (OS/2 1.3): 16-bit OS/2 1.x port of the legacy Windows / FreeDOS /
  * OS/2 2.x llm_agent.
  *
- * Same wire protocol as ../agent-os2/llm_agent.c so bridge/server.py can
+ * Same wire protocol as ../agent-os2/llm_agent.c so mcp-server/server.py can
  * drive an OS/2 1.3 VM without a protocol fork. OS/2 1.3 has no 32-bit
  * kernel at all (that arrived with 2.0), so this is a genuinely different
  * build: 16-bit NE via Open Watcom's os21x header set (-i=%WATCOM%\h\os21x),

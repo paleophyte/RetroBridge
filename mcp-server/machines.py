@@ -1,7 +1,7 @@
 """Loads named legacy-machine configs (host/ports/token) from an ini file.
 
-Lets one bridge process serve multiple legacy boxes - each MCP tool call
-names which configured machine to target instead of the bridge being
+Lets one MCP server process serve multiple legacy boxes - each MCP tool call
+names which configured machine to target instead of the server being
 wired to a single machine via environment variables.
 """
 

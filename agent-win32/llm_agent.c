@@ -899,7 +899,7 @@ static int handle_pskill(SOCKET s, const char *args) {
 typedef BOOL (WINAPI *GetDiskFreeSpaceExAFn)(LPCSTR, PULARGE_INTEGER, PULARGE_INTEGER, PULARGE_INTEGER);
 
 /* ---- SYSINFO: key=value lines - OS family/version, computer name,
-   memory, C: disk space. Lets the bridge/LLM detect what it's talking to
+   memory, C: disk space. Lets the MCP server / LLM client detect what it's talking to
    instead of parsing locale-dependent `ver` output through EXEC (which
    itself depends on the cmd.exe/COMMAND.COM split above). ---- */
 static int handle_sysinfo(SOCKET s) {

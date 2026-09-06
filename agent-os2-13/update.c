@@ -1,6 +1,6 @@
 /*
  * UPDATE.EXE (OS/2 1.3, 16-bit): replace a running llm_agent with a new
- * binary. Same role as ../agent/update.c (Windows) and ../agent-os2/update.c
+ * binary. Same role as ../agent-win32/update.c (Windows) and ../agent-os2/update.c
  * (2.x), simplified for the 16-bit toolchain.
  *
  * Launched via EXECDETACH so it outlives the agent it is about to stop -
@@ -145,7 +145,7 @@ static PID read_agent_pid(const char *targetPath) {
  * loopback: an early version of this connected to 127.0.0.1 and hung
  * indefinitely, confirmed live - this TCP/IP stack's loopback support is
  * evidently not there (or not configured), unlike the real interface,
- * which every external client (this project's bridge included) reaches
+ * which every external client (this project's MCP server included) reaches
  * without issue. */
 static int read_ini(const char *targetPath, unsigned short *port, char *token, size_t tokenLen,
                      char *host, size_t hostLen) {

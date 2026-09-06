@@ -8,7 +8,7 @@ a `machine` argument naming which one to target. Call legacy_list_machines
 to discover what's configured.
 
 Everything goes through one target-agent channel per machine: llm_agent
-(agent/llm_agent.c on Windows, agent-dos/llm_agent.c on FreeDOS,
+(agent-win32/llm_agent.c on Windows, agent-dos/llm_agent.c on FreeDOS,
 agent-os2/llm_agent.c on OS/2 2.11, agent-os2-13/llm_agent.c on OS/2 1.3 -
 a separate 16-bit build, since 1.3 predates the 32-bit kernel entirely), a
 tiny token-authed TCP service, assumed to be on an isolated lab/host-only
@@ -666,7 +666,7 @@ def legacy_self_update(
     new agent binary and update helper, then launches the helper detached
     to stop the running agent, swap the binary, and restart it.
 
-    On Windows, build both with `make` in agent/. On OS/2, build with
+    On Windows, build both with `make` in agent-win32/. On OS/2, build with
     agent-os2/build.bat (produces llm_agent.exe + update.exe). remote_dir
     is the absolute directory the agent is currently deployed in (e.g.
     C:\\llmagent) - there's no remote way to ask the agent where it's

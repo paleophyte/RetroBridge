@@ -1,10 +1,10 @@
 # llm_agent for OS/2 1.3
 
 **16-bit OS/2 1.x target-agent port** of
-[`../agent/llm_agent.c`](../agent/llm_agent.c), sibling to
+[`../agent-win32/llm_agent.c`](../agent-win32/llm_agent.c), sibling to
 [`../agent-os2`](../agent-os2) (OS/2 2.11, 32-bit). It is not an MCP server
 itself; it speaks the **same** token-authed TCP wire protocol, so
-[`../bridge/server.py`](../bridge/server.py) can expose it through the repo's
+[`../mcp-server/server.py`](../mcp-server/server.py) can expose it through the repo's
 `legacy_*` MCP tools with no protocol fork.
 
 This is a genuinely separate build, not a recompile of `../agent-os2` for a
@@ -34,7 +34,7 @@ closer parity with the current 2.x agent, not just a straight restore.
 | `PSKILL` | `DosKillProcess` — works if you already have a PID (e.g. from `EXECDETACH`'s or `PSLIST`'s reply) |
 | `REBOOT` | Detached `IORESET.EXE`: `DosShutdown` then an 8042 pulse reset issued from a ring-2 I/O privilege segment — **confirmed working live**, see below |
 
-Self-update: `update.exe` (same role as `../agent/update.c` /
+Self-update: `update.exe` (same role as `../agent-win32/update.c` /
 `../agent-os2/update.c`) — stop the old agent with a `SELFEXIT` request
 over the wire (`DosKillProcess` can't: see below), swap the binary with
 rollback, then relaunch it in a fresh session. Working and safe to use,
@@ -85,7 +85,7 @@ media). `PSLIST` shells out to it (`CMD.EXE /C` + temp-file redirect,
 same pattern as `EXEC`) and parses its process/thread table.
 
 **Verification status**: confirmed working live end-to-end against the
-real os2-13 box, via `bridge/agent_client.py`'s `pslist()` (13-14 real
+real os2-13 box, via `mcp-server/agent_client.py`'s `pslist()` (13-14 real
 processes each run, including the agent's own — `LLM_AGEN` — reported
 correctly). The parser was also validated offline first against a real
 captured `PSTAT.EXE` run before ever being wired into the agent.
@@ -228,10 +228,10 @@ build.bat
 ```
 
 Produces `llm_agent.exe` and `update.exe` (both OS/2 16-bit NE). Floppy
-(needs `pyfatfs`, e.g. the bridge venv):
+(needs `pyfatfs`, e.g. the `mcp-server` venv):
 
 ```bat
-..\bridge\.venv\Scripts\python.exe make_floppy.py
+..\mcp-server\.venv\Scripts\python.exe make_floppy.py
 ```
 
 ## Deploy
@@ -259,7 +259,7 @@ between the reset and `STARTUP.CMD` starting it.
 ## Self-update (from host) - WORKING, ONE INTERMITTENT FAILURE LEFT
 
 Same shape as the other agents - `legacy_self_update` in
-`bridge/server.py`, with OS/2 8.3 remote names:
+`mcp-server/server.py`, with OS/2 8.3 remote names:
 
 ```
 legacy_self_update(machine="os2-13", ...,
