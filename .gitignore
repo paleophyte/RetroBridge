@@ -9,6 +9,7 @@ agent-dos/*.err
 agent-dos/*.flp
 agent-dos/last_screenshot.bmp
 agent-dos/last_screenshot.png
+agent-dos/PCNTPK.COM
 agent-win16/llm_agent.ini
 agent-win16/*.exe
 agent-win16/*.obj
@@ -55,6 +56,14 @@ agent-os2-13/vendor/*.dll
 agent-os2-13/vendor/*.lib
 agent-os2-13/vendor/*.lst
 agent-os2-13/last_screenshot.bmp
+
+os2idle/*.exe
+os2idle/*.sys
+os2idle/*.obj
+os2idle/*.err
+os2idle/*.map
+os2idle/*.lst
+os2idle/*.flp
 agent-os2-13/last_screenshot.png
 agent-os2-13/__pycache__/
 agent-netware/*.nlm
