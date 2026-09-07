@@ -71,7 +71,35 @@ Produces `llm_agent.exe` and `update.exe` (OS/2 LX). Floppy:
 
 1. TCP/IP up; `SO32DLL.DLL` on `LIBPATH` (normally `C:\MPTN\DLL`).
 2. Copy `LLMAGENT.EXE` + `LLMAGENT.INI` to e.g. `C:\llmagent\`.
-3. Run `LLMAGENT.EXE` from an OS/2 window (or `STARTUP.CMD`).
+3. Run `LLMAGENT.EXE` from an OS/2 window, or register it for autostart
+   (see below) — **never** via a `CONFIG.SYS RUN=` line (see warning).
+
+### Autostart: WPS Startup folder only, never `CONFIG.SYS RUN=`
+
+`RUN=` lines execute before the WPS/Session Manager finishes
+initializing. A process launched that early gets an incomplete session
+context: it can still do plain socket I/O (`PING`/`PSLIST`/`SYSINFO`/PM
+calls like `SCREENSHOT`/`CLICK`), but every one of *its own* calls to
+`DosStartSession` fails forever after with `ERROR_SMG_INVALID_CALL`
+(rc=418) — silently breaking `EXEC`, `EXECDETACH`, `REBOOT`, and
+self-update, with no way to recover short of killing and relaunching the
+process properly. Confirmed live: identical binary, identical
+`CONFIG.SYS` otherwise, only the launch path differed.
+
+The correct fix is a WPS Startup-folder object (`<WP_START>`), which the
+shell launches *after* WPS is fully up — same session lineage as
+double-clicking the icon by hand. Register it once via REXX
+(`llmstart.cmd` in this directory):
+
+```
+C:\llmagent\LLMSTART.CMD
+```
+
+It calls `SysCreateObject` with `OBJECTID=<LLMAGENT_START>` and
+`REPLACE`, so it's safe to re-run. On a heavily-populated WPS object
+database (lots of installed software) this can take 60-90s to return —
+that's normal, not a hang; the agent's single-threaded accept loop just
+won't answer new connections until the call completes.
 
 ## Self-update (from host)
 

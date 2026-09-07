@@ -707,12 +707,30 @@ static int handle_sysinfo(void) {
     DosQuerySysInfo(QSV_VERSION_MAJOR, QSV_VERSION_MINOR, &majmin, sizeof(majmin));
     /* DosQuerySysInfo one-at-a-time is clearer: */
     {
-        ULONG major = 0, minor = 0;
+        ULONG major = 0, minor = 0, disp_major, disp_minor;
         DosQuerySysInfo(QSV_VERSION_MAJOR, QSV_VERSION_MAJOR, &major, sizeof(major));
         DosQuerySysInfo(QSV_VERSION_MINOR, QSV_VERSION_MINOR, &minor, sizeof(minor));
+
+        /* QSV_VERSION_MAJOR/MINOR are raw kernel values, not the marketing
+         * version CMD.EXE's "ver" prints. Major is always 20 for every
+         * 32-bit OS/2 release; the generation lives in minor instead:
+         * minor 0/10/11 -> OS/2 2.00/2.10/2.11, but from Warp 3 onward
+         * (minor >= 30) the tens digit becomes the displayed major and the
+         * ones digit *10 becomes the displayed minor (30 -> "3.00", 40 ->
+         * "4.00", 45 -> "4.50" for Warp 4.5). Confirmed against the real
+         * os2-3 box: kernel reports 20.45, "ver" prints 4.50. */
+        if (minor >= 30) {
+            disp_major = minor / 10;
+            disp_minor = (minor % 10) * 10;
+        } else {
+            disp_major = major / 10;
+            disp_minor = minor;
+        }
+
         len += sprintf(buf + len, "os_family=os2\r\n");
         len += sprintf(buf + len, "os2_major=%lu\r\n", (unsigned long)major);
         len += sprintf(buf + len, "os2_minor=%lu\r\n", (unsigned long)minor);
+        len += sprintf(buf + len, "os2_version=%lu.%02lu\r\n", (unsigned long)disp_major, (unsigned long)disp_minor);
     }
 
     memset(&fs, 0, sizeof(fs));

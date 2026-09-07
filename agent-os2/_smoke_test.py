@@ -51,7 +51,7 @@ def main() -> int:
 
     try:
         info = c.sysinfo()
-        need = ["os_family", "agent", "os2_major", "disk_c_free_mb"]
+        need = ["os_family", "agent", "os2_major", "os2_version", "disk_c_free_mb"]
         missing = [k for k in need if k not in info]
         if missing:
             fail("SYSINFO", f"missing keys {missing}: {info}")
