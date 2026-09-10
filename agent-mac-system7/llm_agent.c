@@ -4,21 +4,37 @@
  * this repo (see ../mcp-server/agent_client.py for the authoritative
  * docs) so it can be driven by the same bridge tooling. Classic Mac OS
  * has no built-in command shell (no COMMAND.COM/CMD.EXE equivalent), so
- * EXEC/EXECDETACH are not implemented in this first pass -- everything
- * else (PING, SYSINFO, GET, PUT, SCREENSHOT, QUIT) is, plus three
- * commands not part of the shared protocol: QUITAGENT, which
- * terminates the agent process itself; PSLIST, which reports the live
- * Process Manager process list (useful for confirming whether a
- * process has actually exited -- Finder's icon rendering for these
- * icon-less apps looks identical whether they're running or not, which
- * isn't a reliable signal either way); and UPDATE, which takes a
- * MacBinary-encoded new build of this agent and self-updates with no
- * user interaction -- stages it, launches the llm_updater companion
- * app (see llm_updater.c) to decode/replace/relaunch, and exits. This
- * app runs with no console, no windows, and (see llm_agent.r) no
- * foreground UI at all -- there is no Finder menu or window to close
- * it from, so QUITAGENT is the only way to stop it short of rebooting
- * the machine, and llm_updater is the only way to replace it short of
+ * EXEC/EXECDETACH are not implemented -- everything else in the shared
+ * protocol (PING, SYSINFO, GET, PUT, SCREENSHOT, QUIT) is, plus commands
+ * not part of the shared protocol: QUITAGENT, which terminates the
+ * agent process itself; PSLIST, which reports the live Process Manager
+ * process list (useful for confirming whether a process has actually
+ * exited -- Finder's icon rendering for these icon-less apps looks
+ * identical whether they're running or not, which isn't a reliable
+ * signal either way); UPDATE, which takes a MacBinary-encoded new build
+ * of this agent and self-updates with no user interaction -- stages it,
+ * launches the llm_updater companion app (see llm_updater.c) to
+ * decode/replace/relaunch, and exits; and MOUSEPOS, which reports the
+ * current cursor position and button state.
+ *
+ * CLICK/DBLCLICK/KEY/TYPE are deliberately NOT implemented -- not an
+ * oversight, but a real platform limitation investigated at length (see
+ * the "Mouse and keyboard automation" section in README.md). Short
+ * version: mouse click/drag automation cannot work via any known
+ * software technique on classic Mac OS, because real Toolbox click
+ * tracking (icon selection, window dragging, non-command-key menu
+ * items) polls the *live* ADB hardware button state, not just delivered
+ * events, and no software can fake that without genuine ADB-level
+ * hardware event injection. Keyboard event injection (via Enqueue() into
+ * the low-level system event queue) was proven to work in this same
+ * investigation, but no KEY/TYPE command was built on it this session --
+ * see README.md for the working technique and exact evidence if picking
+ * this back up.
+ *
+ * This app runs with no console, no windows, and (see llm_agent.r) no
+ * foreground UI at all -- there is no Finder menu or window to close it
+ * from, so QUITAGENT is the only way to stop it short of rebooting the
+ * machine, and llm_updater is the only way to replace it short of
  * StuffIt Expander + manual file swap.
  *
  * MacTCP is a driver-style API (PBControlSync/PBControlAsync on a
@@ -327,6 +343,32 @@ static void PutLE16(unsigned char *p, short v)
 static void HandlePing(void)
 {
     SendCStr("PONG\n");
+}
+
+/* MOUSEPOS -- not part of the shared protocol; reports current cursor
+ * position and button state. GetMouse() returns local (port-relative)
+ * coordinates, but this app never creates a window or moves the port
+ * origin from (0,0), so local == global here. */
+static void HandleMousePos(void)
+{
+    Point pt;
+    char buf[64];
+    char hdr[32];
+    int len;
+
+    /* GetMouse() returns local (port-relative) coordinates, converted
+     * using whatever the *current* GrafPort's origin happens to be --
+     * and this app never creates a window or otherwise establishes a
+     * full-screen port after InitGraf(), so that conversion isn't
+     * trustworthy (confirmed live: returned x=15397 on a 640px-wide
+     * screen). Read MTemp directly instead -- already-global screen
+     * coordinates, no port involved. */
+    pt = LMGetMTemp();
+    len = sprintf(buf, "x=%d\r\ny=%d\r\nbutton=%d\r\n", pt.h, pt.v, Button() ? 1 : 0);
+
+    sprintf(hdr, "SIZE:%d\n", len);
+    SendCStr(hdr);
+    SendAll(buf, len);
 }
 
 /* Lists every process the Process Manager currently knows about --
@@ -825,6 +867,8 @@ static void HandleClient(void)
             HandleSysinfo();
         } else if (strcmp(gLine, "PSLIST") == 0) {
             HandlePslist();
+        } else if (strcmp(gLine, "MOUSEPOS") == 0) {
+            HandleMousePos();
         } else if (strncmp(gLine, "GET ", 4) == 0) {
             HandleGet(gLine + 4);
         } else if (strncmp(gLine, "PUT ", 4) == 0) {

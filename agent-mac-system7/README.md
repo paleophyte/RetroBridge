@@ -22,11 +22,16 @@ Guest needs MacTCP configured and working (Control Panel shows an IP).
 | `QUITAGENT` | Terminates the agent process itself (see below) |
 | `PSLIST` | Live Process Manager process list (`GetNextProcess`/`GetProcessInformation`) |
 | `UPDATE` | Self-update with **no user interaction** (see below) |
+| `MOUSEPOS` | Not part of the shared protocol — reports current cursor position (`LMGetMTemp()`) and button state (`Button()`) |
 
 `EXEC`/`EXECDETACH` are **not implemented** — classic Mac OS has no
-command shell (no `COMMAND.COM`/`CMD.EXE` equivalent) — and
-`CLICK`/`KEY`/`TYPE`/`WINLIST`/`REG*` are not implemented either. All
-return `ERR:unknown command`.
+command shell (no `COMMAND.COM`/`CMD.EXE` equivalent). `WINLIST`/`REG*`
+are also not implemented (no analogous concept on classic Mac OS).
+`CLICK`/`DBLCLICK`/`KEY`/`TYPE` are **not implemented, deliberately** —
+this isn't an oversight or a "not gotten to yet"; see "Mouse and
+keyboard automation" below for why, and what was actually proven to
+work if picking this back up. All unimplemented commands return
+`ERR:unknown command`.
 
 The agent runs with **no console and no windows at all** (see
 `llm_agent.r`) — not minimized, not backgrounded-with-a-window, just no
@@ -139,6 +144,112 @@ From then on, updates go through `UPDATE` — see above — with `llm_agent`
 and `llm_updater` never touched by hand again unless `llm_updater`
 itself needs a new build.
 
+## Mouse and keyboard automation
+
+`CLICK`/`DBLCLICK`/`KEY`/`TYPE` are not implemented. This was
+investigated at length (an entire session), including a real
+ground-truth check against QuicKeys 3.5.3 (the actual commercial
+automation tool this era's technique is modeled on) running in the same
+guest. Conclusion: **synthetic keyboard events work reliably; synthetic
+mouse clicks/drags fundamentally cannot, via any known software
+technique, on classic Mac OS.**
+
+### What was tried for mouse clicks, and why each failed
+
+1. **`PostEvent`** posts into the *calling process's own* event queue,
+   not the frontmost application's — useless for automating a different
+   process (confirmed live: a position write held correctly but no click
+   ever reached Finder, because we were posting to ourselves).
+2. **Writing `MBState`** (the low-memory global the ADB Manager's real
+   interrupt handler updates on a hardware button change) held its
+   written value perfectly, but nothing happened — there is no separate
+   task watching `MBState` for transitions and synthesizing events from
+   it; real event generation is edge-triggered at the hardware interrupt
+   level, and a software write to the *cached* state never triggers that.
+3. **Trap-patching `_WaitNextEvent`/`_GetNextEvent`** (0xA860/0xA970 via
+   `GetTrapAddress`/`SetTrapAddress`, with `SetCurrentA5`/`SetA5`
+   bracketing every global access — trap dispatch does *not* switch A5,
+   so without this every global read/write inside the patch silently
+   hits whatever's at that same A5-relative offset in the *calling*
+   process's memory instead) successfully delivered a fabricated
+   `EventRecord` into Finder's own `GetNextEvent` call (confirmed via
+   counters: correct A5, correct foreign-caller detection, correct
+   `everyEvent` mask, successful delivery) — and still produced **zero**
+   visible effect for icon selection, window dragging, or menu
+   selection. Worse: leaving this patch installed while the *real* user
+   interacted with the guest broke their actual mouse (menu clicks and
+   drags stopped working) and appears to have caused a genuine CPU fault
+   (`SR=2700`, non-maskable interrupt level, `MMUSR` fault logged) that
+   `system_reset` could not clear — only a full QEMU process restart
+   (kill + relaunch) fixed it. There's a real, unmitigated risk here:
+   `QUITAGENT`/`UPDATE`'s exit path never restores the original trap
+   addresses before the process exits, so quitting or self-updating
+   while this patch is installed leaves the trap table pointing at
+   soon-to-be-freed memory — Finder calls `GetNextEvent` dozens of times
+   a second, so this would crash almost immediately. **Do not reuse this
+   technique without adding proper trap restoration first.**
+4. **`Enqueue()` into the real, low-level system event queue** — the
+   actual historical technique (confirmed via a 1990s MacTech "Event
+   Simulator" article with matching source code). The queue is a fixed
+   low-memory global named `EventQueue` at address **0x014A** (a `QHdr`:
+   `short qFlags` + `QElemPtr qHead` + `QElemPtr qTail`, 10 bytes,
+   confirmed by the next low-memory global sitting exactly 10 bytes
+   later) — **not** a trap. (`GetEvQHdr()` is declared in Multiversal's
+   `Multiverse.h` with no trap encoding, the same gap as `PostEvent`;
+   guessing a trap number for it — 0xA9CB — crashed the agent outright,
+   since that's actually `_TEGetText`, an unrelated TextEdit trap. Don't
+   guess trap numbers; verify against a real trap table.) This correctly
+   inserts a synthetic `EvQEl` (`qType = evType`) that gets consumed by
+   the *unmodified* `GetNextEvent`, with no trap patching and none of
+   technique 3's stability risk — and it **still** produces no visible
+   effect for icon/window/menu clicks.
+
+The MacTech article explains exactly why technique 4 doesn't work for
+these targets, in its own words: *"The Menu Manager is much too smart
+to be fooled by the technique, so it's impossible to make an automatic
+menu selection unless the item has a command key equivalent"* — because
+real click/drag tracking (`StillDown()`/`Button()`/`GetMouse()`) polls
+the *live* ADB hardware button state after a `mouseDown`, not just the
+paired `mouseUp` event that arrives later via the queue. Since a
+synthetic `mouseDown` never corresponds to an actual hardware press,
+that poll fails immediately, regardless of how correctly the event is
+queued. This is a genuine platform limitation confirmed by a real
+1990s source with the exact same technique, not a bug in this codebase.
+Reliable mouse automation would require actually simulating ADB
+hardware transactions (not attempted — a much deeper, more fragile
+undertaking, and still unproven even in principle for this repo's
+"must also work on real hardware" requirement).
+
+### What was proven to work: keyboard events via `Enqueue()`
+
+Unlike click/drag tracking, menu command-key dispatch is a one-shot
+check against the delivered event, not a continuous hardware poll — and
+technique 4 above, tested with a synthetic Cmd-N (`keyDown`/`keyUp`,
+`evtQMessage = 'n'`, `evtQModifiers = cmdKey`) enqueued into
+`EventQueue`, **worked**: Finder created a new, selected, rename-mode
+"untitled folder" exactly as a real Cmd-N would. This was verified live
+and is a solid foundation for a real `KEY`/`TYPE` implementation in a
+future session — the working primitives (`kEventQueue` at `0x014A`,
+`EvQEl`/`Enqueue()` as already declared with correct trap encoding in
+Multiversal's `Multiverse.h`, `evType = 4` from the `QTypes` enum) were
+removed from `llm_agent.c` in this session's cleanup along with the
+non-working mouse code, but the technique itself is proven and this
+paragraph plus the git history (commit around 2026-09-10) has everything
+needed to reimplement it without re-deriving any of the above.
+
+### Ground truth: QuicKeys 3.5.3
+
+To rule out "this exact environment just can't do it," QuicKeys 3.5.3
+was installed and used to define a real "Click" macro (screen-coordinate
+click, window-relative) via its own GUI. It **worked** — selected an
+icon in Finder exactly as a real click would — proving the environment
+itself supports real automated clicks *somehow*, just not via any of
+the four software techniques above. (Also discovered along the way:
+**StuffIt Deluxe 5.5 is broken outright on this ROM/System 7.5.3
+combination** — crashes with "unimplemented trap" on any launch attempt,
+not specific to any one archive; StuffIt Deluxe **5.0.2** works fine and
+was used instead to install QuicKeys.)
+
 ## Gotchas that cost real debugging time
 
 - **`CONSOLE` (Retro68's SIOUX-equivalent console library) crashes on
@@ -174,3 +285,31 @@ itself needs a new build.
   confirming real pixel data *is* reachable — just via `CopyBits`, not a
   raw memory read. Fixed by copying the screen into an offscreen
   `GWorld` via `CopyBits` and reading from that instead.
+- **QEMU's monitor `system_reset` does not reliably reset this q800
+  machine.** After a crash, `system_reset` left the CPU stuck in the
+  same faulted state (confirmed via `info registers`: `SR=2700`,
+  interrupt level 7, `MMUSR` fault still logged, `A5` still holding a
+  pre-crash value) with a blank framebuffer — it silently no-opped
+  rather than actually reinitializing hardware state. The reliable fix
+  is a full process restart: `kill` the `qemu-system-m68k` process and
+  relaunch with the identical command line (a true cold start). QEMU's
+  monitor `screendump` (writes a `.ppm` directly from the emulated
+  framebuffer) is useful for checking guest state without depending on
+  `llm_agent` or the user's own VNC client, since both can be down/stuck
+  at the exact moments you need to check.
+- **A guest crash (not a clean shutdown) discards any setting changed
+  but not yet flushed to disk** — 32-bit addressing was toggled on,
+  then lost after a crash + hard process restart, because the crash
+  happened before System 7 wrote the change to its on-disk preferences.
+  Not a QEMU/qcow2 caching issue in that instance; just: only a clean
+  guest-side Restart/Shut Down reliably persists a just-changed setting.
+- **RAM bumped without also enabling 32-bit addressing silently breaks
+  memory management.** After raising `-m` from 128MB to 256MB, `About
+  This Macintosh` reported "System Software: 257,783K" used out of
+  262,144K total (only ~4MB free) — nonsensical for System 7.5.3, which
+  normally uses a few MB. Root cause: 32-bit addressing was still Off
+  (24-bit mode can only cleanly address 16MB), so the Memory Manager's
+  own bookkeeping broke down once physical RAM exceeded what 24-bit
+  addressing can represent. Fixed by turning on 32-bit Addressing in the
+  Memory control panel and restarting (required after any RAM increase
+  beyond ~8MB on a 24-bit-capable ROM).
