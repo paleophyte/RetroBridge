@@ -18,7 +18,7 @@ Guest needs MacTCP configured and working (Control Panel shows an IP).
 | auth / `PING` / `QUIT` | Same as other agents |
 | `SYSINFO` | `os_family=mac68k`, `os_version` (Gestalt, hex BCD-ish), `machine_gestalt`, `free_mem_kb`, `agent` |
 | `GET` / `PUT` | File transfer (data fork; plain `fopen`/`fread`/`fwrite`) |
-| `SCREENSHOT` | Full screen via `qd.screenBits` → 24-bit BMP |
+| `SCREENSHOT` | Full screen via `CopyBits` into an offscreen `GWorld` → 24-bit BMP (any color depth, indexed or direct) |
 | `QUITAGENT` | Terminates the agent process itself (see below) |
 | `PSLIST` | Live Process Manager process list (`GetNextProcess`/`GetProcessInformation`) |
 | `UPDATE` | Self-update with **no user interaction** (see below) |
@@ -158,3 +158,19 @@ itself needs a new build.
   "is it running" signal** — the same dithered icon (and, inconsistently,
   a "currently open" corner badge) appeared whether or not a process
   actually still existed. Trust `PSLIST`, not the icon.
+- **`QUITAGENT` must release the MacTCP stream before `ExitToShell()`.**
+  Skipping this left the process list clean (`PSLIST` never showed a
+  stale entry) but orphaned MacTCP's driver-level control block for the
+  port, so the *next* agent's own `TCPStreamCreate`/`TCPListen` hung
+  indefinitely — no timeout, so no amount of waiting before relaunching
+  helped. Fixed by calling `TCPStreamAbortAndRelease(gStream)` first.
+- **Reading `GetMainDevice()->gdPMap->baseAddr` directly doesn't work on
+  this q800 setup** for `SCREENSHOT` — it returns 68k code, not pixels,
+  even though the address matches what a real Mac uses and
+  `qd.screenBits` agrees with it. Writing a marker there to find the
+  real offset caused a fatal double MMU fault (real VRAM can't fault a
+  CPU when written to, so that address isn't real VRAM). The ROM's own
+  Shift-Command-3 screen capture works fine in the same environment,
+  confirming real pixel data *is* reachable — just via `CopyBits`, not a
+  raw memory read. Fixed by copying the screen into an offscreen
+  `GWorld` via `CopyBits` and reading from that instead.

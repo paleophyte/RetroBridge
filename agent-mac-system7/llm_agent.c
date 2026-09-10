@@ -395,11 +395,6 @@ static void HandleSysinfo(void)
         len += sprintf(buf + len, "machine_gestalt=%ld\r\n", totalMem);
     }
 
-    /* FreeMem() reports on whatever the *current* heap zone is, not
-     * necessarily our own -- some Toolbox/driver calls switch the
-     * current zone and aren't guaranteed to restore it. Force it back
-     * to our own application heap explicitly before asking, rather
-     * than trusting whatever zone happened to be left current. */
     /* FreeMem() alone answers "how big is the heap zone right now,"
      * not "how much memory can this app actually still use" -- Retro68
      * apps start with a tiny heap zone (confirmed via MaxMem: an app
@@ -407,7 +402,9 @@ static void HandleSysinfo(void)
      * FreeMem() = ~2KB) that grows on demand as allocations need it,
      * up to the partition's real ceiling. MaxMem()'s growp output is
      * exactly that remaining headroom, so freeMem + grow is the
-     * number that actually answers "how much room is left." */
+     * number that actually answers "how much room is left." Force the
+     * zone back to our own application heap first -- some Toolbox/
+     * driver calls switch the current zone without restoring it. */
     SetZone(ApplicationZone());
     {
         Size grow = 0;
@@ -593,11 +590,83 @@ static void HandleUpdate(char *args)
  * GWorld-free 1-bit-per-pixel-free... kept simple: we walk the screen
  * PixMap directly and emit an uncompressed 24-bit BMP, matching what
  * the other agents' SCREENSHOT already returns to the bridge tooling. */
+/* Reads one pixel at (x, rowBase) as RGB, given the source PixMap's bit
+ * depth. Plain qd.screenBits is always a 1-bit monochrome *view* --
+ * classic QuickDraw's original model -- and does NOT reflect a color
+ * screen's actual pixel data; that lives in the current GDevice's
+ * PixMap (GetMainDevice()), which is what this reads instead. Verified
+ * live: reading qd.screenBits directly on this (color) display produced
+ * pure noise, since 8-bit-per-pixel color byte values were being
+ * misread as 8 packed 1-bit pixels. */
+static void GetPixelRGB(CTabHandle table, short pixelSize, const unsigned char *rowBase,
+                         long x, unsigned char *outR, unsigned char *outG, unsigned char *outB)
+{
+    if (pixelSize <= 8) {
+        /* Indexed color: pixelSize-bit values packed MSB-first within
+         * each byte, looked up in the device's color table. */
+        int pixelsPerByte = 8 / pixelSize;
+        int shiftAmount = (pixelsPerByte - 1 - (int)(x % pixelsPerByte)) * pixelSize;
+        int mask = (1 << pixelSize) - 1;
+        unsigned char byte = rowBase[x / pixelsPerByte];
+        int value = (byte >> shiftAmount) & mask;
+
+        if (table != NULL && value <= (**table).ctSize) {
+            RGBColor rgb = (**table).ctTable[value].rgb;
+            *outR = (unsigned char)(rgb.red >> 8);
+            *outG = (unsigned char)(rgb.green >> 8);
+            *outB = (unsigned char)(rgb.blue >> 8);
+        } else {
+            *outR = *outG = *outB = 0;
+        }
+    } else if (pixelSize == 16) {
+        /* Thousands of colors: 1 unused + 5-5-5 RGB, big-endian (68k
+         * native, no byte-swap needed). */
+        const unsigned short *p = (const unsigned short *)(rowBase + x * 2);
+        unsigned short v = *p;
+        int r5 = (v >> 10) & 0x1F;
+        int g5 = (v >> 5) & 0x1F;
+        int b5 = v & 0x1F;
+        *outR = (unsigned char)((r5 * 255) / 31);
+        *outG = (unsigned char)((g5 * 255) / 31);
+        *outB = (unsigned char)((b5 * 255) / 31);
+    } else {
+        /* Millions of colors: 1 unused + 8-8-8 RGB. */
+        const unsigned char *p = rowBase + x * 4;
+        *outR = p[1];
+        *outG = p[2];
+        *outB = p[3];
+    }
+}
+
+/* Reading GetMainDevice()->gdPMap->baseAddr directly (the textbook
+ * approach, and what an earlier version of this function did) turned
+ * out to return garbage under qemu-system-m68k -M q800: recognizable
+ * 68k code (UNLK/RTS/LINK opcodes), not pixels, even though the
+ * address matches what a real Mac's PixMap uses and qd.screenBits
+ * agrees with it. A live test writing a marker there to find the real
+ * offset caused a fatal double MMU fault, ruling out "just guess a
+ * different offset" as safe. But the ROM's own Shift-Command-3 screen
+ * capture works correctly in this same environment (confirmed: opened
+ * the resulting PICT and it showed the real desktop) -- proving real
+ * pixel data *is* reachable here, just not via a raw baseAddr read.
+ * The difference is almost certainly that Shift-Command-3 goes through
+ * CopyBits rather than touching VRAM directly, so this does the same:
+ * CopyBits from the screen into a normal offscreen GWorld (ordinary
+ * allocated memory, nothing mysterious about its address), then reads
+ * pixels from that safe copy instead. */
 static void HandleScreenshot(void)
 {
-    BitMap *screenBits;
+    GDHandle mainDevice;
+    PixMapHandle screenPM;
+    GWorldPtr offscreen;
+    PixMapHandle pm;
+    CTabHandle table;
+    CGrafPtr savePort;
+    GDHandle saveDevice;
+    QDErr gwErr;
     Rect bounds;
     short width, height;
+    short pixelSize;
     long rowBytesAbs;
     Ptr baseAddr;
     long imageSize;
@@ -606,18 +675,37 @@ static void HandleScreenshot(void)
     unsigned char bmpHeader[54];
     short x, y;
 
-    screenBits = &qd.screenBits;
-    bounds = screenBits->bounds;
+    mainDevice = GetMainDevice();
+    screenPM = (**mainDevice).gdPMap;
+    bounds = (**screenPM).bounds;
     width = bounds.right - bounds.left;
     height = bounds.bottom - bounds.top;
-    rowBytesAbs = screenBits->rowBytes & 0x3fff;
-    baseAddr = screenBits->baseAddr;
 
-    /* This simple first pass assumes a 1-bit-per-pixel screen (black &
-     * white), which is what QEMU's q800 macfb defaults to unless the
-     * Monitors control panel is set to a color depth. Emit a 24-bit BMP
-     * either way so the receiving tooling doesn't need special cases;
-     * for 1-bit source data each pixel becomes pure black or white. */
+    GetGWorld(&savePort, &saveDevice);
+
+    offscreen = NULL;
+    gwErr = NewGWorld(&offscreen, 0, &bounds, NULL, mainDevice, 0);
+    if (gwErr != noErr || offscreen == NULL) {
+        SendCStr("ERR:NewGWorld failed\n");
+        return;
+    }
+
+    pm = GetGWorldPixMap(offscreen);
+    LockPixels(pm);
+
+    SetGWorld(offscreen, mainDevice);
+    {
+        BitMap *srcBits = (BitMap *)*screenPM;
+        BitMap *dstBits = (BitMap *)*pm;
+        CopyBits(srcBits, dstBits, &bounds, &bounds, srcCopy, NULL);
+    }
+    SetGWorld(savePort, saveDevice);
+
+    rowBytesAbs = (**pm).rowBytes & 0x3fff;
+    baseAddr = (**pm).baseAddr;
+    pixelSize = (**pm).pixelSize;
+    table = (**pm).pmTable;
+
     imageSize = (long)width * height * 3;
     /* BMP rows are padded to 4 bytes; account for that in fileSize. */
     {
@@ -649,12 +737,11 @@ static void HandleScreenshot(void)
             unsigned char *rowBase = (unsigned char *)baseAddr + (long)y * rowBytesAbs;
 
             for (x = 0; x < width && x < 2048; x++) {
-                unsigned char byte = rowBase[x / 8];
-                int bit = (byte >> (7 - (x % 8))) & 1;
-                unsigned char v = bit ? 0x00 : 0xFF; /* 1=black in QD1 */
-                rowBuf[col++] = v;
-                rowBuf[col++] = v;
-                rowBuf[col++] = v;
+                unsigned char r, g, b;
+                GetPixelRGB(table, pixelSize, rowBase, x, &r, &g, &b);
+                rowBuf[col++] = b;
+                rowBuf[col++] = g;
+                rowBuf[col++] = r;
             }
             SendAll((char *)rowBuf, col);
             if (rowPad) {
@@ -663,6 +750,9 @@ static void HandleScreenshot(void)
             }
         }
     }
+
+    UnlockPixels(pm);
+    DisposeGWorld(offscreen);
 }
 
 /* ------------------------------------------------------------------ */
