@@ -116,3 +116,26 @@ mcp-server/.venv/
 mcp-server/__pycache__/
 mcp-server/screenshots/
 *.pyc
+.env*
+
+# agent-mac-system7: build output and per-guest state
+agent-mac-system7/build/
+agent-mac-system7/LLMAGENT.INI
+agent-mac-system7/UPDATER.LOG
+# ROM image, OS/utility install media, and disk images used to set up
+# the guest -- large, some copyrighted (Apple ROM/OS), not source.
+agent-mac-system7/*.ROM
+agent-mac-system7/*.rom
+agent-mac-system7/*.iso
+agent-mac-system7/*.ISO
+agent-mac-system7/*.sit
+agent-mac-system7/*.SIT
+agent-mac-system7/*.hqx
+agent-mac-system7/*.dsk
+agent-mac-system7/*.flp
+agent-mac-system7/*.img
+agent-mac-system7/*.zip
+agent-mac-system7/Apple Mac OS 7.5.3 Revision 2 (3.5-1.44mb)/
+# one-off setup tool for the MacTCP control panel install workaround,
+# not part of the shipped agent
+agent-mac-system7/forkjoin.c
