@@ -1,0 +1,4 @@
+# Shell scripts here run on Linux hosts (the QEMU box). Without this, a
+# Windows checkout gives them CRLF endings, and copying one to the host then
+# fails with "bad interpreter: /bin/bash^M".
+*.sh text eol=lf
