@@ -136,6 +136,7 @@ agent-mac-system7/*.flp
 agent-mac-system7/*.img
 agent-mac-system7/*.zip
 agent-mac-system7/Apple Mac OS 7.5.3 Revision 2 (3.5-1.44mb)/
+agent-mac-system7/MacOS 7.5.5 Update (3.5)/
 # one-off setup tool for the MacTCP control panel install workaround,
 # not part of the shipped agent
 agent-mac-system7/forkjoin.c
