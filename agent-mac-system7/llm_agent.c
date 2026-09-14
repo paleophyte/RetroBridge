@@ -636,47 +636,52 @@ static void HandleWinList(void)
     SendCStr("ERR:WINLIST unavailable, WindowList is per-process under MultiFinder\n");
 }
 
-/* CLIPSET / CLIPGET -- NOT SUPPORTED, and the reason took some finding.
+/* CLIPSET / CLIPGET -- NOT SUPPORTED. Cause not fully identified.
  *
- * The scrap can be written here and read straight back, so this looked like it
- * worked for a long time. It does not: the scrap low-memory state is
- * per-process under MultiFinder, exactly like WindowList. This agent writes
- * its own scrap, and other applications never see it.
+ * Both refuse. Neither reliably does what a caller would expect, and
+ * answering OK would be a trap -- set the clipboard, get a success, paste
+ * something else.
  *
- * What established that, after three wrong theories:
+ * What is established:
  *
- *   - CLIPSET then CLIPGET always round-tripped byte-exact, and ScrapInfo
- *     (0x0960) always agreed -- scrapSize tracking the payload plus its
- *     8-byte header, scrapCount incrementing every time. All of which only
- *     ever proved this process was self-consistent with itself.
- *   - With SimpleText frontmost and no application switch at all, pasting
- *     produced text that had been copied inside ClarisWorks earlier, not what
- *     CLIPSET had just written.
- *   - Read while SimpleText was the current process, TEScrpLength (0x0AB0)
- *     was 5 -- the length of that ClarisWorks text. Read straight after an
- *     agent command it was 19, 20 or 26, matching whatever CLIPSET had set.
- *     The same address, two values, depending on whose context was current.
- *     ScrapInfo differs between contexts the same way.
+ *  - The desk scrap IS shared between applications. ScrapInfo (0x0960) reads
+ *    identically in every process context, idle or immediately after an agent
+ *    command, and it changed when text was copied by hand inside SimpleText
+ *    (scrapSize 44 -> 46, scrapCount 11 -> 8). An earlier claim in this file
+ *    that the scrap is per-process was WRONG and is retracted.
+ *  - The TextEdit scrap genuinely is per-process: TEScrpLength (0x0AB0) reads
+ *    one value here and another while SimpleText is current. Mirroring into it
+ *    was therefore pointless and has been dropped.
+ *  - ZeroScrap/PutScrap from here appear to work: scrapSize tracks the payload
+ *    plus its 8-byte header and scrapCount increments every time.
  *
- * So the TextEdit scrap mirror this used to do could only ever affect the
- * agent's own copy, and neither UnloadScrap() nor LoadScrap() bridges the gap
- * -- both were tried, in both directions, and neither changed what another
- * application pasted.
+ * What is not explained, and is the thing to pick up:
  *
- * Returning OK for this would be a trap: a caller would set the clipboard,
- * get a success, and paste something else entirely. It refuses instead, the
- * same way WINLIST does for the same underlying reason.
+ *  - After SimpleText copied text, ScrapInfo showed 46 bytes present, yet
+ *    GetScrap('TEXT') from here returned -102 (noTypeErr) -- no TEXT entry
+ *    found. So the scrap holds something this process cannot read as text.
+ *  - LoadScrap() returns noErr while leaving scrapHandle NULL and scrapState
+ *    0, i.e. it reports success and does nothing. Until that is understood
+ *    there is no basis for claiming why writes from here never reach another
+ *    application.
  *
- * The untried idea, if this is ever worth another go: write the Clipboard
- * file in the System Folder directly, in scrap file format, since that is
- * what applications read through LoadScrap when they are resumed. Note that
- * no such file existed on this volume when looked for, so the mechanism may
- * not be as simple as it sounds.
+ * Next step for anyone resuming this: dump the raw scrap bytes after a native
+ * Copy and decode the entry types. The data is on disk, so that means reading
+ * the System Folder's scrap file rather than dereferencing scrapHandle, which
+ * stays NULL. Knowing what type SimpleText actually wrote would say whether
+ * this is a type mismatch or a file-access difference.
+ *
+ * Use TYPE to get text into an application; that is verified working.
  */
 static void HandleClipSet(char *text)
 {
     (void)text;
-    SendCStr("ERR:CLIPSET unavailable, the scrap is per-process under MultiFinder\n");
+    SendCStr("ERR:CLIPSET does not reach other applications, cause unresolved\n");
+}
+
+static void HandleClipGet(void)
+{
+    SendCStr("ERR:CLIPGET unreliable, cannot read scrap written by other applications\n");
 }
 
 /* CLICK x y [button] / DBLCLICK x y [button]
@@ -2076,6 +2081,8 @@ static void HandleClient(void)
             /* The parent form lists a dialog's child controls and is
              * Win16-specific; classic Mac controls are not windows. */
             SendCStr("ERR:WINLIST <parent> not supported on this platform\n");
+        } else if (strcmp(gLine, "CLIPGET") == 0) {
+            HandleClipGet();
         } else if (strncmp(gLine, "CLIPSET ", 8) == 0) {
             HandleClipSet(gLine + 8);
         } else if (strncmp(gLine, "KEY ", 4) == 0) {

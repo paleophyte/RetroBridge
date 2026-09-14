@@ -268,65 +268,57 @@ plumbing and only covers scriptable applications, so it is separate work rather
 than a fix. `WINLIST <parent>` is refused outright: it lists a dialog's child
 controls, and classic Mac controls are not windows.
 
-## CLIPSET is not available, and neither is CLIPGET
+## CLIPSET and CLIPGET are not available
 
-Refused with `ERR:CLIPSET unavailable, the scrap is per-process under
-MultiFinder`. `CLIPGET` has been removed entirely -- it only ever existed to
-verify `CLIPSET`, and it verified nothing.
+Both refuse. Neither reliably does what a caller would expect, and answering
+`OK` would be a trap -- set the clipboard, get a success, paste something else.
 
-This one looked like it worked for a long time, which is the interesting part.
-The scrap can be written from here and read straight back, and every
-system-level indicator agrees. It still never reaches another application.
+**The cause is not fully identified.** An earlier version of this file claimed
+the scrap is per-process; that was wrong and is retracted.
 
-### Why it does not work
+### What is established
 
-The scrap low-memory state is **per-process** under MultiFinder, exactly like
-`WindowList`. The agent writes its own scrap; other applications have theirs.
+- **The desk scrap is shared between applications.** `ScrapInfo` (`0x0960`)
+  reads identically in every process context -- idle, or immediately after an
+  agent command -- and it changed when text was copied by hand inside
+  SimpleText (`scrapSize` 44 to 46, `scrapCount` 11 to 8). So other
+  applications' writes are visible from here.
+- **The TextEdit scrap genuinely is per-process.** `TEScrpLength` (`0x0AB0`)
+  reads one value here and another while SimpleText is current. Mirroring into
+  it was pointless and has been dropped.
+- `ZeroScrap`/`PutScrap` from here appear to work: `scrapSize` tracks the
+  payload plus its 8-byte header and `scrapCount` increments every time.
 
-The measurement that settles it: read `TEScrpLength` (`0x0AB0`) while
-SimpleText is the current process and it reads **5**, the length of text copied
-inside ClarisWorks earlier. Read the same address immediately after an agent
-command and it reads **19**, **20** or **26** -- whatever `CLIPSET` last wrote.
-One address, two values, depending on whose context is current. `ScrapInfo`
-(`0x0960`) behaves the same way.
+### What is unexplained
 
-Confirmed behaviourally too: with SimpleText frontmost and **no application
-switch at all**, pasting produced the ClarisWorks text rather than what
-`CLIPSET` had just written and `CLIPGET` had just read back.
+- After SimpleText copied text, `ScrapInfo` showed 46 bytes present, yet
+  `GetScrap('TEXT')` from here returned `-102` (`noTypeErr`). The scrap holds
+  something this process cannot read as text.
+- `LoadScrap()` returns `noErr` while leaving `scrapHandle` NULL and
+  `scrapState` 0 -- it reports success and does nothing.
 
-Both `UnloadScrap()` and `LoadScrap()` were tried, in both directions. Neither
-changed what another application pasted.
+Until those are understood there is no basis for asserting *why* writes from
+here never reach another application.
 
-### Why it returns an error rather than OK
+### Next step if resuming
 
-Returning `OK` would be a trap: a caller sets the clipboard, gets a success,
-and then pastes something else entirely. Same reasoning as `WINLIST`, and the
-same underlying cause.
+Dump the raw scrap bytes after a native Copy and decode the entry types. The
+data is on disk, so that means reading the System Folder scrap file rather
+than dereferencing `scrapHandle`, which stays NULL. Knowing what type
+SimpleText actually wrote would distinguish a type mismatch from a
+file-access difference.
 
-### What misled me, recorded so it does not happen again
+### A methodological note worth keeping
 
-`CLIPSET` then `CLIPGET` round-tripped byte-exact every single time, and
-`ScrapInfo` always corroborated it -- `scrapSize` tracking the payload plus its
-8-byte header, `scrapCount` incrementing on every set. All of that only ever
-proved **this process was self-consistent with itself**. Reading back your own
-write is not evidence that anyone else can see it, and on a system with
-per-process low memory it is not even weak evidence.
+This went wrong repeatedly because `CLIPSET` then `CLIPGET` round-tripped
+byte-exact every time and `ScrapInfo` always corroborated it. That only ever
+proved **this process was self-consistent with itself**. Every real advance
+came from watching what *another application* did -- pasting in ClarisWorks,
+pasting in SimpleText, copying in SimpleText and looking for the change. Four
+successive explanations were published as fact and all four were wrong.
 
-Three theories were published as fact along the way and all three were wrong:
-that ClarisWorks merely needed a resume event; that a suspending application
-overwrites the scrap; and that ClarisWorks ignores the desk scrap entirely. The
-evidence that broke them was always the same kind -- watching what *another*
-application did, rather than what this one reported about itself.
-
-### If it is ever worth another attempt
-
-Write the `Clipboard` file in the System Folder directly, in scrap file format,
-since that is what applications read through `LoadScrap` when resumed. Note
-that no such file existed on this volume when looked for, so the mechanism may
-not be as straightforward as it sounds.
-
-Use `TYPE` to get text into an application. That is verified working, including
-into ClarisWorks and Find File.
+Use `TYPE` to get text into an application. That is verified working, into
+both ClarisWorks and Find File.
 
 ## Keyboard: KEY and TYPE
 
