@@ -12,6 +12,13 @@
  * (A menu-bar status icon was also tried here and caused a fatal
  * double MMU fault that crashed QEMU itself -- see the NOTE in
  * llm_agent.c's main(). Not part of this build.)
+ *
+ * isHighLevelEventAware is required for PSKILL. The AppleEvent Manager
+ * refuses to let an application *send* a high-level event unless its own
+ * SIZE resource claims awareness of them: AESend returns -903 (noPortErr)
+ * otherwise, which is what this flag being "not" aware used to produce. It
+ * costs nothing here -- the agent never processes incoming events, and
+ * onlyLocalHLEvents keeps the scope to this machine.
  */
 
 #include "Types.r"
@@ -27,7 +34,7 @@ resource 'SIZE' (-1) {
     dontGetFrontClicks,
     ignoreChildDiedEvents,
     is32BitCompatible,
-    notHighLevelEventAware,
+    isHighLevelEventAware,
     onlyLocalHLEvents,
     notStationeryAware,
     dontUseTextEditServices,

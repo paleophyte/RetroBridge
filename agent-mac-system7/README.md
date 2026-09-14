@@ -168,8 +168,8 @@ Audited end to end against the real `../mcp-server/agent_client.py`, not by
 hand. Everything below was actually exercised through that client.
 
 **Implemented and verified:** `PING`, `SYSINFO`, `PSLIST`, `SCREENSHOT`,
-`PUT`, `GET`, `CLICK`, `KEY`, `TYPE`, `REBOOT`, `SHUTDOWN`, `UPDATE`,
-`QUIT`, plus the
+`PUT`, `GET`, `CLICK`, `KEY`, `TYPE`, `CLIPSET`, `PSKILL`, `REBOOT`,
+`SHUTDOWN`, `UPDATE`, `QUIT`, plus the
 Mac-only `DBLCLICK`, `MOUSEPOS`, `QUITAGENT` and the incomplete `DRAG`.
 
 Anything unimplemented answers `ERR:unknown command` and the agent stays up --
@@ -180,9 +180,7 @@ hang or crash it.
 
 | command | feasibility on System 7.5.3 |
 |---|---|
-| `CLIPSET` | **Easy.** Scrap Manager: `ZeroScrap()` then `PutScrap(len, 'TEXT', buf)`. |
 | `WINLIST` | **Feasible.** Walk the Window Manager's `WindowList` low-memory global (`0x09D6`) and read each title and `portRect`. Read-only, low risk. |
-| `PSKILL` | **Partly.** Classic Mac OS has no kill. The nearest equivalent is a `kAEQuitApplication` AppleEvent, which an app may refuse -- so it would be "ask to quit", not "kill", and must be documented as such. |
 | `EXEC` / `EXECDETACH` | **Not applicable.** No shell exists. `EXECDETACH` could reasonably be redefined as "launch this application", which `llm_updater` already does with `LaunchApplication` -- but that is a deliberate protocol divergence, not an implementation. |
 | `WINMSG`, `POSTMSG`, `LBGETTEXT`, `REGGET`, `REGSET` | **Not applicable.** Windows-specific. |
 | `SCREENS`, `AUTOEXEC`, `DEBUG` | **Not applicable.** NetWare-specific. |
@@ -195,6 +193,38 @@ QuicKeys click investigation, which is now solved, and the investigation
 document always intended them to be stripped afterwards. They are worth
 removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
 vector.
+
+## PSKILL asks, it does not kill
+
+`PSKILL <pid>` is implemented and verified end to end through the real client.
+The `<pid>` is what `PSLIST` reports: the low long of the process serial
+number.
+
+Classic Mac OS has no kill. There is no protected memory and nothing able to
+reclaim another process, so the only thing available is to **ask**, by sending
+a standard `quit` AppleEvent (`aevt`/`quit`). That is cooperative in the
+fullest sense: a well-behaved application quits, one with unsaved changes may
+put up a save dialog and sit there, and a wedged one ignores it entirely.
+
+**So `OK` means the quit request was delivered, not that the process is gone.**
+Those are genuinely different. Follow up with `PSLIST` if you need certainty.
+
+Verified: launching Find File and then `pskill()`-ing it removes it from
+`PSLIST`. A non-existent pid gives `ERR:no such process <n>`, and targeting the
+agent itself is refused with a pointer to `QUITAGENT` -- that one is a
+correctness point rather than caution, since quitting mid-command means the
+reply never gets sent and the caller hangs.
+
+> **This required a `SIZE` resource change.** The AppleEvent Manager will not
+> let an application *send* a high-level event unless its own `SIZE` resource
+> claims awareness of them. The agent was marked `notHighLevelEventAware`, so
+> `AESend` returned `-903` (`noPortErr`) and nothing was delivered. It is now
+> `isHighLevelEventAware`, which costs nothing here: the agent never processes
+> incoming events, and `onlyLocalHLEvents` keeps the scope to this machine.
+
+> Note that changing only `llm_agent.r` does **not** move the `agent_build`
+> stamp, since `__DATE__`/`__TIME__` only update when the `.c` recompiles. Check
+> the behaviour, or touch the `.c`, when verifying a resource-only change.
 
 ## WINLIST is not available, and will not be
 

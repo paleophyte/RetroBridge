@@ -502,6 +502,107 @@ static int PostMouseEvent(short what, Point where)
 
 
 
+
+/* PSKILL <pid> -- ask a process to quit.
+ *
+ * Classic Mac OS has no kill. Nothing can terminate another process from
+ * outside: there is no protected memory and no supervisor able to reclaim a
+ * task, so the only thing available is to *ask*, by sending the application a
+ * standard 'quit' AppleEvent (kCoreEventClass / kAEQuitApplication). That is
+ * cooperative in the fullest sense -- a well-behaved application quits, one
+ * with unsaved changes may put up a save dialog and sit there, and one that is
+ * wedged ignores it completely.
+ *
+ * So OK here means "the quit request was delivered", not "the process is
+ * gone", and the two are genuinely different. Callers that need certainty
+ * should follow up with PSLIST rather than assume.
+ *
+ * The <pid> is the value PSLIST reports, which is the low long of the
+ * process serial number.
+ */
+
+/* Spelled out rather than relying on multi-character constants. */
+#define AE_TYPE_PSN        0x70736E20L   /* 'psn ' */
+#define AE_CLASS_CORE      0x61657674L   /* 'aevt' */
+#define AE_ID_QUIT         0x71756974L   /* 'quit' */
+#define AE_AUTO_RETURN_ID  (-1)
+#define AE_ANY_TRANSACTION 0L
+#define AE_NO_REPLY        1
+#define AE_NORMAL_PRIORITY 0
+#define AE_DEFAULT_TIMEOUT (-1L)
+
+static void HandlePsKill(unsigned long pidLow)
+{
+    ProcessSerialNumber psn;
+    ProcessSerialNumber self;
+    AEAddressDesc target;
+    AppleEvent theEvent;
+    AppleEvent reply;
+    char buf[128];
+    OSErr err;
+    int found = 0;
+
+    psn.highLongOfPSN = 0;
+    psn.lowLongOfPSN = kNoProcess;
+    while (GetNextProcess(&psn) == noErr) {
+        if ((unsigned long)psn.lowLongOfPSN == pidLow) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        sprintf(buf, "ERR:no such process %lu\n", pidLow);
+        SendCStr(buf);
+        return;
+    }
+
+    /* Refuse to target ourselves. This is a correctness point rather than
+     * caution: quitting during command handling means the reply never gets
+     * sent and the caller is left hanging. QUITAGENT exists for this and
+     * tears the MacTCP stream down properly first. */
+    if (GetCurrentProcess(&self) == noErr &&
+        self.lowLongOfPSN == psn.lowLongOfPSN &&
+        self.highLongOfPSN == psn.highLongOfPSN) {
+        SendCStr("ERR:refusing to quit the agent itself, use QUITAGENT\n");
+        return;
+    }
+
+    err = AECreateDesc((DescType)AE_TYPE_PSN, (const void *)&psn,
+                       (Size)sizeof(psn), &target);
+    if (err != noErr) {
+        sprintf(buf, "ERR:AECreateDesc failed (OSErr %d)\n", (int)err);
+        SendCStr(buf);
+        return;
+    }
+
+    err = AECreateAppleEvent((AEEventClass)AE_CLASS_CORE, (AEEventID)AE_ID_QUIT,
+                             &target, AE_AUTO_RETURN_ID, AE_ANY_TRANSACTION,
+                             &theEvent);
+    if (err != noErr) {
+        AEDisposeDesc(&target);
+        sprintf(buf, "ERR:AECreateAppleEvent failed (OSErr %d)\n", (int)err);
+        SendCStr(buf);
+        return;
+    }
+
+    /* kAENoReply: do not block waiting for the application to answer. A
+     * process showing a save dialog would otherwise hold this command open
+     * for the full AppleEvent timeout. */
+    err = AESend(&theEvent, &reply, AE_NO_REPLY, AE_NORMAL_PRIORITY,
+                 AE_DEFAULT_TIMEOUT, NULL, NULL);
+
+    AEDisposeDesc(&theEvent);
+    AEDisposeDesc(&target);
+
+    if (err != noErr) {
+        sprintf(buf, "ERR:AESend failed (OSErr %d)\n", (int)err);
+        SendCStr(buf);
+        return;
+    }
+
+    SendCStr("OK\n");
+}
+
 /* WINLIST -- NOT SUPPORTED, and the reason is worth keeping.
  *
  * The obvious implementation is to walk the Window Manager's list from the
@@ -2424,6 +2525,8 @@ static void HandleClient(void)
             HandlePslist();
         } else if (strcmp(gLine, "MOUSEPOS") == 0) {
             HandleMousePos();
+        } else if (strncmp(gLine, "PSKILL ", 7) == 0) {
+            HandlePsKill(strtoul(gLine + 7, NULL, 10));
         } else if (strcmp(gLine, "WINLIST") == 0) {
             HandleWinList();
         } else if (strncmp(gLine, "WINLIST ", 8) == 0) {
