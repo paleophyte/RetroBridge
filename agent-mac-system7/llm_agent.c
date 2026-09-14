@@ -17,17 +17,21 @@
  * decode/replace/relaunch, and exits; and MOUSEPOS, which reports the
  * current cursor position and button state.
  *
- * CLICK/DBLCLICK/KEY/TYPE are deliberately NOT implemented -- not an
- * oversight, but a real platform limitation investigated at length (see
- * the "Mouse and keyboard automation" section in README.md). Short
- * version: mouse click/drag automation cannot work via any known
- * software technique on classic Mac OS, because real Toolbox click
- * tracking (icon selection, window dragging, non-command-key menu
- * items) polls the *live* ADB hardware button state, not just delivered
- * events, and no software can fake that without genuine ADB-level
- * hardware event injection. Keyboard event injection (via Enqueue() into
- * the low-level system event queue) was proven to work in this same
- * investigation, but no KEY/TYPE command was built on it this session --
+ * CLICK and DBLCLICK are implemented. Coordinates are global screen
+ * coordinates, the same space MOUSEPOS reports.
+ *
+ * An earlier round of this investigation concluded that synthetic mouse
+ * clicks were impossible on classic Mac OS, on the theory that Toolbox
+ * click tracking polls live ADB hardware state. That was WRONG.
+ * Watchpointing the low-level event queue during a real QuicKeys 3.5.3
+ * click showed it simply writes the target point into
+ * MTemp/RawMouse/Mouse and then posts ordinary mouseDown/mouseUp events.
+ * MBState is never written and journaling is never used. See
+ * QUICKEYS_CLICK_INVESTIGATION.md for the evidence; HandleClick() below
+ * carries the implementation notes.
+ *
+ * KEY/TYPE are still not implemented. Keyboard event injection was proven
+ * to work in the same investigation, but no command was built on it --
  * see README.md for the working technique and exact evidence if picking
  * this back up.
  *
@@ -366,6 +370,157 @@ static void HandleMousePos(void)
     pt = LMGetMTemp();
     len = sprintf(buf, "x=%d\r\ny=%d\r\nbutton=%d\r\n", pt.h, pt.v, Button() ? 1 : 0);
 
+    sprintf(hdr, "SIZE:%d\n", len);
+    SendCStr(hdr);
+    SendAll(buf, len);
+}
+
+/* ---- Synthetic mouse clicks -------------------------------------------
+ *
+ * How QuicKeys 3.5.3 actually does it, established by watchpointing the
+ * low-level event queue during a real click (full evidence in
+ * QUICKEYS_CLICK_INVESTIGATION.md):
+ *
+ *   1. write the target point into MTemp/RawMouse/Mouse and set CrsrNew,
+ *      so the Toolbox believes the mouse is physically there;
+ *   2. PPostEvent() a mouseDown, and fill in evtQWhere/evtQModifiers in
+ *      the queue element it hands back;
+ *   3. the same again for mouseUp, about two ticks later.
+ *
+ * Step 1 is the part every earlier attempt missed. The Toolbox resolves a
+ * click against where it believes the mouse *is*, so a mouseDown whose
+ * evtQWhere disagrees with Mouse/RawMouse lands nowhere -- which is why
+ * the plain Enqueue() attempt recorded in README.md produced no visible
+ * effect and led to the wrong conclusion that this was impossible.
+ *
+ * PPostEvent is trap 0xA12F. Multiverse.h declares it but also lists it in
+ * needs-glue.txt, i.e. there is no inline trap encoding available to call,
+ * so it is invoked as a raw .word here -- the same idiom the DEVPROBE
+ * diagnostic already uses successfully. Plain PostEvent() is not enough:
+ * it offers no way to set evtQWhere, and PPostEvent exists precisely
+ * because it returns the queue element so the caller can fill that in.
+ */
+
+/* Multiversal has no LM accessors for these three. */
+#define LM_RAWMOUSE   (*(Point *)0x082CL)
+#define LM_CRSRNEW    (*(volatile unsigned char *)0x08CEL)
+#define LM_CRSRCOUPLE (*(volatile unsigned char *)0x08CFL)
+
+/* qType for an event queue element. Multiversal does not define evType,
+ * and 4 is what QuicKeys' own elements carry (observed live). */
+#define EVQEL_TYPE 4
+
+static void SetMouseTo(Point p)
+{
+    unsigned char savedCouple;
+    long deadline;
+
+    /* Spin while the cursor is mid-update, exactly as QuicKeys' routine at
+     * CDRV_0+0x17dc does, so we never write underneath the VBL cursor
+     * tracking code. Microseconds in practice. */
+    while (LMGetCrsrBusy()) {
+        /* busy wait */
+    }
+
+    savedCouple = LM_CRSRCOUPLE;
+    LM_CRSRCOUPLE = 0;
+    LMSetMTemp(p);
+    LM_RAWMOUSE = p;
+    LMSetMouseLocation(p);
+    LM_CRSRNEW = 0xFF;   /* "hardware reported a move" */
+
+    /* Wait for the VBL cursor-tracking code to consume CrsrNew, then put
+     * CrsrCouple back. Leaving it at 0 decouples the cursor from the
+     * physical mouse *permanently*, so the console mouse stops working and
+     * the machine looks hung to anyone sitting in front of it -- even
+     * though everything is actually running fine. Learned the hard way.
+     * The wait is bounded so a missed VBL cannot wedge the agent. */
+    deadline = (long)LMGetTicks() + 30;
+    while (LM_CRSRNEW != 0 && (long)LMGetTicks() < deadline) {
+        /* busy wait */
+    }
+    LM_CRSRCOUPLE = savedCouple;
+}
+
+static EvQEl *PPostEventTrap(short code, long msg, short *errOut)
+{
+    /* Explicit register locals rather than a clobber list: A0 and D0 are
+     * both inputs and outputs here, and naming them directly avoids the
+     * output/clobber conflict that shape would otherwise have. */
+    register long  d0 asm("%d0") = msg;
+    register void *a0 asm("%a0") = (void *)(long)code;
+
+    asm volatile (
+        ".word 0xA12F"
+        : "+d"(d0), "+a"(a0)
+        :
+        : "d1", "a1", "cc", "memory"
+    );
+
+    *errOut = (short)d0;
+    return (EvQEl *)a0;
+}
+
+static int PostMouseEvent(short what, Point where)
+{
+    short err = 0;
+    EvQEl *qel = PPostEventTrap(what, 0, &err);
+
+    /* Only touch the element when the trap actually succeeded. On failure
+     * (a full event queue, say) A0 is not a valid pointer, and writing 22
+     * bytes through it would corrupt whatever it happens to point at. */
+    if (err != noErr || qel == NULL) {
+        return 0;
+    }
+
+    /* Set the fields explicitly rather than trusting the register
+     * convention. The one observed live on this ROM (A0 = event code,
+     * D0 = message) is the reverse of what is normally documented, so
+     * write what we actually want regardless of which register carried
+     * it. evtQWhere should already equal `where` because SetMouseTo()
+     * ran first, but QuicKeys writes it too and it costs nothing. */
+    qel->qType = EVQEL_TYPE;
+    qel->evtQWhat = what;
+    qel->evtQMessage = 0;
+    qel->evtQWhere = where;
+    qel->evtQModifiers = 0x0080;   /* btnState, matching QuicKeys */
+    return 1;
+}
+
+/* CLICK x y / DBLCLICK x y -- not part of the shared protocol.
+ * Coordinates are global screen coordinates, same space MOUSEPOS reports. */
+static void HandleClick(short x, short y, int dbl)
+{
+    Point p;
+    long finalTicks;
+    char buf[96];
+    char hdr[32];
+    int len;
+    int pairs;
+    int i;
+
+    p.h = x;
+    p.v = y;
+
+    SetMouseTo(p);
+
+    pairs = dbl ? 2 : 1;
+    for (i = 0; i < pairs; i++) {
+        if (!PostMouseEvent(mouseDown, p)) {
+            SendCStr("ERR:PPostEvent gave no queue element (mouseDown)\n");
+            return;
+        }
+        Delay(2, &finalTicks);          /* QuicKeys' own down->up gap */
+        if (!PostMouseEvent(mouseUp, p)) {
+            SendCStr("ERR:PPostEvent gave no queue element (mouseUp)\n");
+            return;
+        }
+        if (dbl && i == 0) {
+            Delay(4, &finalTicks);      /* comfortably inside GetDblTime() */
+        }
+    }
+
+    len = sprintf(buf, "clicked=%d,%d\r\ndouble=%d\r\n", x, y, dbl ? 1 : 0);
     sprintf(hdr, "SIZE:%d\n", len);
     SendCStr(hdr);
     SendAll(buf, len);
@@ -1244,6 +1399,16 @@ static void HandleClient(void)
             HandlePslist();
         } else if (strcmp(gLine, "MOUSEPOS") == 0) {
             HandleMousePos();
+        } else if (strncmp(gLine, "CLICK ", 6) == 0) {
+            char *csp;
+            long cx = strtol(gLine + 6, &csp, 10);
+            long cy = strtol(csp, NULL, 10);
+            HandleClick((short)cx, (short)cy, 0);
+        } else if (strncmp(gLine, "DBLCLICK ", 9) == 0) {
+            char *csp;
+            long cx = strtol(gLine + 9, &csp, 10);
+            long cy = strtol(csp, NULL, 10);
+            HandleClick((short)cx, (short)cy, 1);
         } else if (strcmp(gLine, "TRAPADDR") == 0) {
             HandleTrapAddr(); /* temp diagnostic */
         } else if (strncmp(gLine, "DEVPROBE ", 9) == 0) {

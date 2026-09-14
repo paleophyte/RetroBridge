@@ -146,7 +146,17 @@ itself needs a new build.
 
 ## Mouse and keyboard automation
 
-`CLICK`/`DBLCLICK`/`KEY`/`TYPE` are not implemented. This was
+**`CLICK x y` and `DBLCLICK x y` are implemented and working** (global
+screen coordinates, same space `MOUSEPOS` reports). `KEY`/`TYPE` are
+still not implemented.
+
+Verified live: `CLICK` selects a Finder icon and `DBLCLICK` opens it (an
+Apple Menu Options control panel window actually opened). The mechanism is
+the one QuicKeys uses -- place the cursor via `MTemp`/`RawMouse`/`Mouse`,
+then post `mouseDown`/`mouseUp` through `PPostEvent` (trap `0xA12F`) and
+fill in `evtQWhere` on the returned queue element.
+
+The history below is kept because it explains why this looked impossible. This was
 investigated at length (an entire session), including a real
 ground-truth check against QuicKeys 3.5.3 (the actual commercial
 automation tool this era's technique is modeled on) running in the same
