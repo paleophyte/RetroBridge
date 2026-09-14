@@ -685,6 +685,20 @@ static void HandleClipSet(char *text)
         return;
     }
 
+    /* Bring the scrap into memory.
+     *
+     * ScrapInfo (0x0960) showed scrapHandle NULL and scrapState 0 -- "on
+     * disk" -- for this whole session, left that way by UnloadScrap() calls
+     * an earlier version made, and never restored since. GetScrap reads it
+     * back from disk quite happily, so CLIPGET always worked, which is
+     * exactly why this went unnoticed: the clipboard looked correct from the
+     * outside while presenting a state no application sees after a real Copy.
+     *
+     * LoadScrap() pulls it back into memory and sets scrapHandle and
+     * scrapState accordingly. Failure is not fatal; the scrap still holds the
+     * text either way. */
+    (void)LoadScrap();
+
     /* Deliberately NOT calling UnloadScrap() here.
      *
      * It was called originally, on the reasoning that flushing the scrap to
