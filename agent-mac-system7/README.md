@@ -290,27 +290,51 @@ so the same work is done directly against `TEScrpHandle` (`0x0AB4`) and
 
 ### What is verified, and what is not
 
-Verified: the clipboard is genuinely set, at both levels.
+`CLIPSET` genuinely sets the clipboard, at both levels:
 
-- `CLIPSET` then `CLIPGET` round-trips exactly -- a 20-byte and an 18-byte
-  string each came back byte-identical with the right `SIZE:`.
-- Reading `0x0AB0` directly shows `TEScrpLength` tracking the text: 14 after a
-  14-character `CLIPSET`, 8 after an 8-character one, with `TEScrpHandle`
-  non-null. So the TextEdit mirror is working too.
+- `CLIPSET` then `CLIPGET` round-trips exactly -- 20, 18 and 41-byte strings
+  each came back byte-identical with the right `SIZE:`.
+- Reading `0x0AB0` directly shows `TEScrpLength` tracking the text (14 after a
+  14-character set, 8 after an 8-character one), so the TextEdit mirror works.
+- `CLIPGET` on an empty clipboard returns `SIZE:0`. It used to report
+  `ERR:GetScrap failed (OSErr -102)`, but `-102` is `noTypeErr` -- "no TEXT in
+  the scrap" -- which is an ordinary empty state, not a failure. Callers could
+  not tell "empty" from "broken".
 
-**Not verified: that a given application's Paste picks it up.** Cmd-V into Find
-File's search field inserts nothing, before or after forcing an application
-switch, even though `TYPE` into that same field works and the scrap provably
-holds the text. The cause was not chased down. Two candidates worth testing
-first if this matters: that Command-modified keys are not reaching Find File at
-all (plain characters demonstrably do, and the apparent Select All highlight
-may just be the field's focus highlight rather than proof Cmd-A worked), or
-that the posted event is being consumed by another application, since the
-low-level event queue is global and `GetNextEvent` delivers to whichever
-process asks first.
+**Pasting into an application does not work, and the cause is not the
+clipboard.** Tested against ClarisWorks 4.0 with a live word-processing
+document, which is as fair a target as exists here:
 
-Note also that `agent_client.py`'s `clipboard_set()` docstring suggests pairing
-it with `key("ctrl-v")`; on this platform that is `key("cmd-v")`.
+| action | result |
+|---|---|
+| `CLIPSET` + `CLIPGET` | text stored and read back exactly |
+| `TYPE hello` into the document | **works** -- "hello" appears |
+| `KEY cmd-v` into the document | nothing pasted |
+| `CLICK` on the Edit menu title | menu does not open |
+
+So plain keystrokes reach a real third-party application, and the scrap holds
+the text -- but neither the Command-key equivalent nor a click on the menu bar
+does anything. Use `TYPE` when you need text into an application; `CLIPSET` is
+still the right call when something else will do the pasting.
+
+### The pattern behind this, and DRAG
+
+These failures look like one thing: **anything driven by a Toolbox tracking
+loop is unreachable by synthetic events.** `MenuSelect` for menus,
+`DragGrayRgn`/`WaitMouseUp` for dragging. Simple event *delivery* works fine --
+icon selection, double-click-to-open, plain typing all do -- but a loop that
+polls live hardware state does not see anything posted to the event queue.
+
+That is the same wall `DRAG` hit, where `WaitMouseUp` never returned false no
+matter what was posted, and where patching the trap showed it was never even
+called through the dispatch table.
+
+One inconsistency is unexplained and worth knowing about: `KEY cmd-w` and
+`KEY cmd-f` **do** work when the Finder is frontmost. So the Finder acts on the
+event's own modifier bits while ClarisWorks apparently does not -- possibly
+consulting live modifier state instead. Anyone picking this up should start
+there, since it is the difference between Command keys working everywhere and
+only in the Finder.
 
 ## Keyboard: KEY and TYPE
 

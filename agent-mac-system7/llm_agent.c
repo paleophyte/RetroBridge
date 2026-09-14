@@ -754,7 +754,15 @@ static void HandleClipGet(void)
     }
 
     len = GetScrap(h, (ResType)SCRAP_TYPE_TEXT, &offset);
-    if (len < 0) {
+
+    /* noTypeErr (-102) means the scrap simply holds no TEXT -- an empty
+     * clipboard, which is an ordinary state and not a failure. Reporting it as
+     * ERR left callers unable to tell "clipboard is empty" from "something
+     * broke"; it is a zero-length result instead. Every other negative value
+     * is a real error and still says so. */
+    if (len == -102L) {
+        len = 0;
+    } else if (len < 0) {
         DisposeHandle(h);
         sprintf(hdr, "ERR:GetScrap failed (OSErr %ld)\n", len);
         SendCStr(hdr);
