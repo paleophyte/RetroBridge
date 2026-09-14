@@ -144,6 +144,35 @@ From then on, updates go through `UPDATE` — see above — with `llm_agent`
 and `llm_updater` never touched by hand again unless `llm_updater`
 itself needs a new build.
 
+## Clicking
+
+`CLICK <x> <y> [button]` and `DBLCLICK <x> <y> [button]`, in global screen
+coordinates (the same space `MOUSEPOS` reports). Both reply `OK` / `ERR:...`.
+
+The button argument is **optional** -- omitted means 1 -- so both the two-argument
+form and the shared protocol's `CLICK <x> <y> <button>` work. `agent_client.py`
+always sends three arguments with `button=1` by default, and that path is
+verified end to end against the real client.
+
+This hardware has one mouse button, and System 7.5.3 has no contextual menus for
+a second one to open. Buttons 2 and 3 are therefore **refused** with an `ERR:`
+rather than quietly performing a left click, which would let a caller believe
+it had right-clicked when nothing of the sort happened.
+
+> Two earlier divergences from the shared protocol are fixed here: `CLICK` used to
+> ignore the button argument entirely, and used to answer with a `SIZE:` body.
+> `agent_client.py`'s `_simple_command` compares the first reply line against
+> `"OK"`, so the old reply made every `client.click()` raise
+> `AgentProtocolError`.
+
+### One connection at a time
+
+The agent serves a single connection and re-arms its MacTCP listener after each
+one closes. Reconnecting immediately can come back `ECONNREFUSED` before the
+listener is up again, which looks like a crash but is not -- seen repeatedly
+while scripting several commands back to back. Leave a couple of seconds
+between connections, or retry on `OSError`.
+
 ## Restart and shutdown
 
 `REBOOT` and `SHUTDOWN` are implemented and working, matching the shared

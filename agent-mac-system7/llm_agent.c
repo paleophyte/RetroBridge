@@ -28,8 +28,10 @@
  * the agent is answering again ~24s after REBOOT, against ~48s and a
  * required keystroke for a cold start after an unclean stop.
  *
- * CLICK and DBLCLICK are implemented. Coordinates are global screen
- * coordinates, the same space MOUSEPOS reports.
+ * CLICK and DBLCLICK are implemented, and take the shared protocol's
+ * optional third "button" argument. Coordinates are global screen
+ * coordinates, the same space MOUSEPOS reports. Only button 1 exists on this
+ * hardware; 2 and 3 are refused rather than quietly treated as a left click.
  *
  * An earlier round of this investigation concluded that synthetic mouse
  * clicks were impossible on classic Mac OS, on the theory that Toolbox
@@ -498,17 +500,33 @@ static int PostMouseEvent(short what, Point where)
     return 1;
 }
 
-/* CLICK x y / DBLCLICK x y -- not part of the shared protocol.
- * Coordinates are global screen coordinates, same space MOUSEPOS reports. */
-static void HandleClick(short x, short y, int dbl)
+/* CLICK x y [button] / DBLCLICK x y [button]
+ *
+ * Coordinates are global screen coordinates, the same space MOUSEPOS reports.
+ *
+ * The shared protocol spells this "CLICK <x> <y> <button>" and agent_client.py
+ * always sends three arguments, defaulting button to 1, so the button is
+ * accepted here for compatibility. It is optional: omitted means 1.
+ *
+ * This hardware has one mouse button. Rather than silently left-click when
+ * asked for button 2 or 3 -- which would let a caller believe it had
+ * right-clicked when nothing of the sort happened -- those are refused. System
+ * 7.5.3 has no contextual menus for a second button to open anyway.
+ *
+ * Replies "OK" / "ERR:..." as the protocol requires. It used to reply with a
+ * SIZE: body, which agent_client.py's _simple_command rejects outright since
+ * it compares the first line against "OK". */
+static void HandleClick(short x, short y, int dbl, short button)
 {
     Point p;
     long finalTicks;
-    char buf[96];
-    char hdr[32];
-    int len;
     int pairs;
     int i;
+
+    if (button != 1) {
+        SendCStr("ERR:single-button hardware, only button 1 is supported\n");
+        return;
+    }
 
     p.h = x;
     p.v = y;
@@ -531,10 +549,7 @@ static void HandleClick(short x, short y, int dbl)
         }
     }
 
-    len = sprintf(buf, "clicked=%d,%d\r\ndouble=%d\r\n", x, y, dbl ? 1 : 0);
-    sprintf(hdr, "SIZE:%d\n", len);
-    SendCStr(hdr);
-    SendAll(buf, len);
+    SendCStr("OK\n");
 }
 
 /* ---- Synthetic click-and-drag ----------------------------------------
@@ -1943,13 +1958,17 @@ static void HandleClient(void)
         } else if (strncmp(gLine, "CLICK ", 6) == 0) {
             char *csp;
             long cx = strtol(gLine + 6, &csp, 10);
-            long cy = strtol(csp, NULL, 10);
-            HandleClick((short)cx, (short)cy, 0);
+            long cy = strtol(csp, &csp, 10);
+            /* Optional third argument. strtol leaves 0 when there are no
+             * digits left, which is the "omitted" case -- treat it as 1. */
+            long cb = strtol(csp, NULL, 10);
+            HandleClick((short)cx, (short)cy, 0, (short)(cb == 0 ? 1 : cb));
         } else if (strncmp(gLine, "DBLCLICK ", 9) == 0) {
             char *csp;
             long cx = strtol(gLine + 9, &csp, 10);
-            long cy = strtol(csp, NULL, 10);
-            HandleClick((short)cx, (short)cy, 1);
+            long cy = strtol(csp, &csp, 10);
+            long cb = strtol(csp, NULL, 10);
+            HandleClick((short)cx, (short)cy, 1, (short)(cb == 0 ? 1 : cb));
         } else if (strcmp(gLine, "DRAGRESET") == 0) {
             HandleDragReset();
         } else if (strcmp(gLine, "DRAGSTAT") == 0) {
