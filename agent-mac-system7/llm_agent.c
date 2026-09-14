@@ -1572,14 +1572,28 @@ static void HandlePut(char *args)
 
     while (*args == ' ') args++;
     {
-        char *p = path;
-        while (*args && *args != ' ' && (p - path) < (long)sizeof(path) - 1) {
-            *p++ = *args++;
+        /* The wire format is "PUT <path> <size>", so the path and the size are
+         * space-separated -- but classic Mac paths are full of spaces
+         * ("Desktop Folder", "System Folder", "Startup Items"). Splitting on
+         * the FIRST space truncated every such path, which meant PUT happily
+         * reported OK while writing to the wrong place, and a following GET of
+         * the same path then said "file not found". Split on the LAST space
+         * instead, the way agent-win32 already does. */
+        char *lastSpace = strrchr(args, ' ');
+        long n;
+
+        if (lastSpace == NULL) {
+            SendCStr("ERR:PUT needs <path> <size>\n");
+            return;
         }
-        *p = '\0';
+        n = (long)(lastSpace - args);
+        if (n > (long)sizeof(path) - 1) {
+            n = (long)sizeof(path) - 1;
+        }
+        memcpy(path, args, (size_t)n);
+        path[n] = '\0';
+        size = atol(lastSpace + 1);
     }
-    while (*args == ' ') args++;
-    size = atol(args);
 
     f = fopen(path, "wb");
     if (!f) {
