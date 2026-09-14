@@ -229,7 +229,7 @@ static int file_exists(const char *path) {
 }
 
 /* ---- Swap targetPath's contents for newPath's, keeping a same-directory
-   backup until the swap succeeds. Retries the initial rename briefly -
+   .old backup after the swap succeeds. Retries the initial rename briefly -
    the just-stopped process may take a moment to release its file
    mapping, so an immediate sharing-violation isn't treated as fatal. If
    putting the new file in place fails, restores the backup so a bad
@@ -277,7 +277,7 @@ static int replace_file(const char *newPath, const char *targetPath) {
     }
 
     log_line("replace: new binary is in place");
-    if (renamedOld) DeleteFileA(backupPath); /* best-effort cleanup */
+    if (renamedOld) log_line("replace: old binary preserved as .old");
     return 1;
 }
 

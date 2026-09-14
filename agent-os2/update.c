@@ -149,7 +149,7 @@ static int replace_file(const char *newPath, const char *targetPath) {
         return 0;
     }
     log_line("replace: new binary is in place");
-    if (renamedOld) remove(backupPath);
+    if (renamedOld) log_line("replace: old binary preserved as .OLD");
     return 1;
 }
 

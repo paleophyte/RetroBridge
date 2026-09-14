@@ -42,6 +42,7 @@
  *
  * The backup is therefore an 8.3-safe name built by replacing the
  * target's extension, not by appending to it - see backup_path_for().
+ * The backup is preserved after a successful update for local recovery.
  *
  * Usage: UPDATE.EXE <new-exe-path> <target-exe-path>
  * Both paths must be absolute. Swaps files with rollback, then relaunches
@@ -343,7 +344,7 @@ static int stop_agent(const char *targetPath) {
 
 /*
  * Build the backup name by *replacing* the target's extension rather than
- * appending to it: LLMAGENT.EXE -> LLMAGENT.BAK, never LLMAGENT.EXE.OLD.
+ * appending to it: LLMAGENT.EXE -> LLMAGENT.OLD, never LLMAGENT.EXE.OLD.
  * Watcom's 16-bit rename() refuses a name with a second dot (errno=1),
  * regardless of the volume being HPFS - see the file header. Only the
  * final path component is considered, so directories containing dots
@@ -360,7 +361,7 @@ static void backup_path_for(const char *targetPath, char *out, int outlen) {
     if (!slash) slash = strrchr(out, '/');
     dot = strrchr(slash ? slash : out, '.');
     if (dot) *dot = '\0';
-    strcat(out, ".BAK");
+    strcat(out, ".OLD");
 }
 
 static int replace_file(const char *newPath, const char *targetPath) {
@@ -414,7 +415,7 @@ static int replace_file(const char *newPath, const char *targetPath) {
         return 0;
     }
     log_line("replace: new binary is in place");
-    if (renamedOld) remove(backupPath);
+    if (renamedOld) log_line("replace: old binary preserved as .OLD");
     return 1;
 }
 
