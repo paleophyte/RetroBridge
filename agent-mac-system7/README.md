@@ -196,6 +196,50 @@ document always intended them to be stripped afterwards. They are worth
 removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
 vector.
 
+## Clipboard: CLIPSET and CLIPGET
+
+`CLIPSET <text>` sets the clipboard (shared protocol, replies `OK` / `ERR:`).
+`CLIPGET` reads it back and is a Mac-only extension -- it exists because
+without it `CLIPSET` cannot be verified at all.
+
+Scrap Manager: `ZeroScrap()`, then `PutScrap()` with type `TEXT`, then
+`UnloadScrap()` to flush it to the scrap file so it does not depend on an
+application switch happening. Both OSErrs are checked -- a silently failing
+clipboard is exactly the kind of thing that wastes an afternoon later. An empty
+payload clears the clipboard rather than erroring.
+
+`CLIPSET` also mirrors the text into the **TextEdit scrap**, because setting
+the desk scrap alone does not make Paste work in most places: TextEdit keeps a
+private scrap in low memory and that is what dialog text fields paste from.
+`TEFromScrap()` cannot be called for this -- Multiversal declares it but lists
+it in `needs-glue.txt`, so it fails at link time with an undefined reference --
+so the same work is done directly against `TEScrpHandle` (`0x0AB4`) and
+`TEScrpLength` (`0x0AB0`).
+
+### What is verified, and what is not
+
+Verified: the clipboard is genuinely set, at both levels.
+
+- `CLIPSET` then `CLIPGET` round-trips exactly -- a 20-byte and an 18-byte
+  string each came back byte-identical with the right `SIZE:`.
+- Reading `0x0AB0` directly shows `TEScrpLength` tracking the text: 14 after a
+  14-character `CLIPSET`, 8 after an 8-character one, with `TEScrpHandle`
+  non-null. So the TextEdit mirror is working too.
+
+**Not verified: that a given application's Paste picks it up.** Cmd-V into Find
+File's search field inserts nothing, before or after forcing an application
+switch, even though `TYPE` into that same field works and the scrap provably
+holds the text. The cause was not chased down. Two candidates worth testing
+first if this matters: that Command-modified keys are not reaching Find File at
+all (plain characters demonstrably do, and the apparent Select All highlight
+may just be the field's focus highlight rather than proof Cmd-A worked), or
+that the posted event is being consumed by another application, since the
+low-level event queue is global and `GetNextEvent` delivers to whichever
+process asks first.
+
+Note also that `agent_client.py`'s `clipboard_set()` docstring suggests pairing
+it with `key("ctrl-v")`; on this platform that is `key("cmd-v")`.
+
 ## Keyboard: KEY and TYPE
 
 Both implemented and verified end to end through the real

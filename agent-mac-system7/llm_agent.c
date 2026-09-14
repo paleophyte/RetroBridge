@@ -500,6 +500,142 @@ static int PostMouseEvent(short what, Point where)
     return 1;
 }
 
+
+/* CLIPSET <text> -- set the clipboard to plain text.
+ *
+ * Scrap Manager: ZeroScrap() to empty the desk scrap, then PutScrap() with
+ * type 'TEXT'. Both are plain inline traps (0xA9FC, 0xA9FE) and both return an
+ * OSErr as a long, which is checked here -- a silently failing clipboard is
+ * exactly the sort of thing that wastes an afternoon later.
+ *
+ * The scrap is global rather than per-process, so it does not matter that this
+ * agent is a background application with no window.
+ *
+ * Text is stored exactly as received. No line-ending translation happens
+ * because none is needed: agent_client.py rejects newlines in clipboard_set(),
+ * and were that ever relaxed, classic Mac text uses CR rather than LF and the
+ * conversion would have to be deliberate.
+ *
+ * An empty payload is treated as "clear the clipboard" rather than an error --
+ * ZeroScrap() alone does exactly that.
+ */
+
+/* 'TEXT' written out, to avoid relying on multi-character constants. */
+#define SCRAP_TYPE_TEXT 0x54455854L
+
+static void HandleClipSet(char *text)
+{
+    char buf[96];
+    long err;
+    long len;
+
+    len = (long)strlen(text);
+
+    err = ZeroScrap();
+    if (err != noErr) {
+        sprintf(buf, "ERR:ZeroScrap failed (OSErr %ld)\n", err);
+        SendCStr(buf);
+        return;
+    }
+
+    if (len == 0) {
+        SendCStr("OK\n");      /* cleared */
+        return;
+    }
+
+    err = PutScrap(len, (ResType)SCRAP_TYPE_TEXT, (Ptr)text);
+    if (err != noErr) {
+        sprintf(buf, "ERR:PutScrap failed (OSErr %ld)\n", err);
+        SendCStr(buf);
+        return;
+    }
+
+    /* Flush the in-memory scrap out to the scrap file. The Process Manager
+     * normally does this when applications switch; doing it here means the
+     * scrap is durable for whoever reads it next rather than depending on a
+     * switch happening. Failure is not fatal -- the in-memory scrap is still
+     * set -- so it is not reported.  */
+    (void)UnloadScrap();
+
+    /* Mirror it into the TextEdit scrap as well.
+     *
+     * Setting the desk scrap alone is not enough to make Paste work in most
+     * places. TextEdit keeps its own private scrap in low memory
+     * (TEScrpHandle/TEScrpLength), and that is what dialog text fields paste
+     * from -- an application is supposed to call TEFromScrap() itself, and
+     * plenty do not. Observed directly: after a desk-scrap-only CLIPSET,
+     * CLIPGET returned the text correctly but Cmd-V into Find File's search
+     * field produced nothing.
+     *
+     * Those low-memory globals are system-wide, so doing it here fixes paste
+     * for applications that never bother.
+     *
+     * TEFromScrap() itself cannot be called: Multiversal declares it but lists
+     * it in needs-glue.txt, so there is no trap encoding and no glue to link
+     * against -- it fails at link time with an undefined reference. What it
+     * does is small enough to do directly instead: read the desk scrap into
+     * the existing TE scrap handle and set the length. Both globals have
+     * accessors (TEScrpHandle at 0x0AB4, TEScrpLength at 0x0AB0).
+     *
+     * Skipped rather than forced if TextEdit has not set up a scrap handle
+     * yet; allocating one here would mean taking over ownership of a system
+     * global, which is not worth the risk for a convenience. Non-fatal either
+     * way, since the desk scrap is already set. */
+    {
+        Handle teScrap = LMGetTEScrpHandle();
+
+        if (teScrap != NULL) {
+            long teOffset = 0;
+            long teLen = GetScrap(teScrap, (ResType)SCRAP_TYPE_TEXT, &teOffset);
+
+            /* TEScrpLength is a 16-bit field, so anything larger simply
+             * cannot be represented there; the desk scrap still holds it. */
+            if (teLen >= 0 && teLen <= 32767L) {
+                LMSetTEScrpLength((short)teLen);
+            }
+        }
+    }
+
+    SendCStr("OK\n");
+}
+
+/* CLIPGET -- read the clipboard back as text. Not part of the shared protocol;
+ * a Mac-side extension, added because without it CLIPSET cannot be verified at
+ * all. Whether a given application's Paste picks the text up is a separate
+ * question from whether the scrap holds it -- dialog text fields go through
+ * TextEdit's private scrap and only see the desk scrap if the application
+ * calls TEFromScrap() -- so this reports what the scrap actually contains. */
+static void HandleClipGet(void)
+{
+    Handle h;
+    long len;
+    long offset = 0;
+    char hdr[32];
+
+    h = NewHandle(0);
+    if (h == NULL) {
+        SendCStr("ERR:out of memory\n");
+        return;
+    }
+
+    len = GetScrap(h, (ResType)SCRAP_TYPE_TEXT, &offset);
+    if (len < 0) {
+        DisposeHandle(h);
+        sprintf(hdr, "ERR:GetScrap failed (OSErr %ld)\n", len);
+        SendCStr(hdr);
+        return;
+    }
+
+    sprintf(hdr, "SIZE:%ld\n", len);
+    SendCStr(hdr);
+    if (len > 0) {
+        HLock(h);
+        SendAll(*h, (int)len);
+        HUnlock(h);
+    }
+    DisposeHandle(h);
+}
+
 /* CLICK x y [button] / DBLCLICK x y [button]
  *
  * Coordinates are global screen coordinates, the same space MOUSEPOS reports.
@@ -2254,6 +2390,10 @@ static void HandleClient(void)
             HandlePslist();
         } else if (strcmp(gLine, "MOUSEPOS") == 0) {
             HandleMousePos();
+        } else if (strcmp(gLine, "CLIPGET") == 0) {
+            HandleClipGet();
+        } else if (strncmp(gLine, "CLIPSET ", 8) == 0) {
+            HandleClipSet(gLine + 8);
         } else if (strncmp(gLine, "KEY ", 4) == 0) {
             HandleKey(gLine + 4);
         } else if (strncmp(gLine, "TYPE ", 5) == 0) {
