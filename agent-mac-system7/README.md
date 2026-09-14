@@ -144,6 +144,40 @@ From then on, updates go through `UPDATE` — see above — with `llm_agent`
 and `llm_updater` never touched by hand again unless `llm_updater`
 itself needs a new build.
 
+## Protocol surface
+
+Audited end to end against the real `../mcp-server/agent_client.py`, not by
+hand. Everything below was actually exercised through that client.
+
+**Implemented and verified:** `PING`, `SYSINFO`, `PSLIST`, `SCREENSHOT`,
+`PUT`, `GET`, `CLICK`, `REBOOT`, `SHUTDOWN`, `UPDATE`, `QUIT`, plus the
+Mac-only `DBLCLICK`, `MOUSEPOS`, `QUITAGENT` and the incomplete `DRAG`.
+
+Anything unimplemented answers `ERR:unknown command` and the agent stays up --
+confirmed for every missing verb below, so a client probing the surface cannot
+hang or crash it.
+
+### Not implemented
+
+| command | feasibility on System 7.5.3 |
+|---|---|
+| `KEY` / `TYPE` | **Proven possible.** Synthetic keyboard events were shown to work during the mouse investigation, and `PPostEvent` is now understood. Highest-value gap. |
+| `CLIPSET` | **Easy.** Scrap Manager: `ZeroScrap()` then `PutScrap(len, 'TEXT', buf)`. |
+| `WINLIST` | **Feasible.** Walk the Window Manager's `WindowList` low-memory global (`0x09D6`) and read each title and `portRect`. Read-only, low risk. |
+| `PSKILL` | **Partly.** Classic Mac OS has no kill. The nearest equivalent is a `kAEQuitApplication` AppleEvent, which an app may refuse -- so it would be "ask to quit", not "kill", and must be documented as such. |
+| `EXEC` / `EXECDETACH` | **Not applicable.** No shell exists. `EXECDETACH` could reasonably be redefined as "launch this application", which `llm_updater` already does with `LaunchApplication` -- but that is a deliberate protocol divergence, not an implementation. |
+| `WINMSG`, `POSTMSG`, `LBGETTEXT`, `REGGET`, `REGSET` | **Not applicable.** Windows-specific. |
+| `SCREENS`, `AUTOEXEC`, `DEBUG` | **Not applicable.** NetWare-specific. |
+
+### Housekeeping
+
+The `TEMP DIAGNOSTIC` commands (`PEEK`, `SCANSIG`, `SCANCDRV`, `HLEWATCH`,
+`DEVPROBE`, `TRAPADDR`, `RESLOOKUP`) are still present. They exist for the
+QuicKeys click investigation, which is now solved, and the investigation
+document always intended them to be stripped afterwards. They are worth
+removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
+vector.
+
 ## Clicking
 
 `CLICK <x> <y> [button]` and `DBLCLICK <x> <y> [button]`, in global screen
