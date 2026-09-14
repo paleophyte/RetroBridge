@@ -144,6 +144,22 @@ From then on, updates go through `UPDATE` — see above — with `llm_agent`
 and `llm_updater` never touched by hand again unless `llm_updater`
 itself needs a new build.
 
+## Restart and shutdown
+
+`REBOOT` and `SHUTDOWN` are implemented and working, matching the shared
+protocol in `../mcp-server/agent_client.py` (both reply `OK`).
+
+They call the Shutdown Manager (trap `0xA895`) -- `ShutDwnStart()` and
+`ShutDwnPower()`. That choice matters: the Shutdown Manager runs registered
+shutdown procedures and flushes/unmounts volumes, so the guest comes back
+clean. Verified by rebooting *without* sending the usual dismiss keystroke --
+the agent was answering again 24s later with no "restarted improperly"
+dialog. A hard stop leaves that dialog up, and it blocks Startup Items
+processing, so the agent would not relaunch by itself.
+
+`SHUTDOWN` is a true power-off: the QEMU process exits with the guest, so
+recovering needs `launch_vm.sh` on the host, not just a guest boot.
+
 ## Mouse and keyboard automation
 
 **`CLICK x y` and `DBLCLICK x y` are implemented and working** (global
