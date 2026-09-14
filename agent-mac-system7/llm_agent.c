@@ -597,6 +597,7 @@ typedef struct {
     short   finished;
     short   installed;
     short   savedCouple;
+    long    forceUp;       /* non-zero => the 0xA977 patch returns false */
     short   releaseTicks;  /* mouseUp reposts remaining after the path ends */
     short   upPosted;      /* 1 if the VBL's mouseUp PPostEvent gave an element */
     short   upErr;         /* the OSErr it returned */
@@ -604,6 +605,68 @@ typedef struct {
 } DragRec;
 
 static DragRec *gDragRec = NULL;
+
+/* Trap patch on WaitMouseUp (0xA977) -- the only thing that ends the Finder's
+ * drag loop. See the STATUS note above: releasing MBState and posting mouseUp
+ * events both provably fail to stop it, so the loop's own exit test gets
+ * answered directly instead.
+ *
+ * gForceUpPtr points at gDragRec->forceUp. The stub reaches it through this
+ * global rather than through gDragRec so there is no struct-offset constant
+ * baked into the assembly. Globals are reachable from trap context in this
+ * build -- the HLEWATCH stub above relies on exactly the same "m" operands.
+ *
+ * DANGER: if this patch is ever left installed while the agent's code goes
+ * away, the Finder calls a dangling pointer many times a second and the
+ * machine dies. README.md technique 3 is the cautionary tale. Every exit path
+ * must call RestoreWaitMouseUp() -- the command loop, DRAGRESET, QUITAGENT
+ * and UPDATE all do. */
+static void *gRealA977 = NULL;
+static volatile long *gForceUpPtr = NULL;
+static volatile long gA977Hits = 0;      /* every call that reached the stub */
+static volatile long gA977Forced = 0;    /* calls answered false by us */
+
+static void WaitMouseUpStub(void)
+{
+    /* Stack here, after GCC's own linkw prologue (verified by disassembly):
+     *   sp@(0) saved A6, sp@(4) return address, sp@(8) the Pascal Boolean
+     *   result slot the caller reserved with subq.w #2,%sp.
+     * Returning false means clearing that byte and doing a plain rts; the
+     * caller then does tst.b (sp)+ and falls out of its loop. */
+    asm volatile (
+        "addql  #1,%2\n\t"
+        "movel  %0,%%a0\n\t"
+        "movel  %%a0,%%d0\n\t"
+        "beq    1f\n\t"
+        "tstl   %%a0@\n\t"
+        "beq    1f\n\t"
+
+        "addql  #1,%3\n\t"
+        "clrb   %%sp@(8)\n\t"
+        "unlk   %%fp\n\t"
+        "rts\n"
+
+        "1:\n\t"
+        "unlk   %%fp\n\t"
+        "movel  %1,%%a0\n\t"
+        "jmp    %%a0@"
+        :
+        : "m"(gForceUpPtr), "m"(gRealA977), "m"(gA977Hits), "m"(gA977Forced)
+        : "d0", "a0", "cc", "memory"
+    );
+}
+
+static void RestoreWaitMouseUp(void)
+{
+    if (gRealA977 != NULL) {
+        SetTrapAddress((ProcPtr)gRealA977, 0xA977);
+        gRealA977 = NULL;
+    }
+    gForceUpPtr = NULL;
+    if (gDragRec != NULL) {
+        gDragRec->forceUp = 0;
+    }
+}
 
 static void DragVBLProc(void)
 {
@@ -664,6 +727,7 @@ static void DragVBLProc(void)
         }
 
         r->mbAtEnd = (short)(*(unsigned char *)0x0172L);
+        r->forceUp = 1;      /* make the patched WaitMouseUp answer false */
 
         /* Re-post rather than fire once. The ROM tracking loop is
          *     while (WaitMouseUp()) { GetMouse(...); }
@@ -772,10 +836,41 @@ static void HandleDrag(short x0, short y0, short x1, short y1,
     }
     LM_CRSRCOUPLE = 0;
 
+    gDragRec->forceUp = 0;
+    gA977Hits = 0;
+    gA977Forced = 0;
+    gForceUpPtr = &gDragRec->forceUp;
+
+    /* DISARMED -- do not re-enable without reading this.
+     *
+     * Patching WaitMouseUp (0xA977) was the obvious way to answer the Finder's
+     * tracking loop directly. It does not work, and the reason is measured
+     * rather than guessed: with the patch installed across a full drag,
+     * a977_hits came back 0. The stub was never entered even once, so the ROM
+     * loop at 0x408193f0 does not dispatch WaitMouseUp through the Toolbox
+     * trap table that SetTrapAddress writes -- despite HLEWATCH patching
+     * 0xA88F by exactly the same route and counting thousands of calls.
+     *
+     * Leaving a trap patch armed costs real safety (README.md technique 3:
+     * an unrestored patch caused a hard fault needing a full VM restart) and
+     * buys nothing while it never fires, so the install is commented out.
+     * The stub, the counters and RestoreWaitMouseUp() are kept because they
+     * are the instrumentation that produced the result -- re-enable the two
+     * lines below to reproduce it.
+     *
+     *   gRealA977 = (void *)GetTrapAddress(0xA977);
+     *   SetTrapAddress((ProcPtr)WaitMouseUpStub, 0xA977);
+     *
+     * Worth trying next: patch GetMouse (0xA972), which the same loop calls,
+     * purely as a control. If that also never fires, ROM-internal A-traps on
+     * this machine bypass the dispatch table generally, and no trap-patch
+     * approach will ever reach this loop. */
+
     LMSetMBState(0x00);                   /* button down */
     if (!PostMouseEvent(mouseDown, p)) {
         LMSetMBState(0x80);
         LM_CRSRCOUPLE = (unsigned char)gDragRec->savedCouple;
+        RestoreWaitMouseUp();
         SendCStr("ERR:PPostEvent gave no queue element (drag mouseDown)\n");
         return;
     }
@@ -783,6 +878,7 @@ static void HandleDrag(short x0, short y0, short x1, short y1,
     if (VInstall((VBLTaskPtr)&gDragRec->vbl) != noErr) {
         LMSetMBState(0x80);
         LM_CRSRCOUPLE = (unsigned char)gDragRec->savedCouple;
+        RestoreWaitMouseUp();
         SendCStr("ERR:VInstall failed\n");
         return;
     }
@@ -818,6 +914,7 @@ static void HandleDragStat(void)
                   "ticks_used=%d\r\nmax_ticks=%d\r\nticks_per_step=%d\r\n"
                   "from=%d,%d\r\nto=%d,%d\r\nsaved_couple=%02x\r\n"
                   "vbl_count=%d\r\nvbl_qtype=%d\r\n"
+                  "a977_hits=%ld\r\na977_forced=%ld\r\n"
                   "release_ticks=%d\r\nup_posted=%d\r\nup_err=%d\r\nmb_at_end=%02x\r\n",
                   gDragRec->installed, gDragRec->finished,
                   gDragRec->step, gDragRec->nSteps,
@@ -827,6 +924,7 @@ static void HandleDragStat(void)
                   gDragRec->x1, gDragRec->y1,
                   (unsigned char)gDragRec->savedCouple,
                   gDragRec->vbl.vblCount, gDragRec->vbl.qType,
+                  gA977Hits, gA977Forced,
                   gDragRec->releaseTicks, gDragRec->upPosted, gDragRec->upErr,
                   (unsigned char)gDragRec->mbAtEnd);
 
@@ -845,6 +943,7 @@ static void HandleDragReset(void)
         gDragRec->installed = 0;
         gDragRec->finished = 1;
     }
+    RestoreWaitMouseUp();
     LMSetMBState(0x80);
     LM_CRSRCOUPLE = 0xFF;
     /* A tracking loop waits on the mouseUp event, so releasing MBState is
@@ -1476,6 +1575,10 @@ static void HandleUpdate(char *args)
     /* Same teardown QUITAGENT uses -- release gStream before exiting
      * so llm_updater's relaunch of us doesn't inherit an orphaned
      * MacTCP stream still bound to AGENT_PORT. */
+    RestoreWaitMouseUp();   /* the replacement binary lands at a different
+                             * address; a patch left pointing into this one
+                             * would be called by the Finder within
+                             * milliseconds and take the machine down */
     TCPStreamAbortAndRelease(gStream);
     ExitToShell();
 }
@@ -1695,6 +1798,13 @@ static void HandleClient(void)
     for (;;) {
         if (RecvLine(gLine, sizeof(gLine)) < 0) break;
 
+        /* Take the WaitMouseUp patch back out as soon as we are running
+         * again. A drag installs it and is then starved until the Finder's
+         * tracking loop ends, so this is the first safe opportunity. Leaving
+         * it installed any longer than necessary is what makes a trap patch
+         * dangerous -- see the DANGER note on WaitMouseUpStub. */
+        RestoreWaitMouseUp();
+
         if (strcmp(gLine, "PING") == 0) {
             HandlePing();
         } else if (strcmp(gLine, "QUIT") == 0) {
@@ -1718,6 +1828,7 @@ static void HandleClient(void)
              * would ever have fixed it -- it needed to actually be
              * released here. */
             SendCStr("OK\n");
+            RestoreWaitMouseUp();   /* never exit with the trap still patched */
             TCPStreamAbortAndRelease(gStream);
             ExitToShell();
         } else if (strcmp(gLine, "SYSINFO") == 0) {
