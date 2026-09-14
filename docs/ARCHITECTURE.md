@@ -1,5 +1,10 @@
 # Architecture
 
+> This document contains the original Win32 design and historical debugging notes.
+> Platform differences and outstanding issues are summarized in the
+> [publication audit](PUBLICATION_AUDIT.md); the protocol below is not a
+> complete command reference for every agent.
+
 ## Why not SSH
 
 The original ask was "a modern-ish SSH server for Windows 2000." Nothing
@@ -978,7 +983,7 @@ The fix, in `agent-win32/Makefile`:
 - Force `--major-subsystem-version 4 --minor-subsystem-version 0` and the
   matching `--major-os-version`/`--minor-os-version` linker flags. Verified
   with `file llm_agent.exe` → `PE32 executable for MS Windows 4.00 (console)`.
-- Verified import table is exactly `ADVAPI32`, `KERNEL32`, `msvcrt.dll`,
+- The Win32 agent links `ADVAPI32`, `GDI32`, `KERNEL32`, `msvcrt.dll`,
   `USER32`, `WS2_32` — no `api-ms-win-*` forwarder DLLs (those are a Win7+
   concept and won't exist on old targets even if the import would
   otherwise resolve).

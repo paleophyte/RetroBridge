@@ -111,7 +111,7 @@ Against a reachable FreeDOS guest with the agent listening:
 4. `legacy_exec(machine="freedos-1", command="dir")` — directory listing in output
 5. `legacy_upload` a small file → `legacy_download` it back — byte-identical
 6. `legacy_screenshot` / `legacy_screenshot_file` — readable 80×25 text screen as image
-7. `legacy_type(machine="freedos-1", text="echo hi")` then `legacy_key(..., "enter")` — text appears on the DOS console (agent must not be the foreground hog; best when the guest is sitting at a `COMMAND.COM` prompt)
+7. `KEY`/`TYPE` only queue BIOS keystrokes. This agent is a foreground program, not a TSR: it does not leave a concurrently usable `COMMAND.COM` prompt, and cannot service the network while `system()` is running a child. Use `legacy_exec` for shell commands; do not treat an input `OK` as proof that an application consumed the keys.
 8. Confirm an unsupported tool (e.g. `legacy_winlist`) returns a clear error, not a hang
 9. Optional: `legacy_reboot(machine="freedos-1", confirm=True)` — guest resets; start agent again from `AUTOEXEC.BAT`
 

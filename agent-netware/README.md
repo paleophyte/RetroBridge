@@ -147,7 +147,9 @@ and `nw4\build.bat` — kept separate so the 3.12 path stays clean.
    ..\mcp-server\.venv\Scripts\python.exe _smoke_test.py
    ```
 
-Unload with `UNLOAD LLMAGENT` (warns if a client is connected).
+Console `UNLOAD LLMAGENT` has caused abends on the tested 3.12 guest;
+it is not a verified safe stop path. For replacement, use the staged
+`UPDATE` flow described above.
 
 ## EXEC notes
 

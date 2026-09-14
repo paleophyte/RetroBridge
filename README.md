@@ -2,11 +2,16 @@
 
 A toolchain for giving an LLM tool-calling client hands-on access to legacy
 machines — Windows for Workgroups 3.11, Windows 95/98/ME/NT4/2000/XP,
-FreeDOS, OS/2, and NetWare — on an isolated lab network: run shell commands,
+FreeDOS, OS/2, NetWare, and classic Mac OS (System 7) — on an isolated lab network: run shell commands,
 transfer files, take screenshots, send mouse/keyboard input.
 Built after `freeSSHd` turned out to break other software (couldn't install
 MSSQL alongside it) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
 why this isn't "just use a different SSH server."
+
+Platform support varies: classic Mac OS has no shell, DOS/NetWare expose
+text screenshots, and several desktop tools are platform-specific. See the
+[capability matrix and publication audit](docs/PUBLICATION_AUDIT.md) for
+the current limits, verified coverage, and outstanding issues.
 
 ## Nomenclature
 
@@ -48,6 +53,10 @@ Pieces:
   (Win16 + Winsock 1.1). See [agent-win16/README.md](agent-win16/README.md).
 - **`agent-netware/`** — NetWare 3.12+ NLM target-agent port (Open Watcom +
   CLIB BSD sockets). See [agent-netware/README.md](agent-netware/README.md).
+- **`agent-mac-system7/`** — classic 68k Mac OS target agent (Retro68 +
+  MacTCP). Supports data-fork file transfer, screenshots, processes, and
+  limited input automation; no shell, cross-application clipboard, or
+  window enumeration. See [agent-mac-system7/README.md](agent-mac-system7/README.md).
 - **`mcp-server/`** — the MCP bridge/server you run on your modern control
   machine, exposing target-agent commands as MCP tools.
 
@@ -113,14 +122,15 @@ launched with `SERVICE_INTERACTIVE_PROCESS` so it can actually see/drive
 the logged-on user's real desktop for screenshot/click/key/type — pre-Vista
 Windows has no Session 0 isolation, so this works, but only while someone
 is logged in locally on the console (see ARCHITECTURE.md for the details
-and the RDP-session caveat). On Windows 9x, `--install` adds a `Run`
-registry key instead — it'll start on next logon, or run it immediately
+and the RDP-session caveat). On Windows 9x, `--install` adds a `RunServices`
+registry key instead — it'll start at the next boot, or run it immediately
 with `llm_agent.exe --run`.
 
 If you already had an older `llm_agent.exe` installed as a service, run
 `llm_agent.exe --uninstall` first and reinstall — the interactive-process
-flag and the newer commands only take effect on a fresh service
-registration, not an in-place binary swap.
+flag requires updating the service registration. New protocol commands
+come from the replacement binary and do not themselves require reinstalling
+the service.
 
 ## 3. Set up the bridge
 
@@ -147,6 +157,12 @@ exec_token = a-different-long-random-shared-secret
 The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
 `machine` argument to every tool below. `exec_port` is optional (defaults
 to `2222`).
+
+Every section must describe an agent and include `host` and `exec_token`;
+an unrelated SSH-only section makes the current loader reject the entire
+file. Configuration is cached until the bridge restarts. Use unique ASCII
+tokens (up to 127 characters for compatibility with all ports), never the
+example token. The Mac agent currently uses a fixed port of 2222.
 
 **Put your real `machines.ini` outside the repo**, e.g.
 `~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at

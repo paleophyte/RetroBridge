@@ -14,7 +14,7 @@ expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 | `CLICK` `DBLCLICK` | working, optional third `button` argument; only button 1 exists |
 | `KEY` `TYPE` | working; US layout only |
 | `PSKILL` | working, but it *asks* a process to quit rather than killing it |
-| `REBOOT` `SHUTDOWN` | working, clean shutdown via the Shutdown Manager |
+| `REBOOT` `SHUTDOWN` | working via direct Shutdown Manager calls; bypass other applications' save/quit handling |
 | `UPDATE` `QUITAGENT` `QUIT` | working |
 | `MOUSEPOS` | working (Mac-only extension) |
 | `CLIPSET` `CLIPGET` | **disabled** -- the scrap is per-process, writes never reach other applications |
@@ -23,6 +23,14 @@ expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 | `EXEC` `EXECDETACH` | not applicable, classic Mac OS has no shell |
 
 Disabled commands return `ERR:` with the reason rather than a misleading `OK`.
+
+**Finder Restart works with Quit-event handling:** the agent dispatches
+incoming Apple events and honors Finder's Quit Application request. It
+cancels pending MacTCP listen/receive operations, releases the stream, and
+removes mouse/VBL hooks before exiting. Special > Restart was verified on
+System 7.5.3 both while listening and with an authenticated idle client;
+the agent returned through Startup Items in about 18 seconds. The agent's
+own power commands still bypass Finder's application-quit negotiation.
 
 Two recurring themes are worth knowing before extending this:
 
@@ -55,19 +63,25 @@ Guest needs MacTCP configured and working (Control Panel shows an IP).
 | `MOUSEPOS` | Not part of the shared protocol — reports current cursor position (`LMGetMTemp()`) and button state (`Button()`) |
 
 `EXEC`/`EXECDETACH` are **not implemented** — classic Mac OS has no
-command shell (no `COMMAND.COM`/`CMD.EXE` equivalent). `WINLIST`/`REG*`
-are also not implemented (no analogous concept on classic Mac OS).
-`CLICK`/`DBLCLICK`/`KEY`/`TYPE` are **not implemented, deliberately** —
-this isn't an oversight or a "not gotten to yet"; see "Mouse and
-keyboard automation" below for why, and what was actually proven to
-work if picking this back up. All unimplemented commands return
-`ERR:unknown command`.
+command shell (no `COMMAND.COM`/`CMD.EXE` equivalent). Registry commands
+are unsupported. `WINLIST`, `CLIPSET`, and `CLIPGET` return explanatory
+errors because this implementation cannot access other applications'
+windows or clipboard. `CLICK`/`DBLCLICK`/`KEY`/`TYPE` are implemented;
+the command summary above describes their current limits. The investigation
+below includes superseded experiments, not additional current restrictions.
+
+The MCP bridge exposes only part of this surface: `DBLCLICK`, `MOUSEPOS`,
+and the Mac-specific `UPDATE <size>` transfer need a custom protocol client.
+Generic `AgentClient.update()` sends a bare `UPDATE` and does not work here.
+See the [publication audit](../docs/PUBLICATION_AUDIT.md) for additional
+update and file-transfer failure cases. Update currently has no rollback
+after the updater deletes the old application.
 
 The agent runs with **no console and no windows at all** (see
 `llm_agent.r`) — not minimized, not backgrounded-with-a-window, just no
 UI whatsoever. There is no Finder menu, no dock, no window to close it
-from, so `QUITAGENT` is the only way to stop it short of rebooting the
-machine, and `UPDATE`/`llm_updater` is the only way to replace it short
+from. `QUITAGENT` or a Quit Application Apple event stops it, and
+`UPDATE`/`llm_updater` is the only way to replace it short
 of decoding a new build by hand.
 
 ## Two binaries: `llm_agent` and `llm_updater`
@@ -106,7 +120,11 @@ a cooperatively-scheduled system, not just an inefficiency.
 
 ### `QUITAGENT` releases the MacTCP stream
 
-`QUITAGENT` calls `TCPStreamAbortAndRelease()` before `ExitToShell()`.
+`QUITAGENT`, a Quit Application Apple event, and a successful `UPDATE`
+request all return through the main loop's cleanup before exiting. A Quit
+event aborts any pending asynchronous listen/receive and waits for its
+parameter block to complete before unwinding the stack. Cleanup calls
+`TCPStreamAbortAndRelease()` and removes mouse/VBL hooks.
 Skipping this was a real, reproducible bug: the process list
 (`PSLIST`) always looked clean afterward, but the *next* agent's own
 `TCPStreamCreate`/`TCPListen` would hang indefinitely — with no timeout,
@@ -437,10 +455,18 @@ between connections, or retry on `OSError`.
 
 ## Restart and shutdown
 
+Finder's **Special > Restart** uses the application's Quit-event handler.
+This path was tested with no client connected and with an authenticated
+client waiting for its next command; both restarted successfully and
+relaunched the agent. Special > Shut Down uses the same handler but was
+not separately tested after this fix.
+
 `REBOOT` and `SHUTDOWN` are implemented and working, matching the shared
 protocol in `../mcp-server/agent_client.py` (both reply `OK`).
 
-They call the Shutdown Manager (trap `0xA895`) -- `ShutDwnStart()` and
+These protocol commands bypass Finder's save/quit negotiation with other
+applications; an `OK` does not establish that those applications saved
+their work. They call the Shutdown Manager (trap `0xA895`) -- `ShutDwnStart()` and
 `ShutDwnPower()`. That choice matters: the Shutdown Manager runs registered
 shutdown procedures and flushes/unmounts volumes, so the guest comes back
 clean. Verified by rebooting *without* sending the usual dismiss keystroke --
@@ -451,11 +477,32 @@ processing, so the agent would not relaunch by itself.
 `SHUTDOWN` is a true power-off: the QEMU process exits with the guest, so
 recovering needs `launch_vm.sh` on the host, not just a guest boot.
 
+## QEMU bridge connectivity when Docker is installed
+
+If the Ubuntu QEMU host can reach the Mac but another machine cannot,
+check the Linux bridge firewall as well as MacTCP and the outer hypervisor.
+Docker can set the IPv4 `FORWARD` policy to `DROP`. When
+`net.bridge.bridge-nf-call-iptables=1`, traffic crossing from the host's
+physical interface to the Mac's TAP interface passes through those rules.
+Host-originated connections do not use that same forwarding path.
+
+This was confirmed live: incoming SYN packets appeared on the Ubuntu NIC
+but never reached the Mac TAP. A scoped `DOCKER-USER` allowance for the
+control PC to the Mac agent's TCP port, plus established replies, restored
+authenticated access and screenshots. VMware's effective port policy
+already permitted the nested guest's MAC traffic. The fix belongs on the
+Ubuntu bridge, not in the Mac's address/gateway settings.
+
+Use explicit interface/address/port matches and arrange for the rules to
+be applied after Docker starts. The test host uses Docker's snap service,
+`snap.docker.dockerd.service`, rather than `docker.service`. See
+[Docker's forwarding guidance](https://docs.docker.com/engine/network/firewall-iptables/).
+
 ## Mouse and keyboard automation
 
 **`CLICK x y` and `DBLCLICK x y` are implemented and working** (global
 screen coordinates, same space `MOUSEPOS` reports). `KEY`/`TYPE` are
-still not implemented.
+implemented for the US keyboard layout; see [Keyboard](#keyboard-key-and-type).
 
 Verified live: `CLICK` selects a Finder icon and `DBLCLICK` opens it (an
 Apple Menu Options control panel window actually opened). The mechanism is

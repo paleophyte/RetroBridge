@@ -2,6 +2,7 @@ agent-win32/llm_agent.ini
 agent-win32/*.exe
 agent-win32/*.o
 agent-dos/llm_agent.ini
+agent-dos/LLMAGENT.INI
 agent-dos/WATTCP.CFG
 agent-dos/*.exe
 agent-dos/*.obj
@@ -11,6 +12,7 @@ agent-dos/last_screenshot.bmp
 agent-dos/last_screenshot.png
 agent-dos/PCNTPK.COM
 agent-win16/llm_agent.ini
+agent-win16/LLMAGENT.INI
 agent-win16/*.exe
 agent-win16/*.obj
 agent-win16/*.map

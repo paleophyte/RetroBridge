@@ -1,5 +1,9 @@
 # OS/2 agent — session handoff
 
+> Historical implementation handoff. Its deferred-command table predates the
+> current OS/2 agents; use their READMEs and [publication audit](PUBLICATION_AUDIT.md)
+> for current capability and validation status.
+
 Point a new Cursor chat at this file (and the repo root
 `C:\Users\admin\code\retro-ssh-server`). Goal: **`llm_agent`** on
 **OS/2 2.11** (lab VM **BETELGEUSE**, `10.102.10.198`) so the existing MCP
