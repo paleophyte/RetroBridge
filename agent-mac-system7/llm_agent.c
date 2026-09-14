@@ -50,8 +50,8 @@
  *
  * This app runs with no console, no windows, and (see llm_agent.r) no
  * foreground UI at all -- there is no Finder menu or window to close it
- * from, so QUITAGENT is the only way to stop it short of rebooting the
- * machine, and llm_updater is the only way to replace it short of
+ * from. QUITAGENT or a Quit Application Apple event stops it, and
+ * llm_updater is the only way to replace it short of
  * StuffIt Expander + manual file swap.
  *
  * MacTCP is a driver-style API (PBControlSync/PBControlAsync on a
@@ -112,6 +112,20 @@ static char    gRcvBuffer[RCV_BUFFER_SIZE];
 static char    gToken[TOKEN_MAX_LEN];
 static char    gLine[LINE_MAX_LEN];
 static char    gIOBuf[READ_CHUNK];
+static Boolean gQuitRequested;
+
+/* Finder sends this event to high-level-event-aware applications before
+ * restarting or shutting down. Defer cleanup until pending MacTCP calls
+ * have completed: their parameter blocks belong to the current stack. */
+static pascal OSErr HandleQuitEvent(const AppleEvent *event,
+                                  AppleEvent *reply, int32_t refcon)
+{
+    (void)event;
+    (void)reply;
+    (void)refcon;
+    gQuitRequested = true;
+    return noErr;
+}
 
 /* ------------------------------------------------------------------ */
 /* MacTCP driver plumbing                                             */
@@ -142,13 +156,15 @@ static OSErr TCPControlSync(TCPiopb *pb, short csCode)
  * process of CPU time forever -- including Finder's own event loop,
  * which is what made the whole machine look "frozen" (mouse moved via
  * low-level cursor tracking, but no click was ever delivered to
- * anything, because nothing else was ever scheduled to run). We don't
- * care about the event's contents, just about periodically handing
- * control back to the Process Manager. */
+ * anything, because nothing else was ever scheduled to run). High-level
+ * events must also be dispatched so Finder's Quit request can be handled. */
 static void Idle(void)
 {
     EventRecord event;
-    WaitNextEvent(everyEvent, &event, 1, NULL);
+    if (WaitNextEvent(everyEvent, &event, 1, NULL) &&
+        event.what == kHighLevelEvent) {
+        AEProcessAppleEvent(&event);
+    }
 }
 
 /* Issue a control call asynchronously and cooperatively poll for
@@ -157,15 +173,29 @@ static void Idle(void)
  * (waiting for a connection, waiting for data). */
 static OSErr TCPControlWait(TCPiopb *pb, short csCode)
 {
+    OSErr err;
+    Boolean aborted = false;
+
+    if (gQuitRequested) return userCanceledErr;
     pb->ioCRefNum = gMacTCPRefNum;
     pb->csCode = csCode;
     pb->ioCompletion = NULL;
     pb->ioResult = inProgress;
-    PBControlAsync((ParmBlkPtr)pb);
+    err = PBControlAsync((ParmBlkPtr)pb);
+    if (err != noErr) return err;
     while (pb->ioResult == inProgress) {
         Idle();
+        if (gQuitRequested && !aborted && pb->ioResult == inProgress) {
+            TCPiopb abortPB;
+            memset(&abortPB, 0, sizeof(abortPB));
+            abortPB.tcpStream = pb->tcpStream;
+            TCPControlSync(&abortPB, TCPAbort);
+            aborted = true;
+            /* Keep polling until the original I/O completes. Returning
+             * early would leave MacTCP writing into an unwound stack. */
+        }
     }
-    return pb->ioResult;
+    return gQuitRequested ? userCanceledErr : pb->ioResult;
 }
 
 static OSErr TCPStreamCreate(StreamPtr *stream)
@@ -208,6 +238,7 @@ static OSErr TCPSendBytes(StreamPtr stream, const void *data, unsigned short len
     TCPiopb pb;
     wdsEntry wds[2];
 
+    if (gQuitRequested) return userCanceledErr;
     if (len == 0) return noErr;
 
     wds[0].length = len;
@@ -1209,6 +1240,21 @@ static void RestoreWaitMouseUp(void)
     }
 }
 
+/* No interrupt task or trap may retain a pointer into this application
+ * after it exits, including when Finder initiates the quit. */
+static void StopMouseAutomation(void)
+{
+    if (gDragRec != NULL && gDragRec->installed) {
+        VRemove((VBLTaskPtr)&gDragRec->vbl);
+        gDragRec->installed = 0;
+        gDragRec->finished = 1;
+        LMSetMBState(0x80);
+        LM_CRSRCOUPLE = (unsigned char)gDragRec->savedCouple;
+        PostMouseEvent(mouseUp, LMGetMouseLocation());
+    }
+    RestoreWaitMouseUp();
+}
+
 static void DragVBLProc(void)
 {
     DragRec *r;
@@ -1507,7 +1553,7 @@ static void HandlePower(int restart)
 
     SendCStr("OK\n");
 
-    RestoreWaitMouseUp();
+    StopMouseAutomation();
     Delay(30, &finalTicks);          /* ~0.5s for the reply to go out */
     TCPStreamAbortAndRelease(gStream);
     Delay(15, &finalTicks);
@@ -1812,15 +1858,9 @@ static void HandleUpdate(char *args)
         LaunchApplication(&pb);
     }
 
-    /* Same teardown QUITAGENT uses -- release gStream before exiting
-     * so llm_updater's relaunch of us doesn't inherit an orphaned
-     * MacTCP stream still bound to AGENT_PORT. */
-    RestoreWaitMouseUp();   /* the replacement binary lands at a different
-                             * address; a patch left pointing into this one
-                             * would be called by the Finder within
-                             * milliseconds and take the machine down */
-    TCPStreamAbortAndRelease(gStream);
-    ExitToShell();
+    /* Let main release the stream and mouse hooks before the updater
+     * relaunches us. No driver callback may outlive this process. */
+    gQuitRequested = true;
 }
 
 /* SCREENSHOT -- captures the main screen via CopyBits into an offscreen
@@ -2035,7 +2075,7 @@ static void HandleClient(void)
     }
     SendCStr("OK\n");
 
-    for (;;) {
+    while (!gQuitRequested) {
         if (RecvLine(gLine, sizeof(gLine)) < 0) break;
 
         /* Take the WaitMouseUp patch back out as soon as we are running
@@ -2050,27 +2090,9 @@ static void HandleClient(void)
         } else if (strcmp(gLine, "QUIT") == 0) {
             break;
         } else if (strcmp(gLine, "QUITAGENT") == 0) {
-            /* Terminates the whole process, not just this session --
-             * see the file header comment. The only way to stop this
-             * background-only, UI-less app short of a reboot.
-             *
-             * Must release gStream first. PSLIST always showed a clean
-             * process list after QUITAGENT (Process Manager cleanup is
-             * fine), yet the *next* launch reproducibly hung regardless
-             * of how long we waited first -- consistent with MacTCP's
-             * driver-level control block for this stream (bound to
-             * AGENT_PORT) being orphaned rather than released, since
-             * main()'s normal per-connection
-             * TCPStreamCloseAndRelease() (after HandleClient returns)
-             * is never reached when we exit straight from inside the
-             * dispatch loop here. A stuck driver-level resource has no
-             * timeout, so no amount of waiting before the next launch
-             * would ever have fixed it -- it needed to actually be
-             * released here. */
             SendCStr("OK\n");
-            RestoreWaitMouseUp();   /* never exit with the trap still patched */
-            TCPStreamAbortAndRelease(gStream);
-            ExitToShell();
+            gQuitRequested = true;
+            break;
         } else if (strcmp(gLine, "SYSINFO") == 0) {
             HandleSysinfo();
         } else if (strcmp(gLine, "REBOOT") == 0) {
@@ -2166,6 +2188,12 @@ int main(void)
      * more careful, incremental investigation. */
     InitGraf(&qd.thePort);
 
+    err = AEInstallEventHandler((AEEventClass)AE_CLASS_CORE,
+                                (AEEventID)AE_ID_QUIT,
+                                NewAEEventHandlerUPP(HandleQuitEvent),
+                                0, false);
+    if (err != noErr) return 1;
+
     err = OpenMacTCP();
     if (err != noErr) {
         return 1;
@@ -2173,23 +2201,25 @@ int main(void)
 
     LoadToken();
 
-    for (;;) {
+    while (!gQuitRequested) {
         err = TCPStreamCreate(&gStream);
         if (err != noErr) {
-            /* Back off a bit before retrying stream creation. */
-            unsigned long until;
-            Delay(60, &until);
+            /* Back off while still accepting Finder's Quit event. */
+            unsigned long started = TickCount();
+            while (!gQuitRequested && TickCount() - started < 60)
+                Idle();
             continue;
         }
 
         err = TCPListen(gStream);
-        if (err == noErr) {
-            HandleClient();
-            TCPStreamCloseAndRelease(gStream);
-        } else {
+        if (err == noErr) HandleClient();
+        if (err != noErr || gQuitRequested)
             TCPStreamAbortAndRelease(gStream);
-        }
+        else
+            TCPStreamCloseAndRelease(gStream);
+        gStream = 0;
     }
 
+    StopMouseAutomation();
     return 0;
 }
