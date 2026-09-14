@@ -1,30 +1,30 @@
 # Publication audit — 2026-09-14
 
-Audited `dd885732233c83b74dbf04ae212c69da7a8258f6` plus the nine files
+Audited `0ce30d12c28e8187fd47f6f0ab79a9ed7efb53a1` plus the nine files
 already modified in the working tree. This is a source, documentation,
 build, and bounded live-behavior review, not a claim of exhaustive safety
-or compatibility. **The repository is not yet cleared for publication:**
-a retired credential remains in Git history, and the failures below
-need remediation or explicit acceptance as release limitations.
+or compatibility. **History cleanup is complete; release review remains
+open.** The remaining live-token rotations, vendor redistribution questions,
+and functional findings below need remediation or explicit disposition.
+Commit references to reachable development history use the rewritten IDs.
 
 ## Secret and publication findings
 
-1. **Former Mac token in history (rotated).** The original token in the supplied private
-   inventory appeared verbatim in
-   `agent-mac-system7/QUICKEYS_CLICK_INVESTIGATION.md:321`. It first appears
-   in `347cdc7238cfeede8e5c2f2d69821570ca1de46a` and is present in 30
-   reachable commit snapshots. The audit redacted the current document;
-   that does **not** remove the historical copies. In the subsequent
-   follow-up, the Mac token was replaced on both ends with a fresh random
-   256-bit token, the agent was restarted, and the old token was explicitly
-   rejected. Remove the retired token from the history being published, or
-   publish a reviewed clean initial snapshot. No history rewrite was
-   performed. The replacement token was not added to this repository.
-2. **Example token used by live machines.** Seven configured entries use
-   the same example token found in tracked examples, smoke scripts, and
-   floppy builders. All seven accepted authentication during this audit.
-   They need unique replacement tokens before publication. The report
-   deliberately omits credentials and network addresses.
+1. **Former Mac token removed from this publication history.** The original
+   token appeared in `agent-mac-system7/QUICKEYS_CLICK_INVESTIGATION.md`
+   across 30 reachable commit snapshots. It was rotated on both ends;
+   authentication with the retired value was explicitly rejected. The
+   publication copy's history was then rewritten to replace the retired
+   value everywhere. Exact-value scans of every remaining Git object and
+   a fresh Gitleaks scan passed. The private original checkout and backup
+   retain the old history and must not be merged or pushed into this copy.
+2. **Shared example token removed; live rotations remain.** Seven configured
+   lab entries accepted the old shared example token during the audit.
+   This publication history now uses `REPLACE_WITH_UNIQUE_TOKEN` in its
+   examples, smoke scripts, and floppy builders. Those lab machines were
+   not reconfigured by the history rewrite; they still need unique tokens.
+   The placeholder is not a credential to deploy. The report deliberately
+   omits credential values and network addresses.
 3. **Ignore rules missed deployed config names.** DOS and Win16 ignored
    `llm_agent.ini`, but their deployment instructions use `LLMAGENT.INI`
    (a different basename, not just a case difference). `git check-ignore`
@@ -68,7 +68,7 @@ or error path was exercised. Per-port READMEs retain detailed restrictions.
 | DOS | Synchronous `system()`; no detach | PUT/GET; 80×25 text BMP | BIOS key queue only; no mouse/windows/clipboard | Unsupported | No built-in update |
 | OS/2 2.x | Shell plus detached session | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE, clipboard; no registry | List / kill | EXE helper |
 | OS/2 1.3 | Shell plus detached child | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE; no clipboard/registry | PSTAT parsing / kill | EXE helper plus SELFEXIT |
-| Win16 | DOS helper `EXEC`; WinExec detach, no real PID | PUT/GET; desktop BMP | Journal input unreliable; window/message/listbox primitives; no clipboard/registry | ToolHelp task handles | UPDATE + RESTART.EXE; staged update changes currently uncommitted |
+| Win16 | DOS helper `EXEC`; WinExec detach, no real PID | PUT/GET; desktop BMP | Journal input unreliable; window/message/listbox primitives; no clipboard/registry | ToolHelp task handles | UPDATE + RESTART.EXE; staged update changes committed |
 | NetWare | Console `system()`; no output capture or detach | PUT/GET; selected console text BMP | StuffKey or console fallback; SCREENS; no GUI windows/clipboard | Unsupported | UPDATE.NLM; no dedicated MCP wrapper |
 | Mac System 7 | No shell or detach | Data fork only; main-screen BMP | Left click/double-click, US keyboard; window/clipboard commands refuse; drag incomplete | List / request application quit | MacBinary `UPDATE <size>`; no MCP wrapper |
 
@@ -174,7 +174,7 @@ does not implement reboot. These are not interchangeable “power off” tools.
   have `AgentClient` methods, others require a custom wire client. A shared
   protocol does not imply complete MCP coverage. There is no capability
   negotiation command or consistent build identifier across all ports.
-- **Update readiness is weaker than update verification.** The uncommitted
+- **Update readiness is weaker than update verification.** The
   `legacy_win16_self_update` immediately calls `legacy_wait_for_agent`,
   which can see the outgoing process. The generic helper falls back to
   ping when AGENT.PID is unavailable; even a changed PID proves restart,
@@ -264,10 +264,12 @@ the newly built source.
 
 ## Missing-commit investigation
 
-`git fsck --full --no-reflogs --unreachable` found two unreachable commits:
+`git fsck --full --no-reflogs --unreachable` in the original private checkout
+found two unreachable commits. These two IDs identify recovery-archive
+objects, intentionally absent from the cleaned publication history:
 
 - `c1c11a381dcfff7d9396dca2e508df503548897d`: dropped WIP stash from
-  2026-09-06, based on `43bd3f7`.
+  2026-09-06, based on `bb05f2a`.
 - `d8d2f9fd9702cd83aac1434ccb8f6e5d055c3dd2`: that stash's index parent;
   its tree is unchanged from the stash base.
 
@@ -279,19 +281,19 @@ intermediate directory-renaming snapshots or older versions superseded by
 current commits/working changes, not a newer missing feature branch.
 Applying them wholesale would undo newer work.
 
-The nine preexisting modified files contain substantive **uncommitted**
+The nine preexisting modified files contained substantive uncommitted
 work: Win16 idle-listener changes and staged-update handling; preservation
-of updater backups on Win32/OS2; an OS/2 floppy-documentation adjustment;
+of updater backups on Win32/OS2; an OS/2 floppy filename adjustment;
 and bridge `vm_name` plus `legacy_win16_self_update`. These changes are
-still present and were preserved. They must be reviewed and committed
-explicitly if intended for the public release.
+preserved and were subsequently reviewed and committed at the user's request before the history rewrite.
 
 Recovery evidence (unreachable-object pack, blob exports, dropped-stash
 patch, and the original working-tree patch) was saved outside the repo
 under the private configuration directory's `publication-audit-20260914`
 folder. Do not publish that recovery folder: it includes historical source
-and private audit context. No reset, checkout, stash apply, cherry-pick,
-commit, or history rewrite was performed. Work already garbage-collected
+and private audit context. The recovery investigation itself performed no
+reset, checkout, stash apply, cherry-pick, commit, or rewrite; the later
+commit/history-cleanup work is recorded below. Work already garbage-collected
 or residing only in another clone cannot be recovered from this object
 database.
 
@@ -310,7 +312,7 @@ commands only; they do not verify updates, input, or file transfers.
 
 ## Follow-up: Finder Restart fix on 2026-09-14
 
-Commit `6665919` enabled `isHighLevelEventAware` for PSKILL without
+Commit `e25f658` enabled `isHighLevelEventAware` for PSKILL without
 adding incoming Apple-event dispatch. The agent discarded Finder's Quit
 request, preventing normal restart/shutdown from completing. The fix
 installs a Quit Application handler and dispatches high-level events from
@@ -363,3 +365,45 @@ Direct Windows access passed authentication, PING, SYSINFO, PSLIST, and a
 four-second diagnostic timeout was too short, whereas the normal 15-second
 client timeout succeeded. These results supersede earlier statements that
 Mac live tests required running through the Ubuntu host.
+
+## Follow-up: commits and publication-history cleanup
+
+Before committing or rewriting, saved and CRC-verified a complete private
+checkout archive, including ignored local configuration and all Git objects.
+Also created and verified a Git bundle after committing the pending work.
+The original checkout remains private and unchanged by the rewrite.
+
+The five work commits, using their rewritten public IDs, are:
+
+- `675e6570`: Improve Win16 idle handling and stage agent self-updates.
+- `6095c373`: Preserve previous Windows and OS/2 agent binaries after updates.
+- `bdd9c5e2`: Give the OS/2 floppy image a platform-specific filename.
+- `e4f797e8`: Handle Finder Quit events and clean up Mac agent resources.
+- `8e8b971c`: Document agent capabilities, audit findings, and Mac recovery fixes.
+
+A separate clone was rewritten with git-filter-repo 2.47.0. Both the retired
+Mac token and the old shared example token were replaced in file content
+and commit/tag messages. All 73 development commits were retained. Every
+rewritten commit's complete file tree was compared with its original,
+allowing only the planned substitutions; parent relationships, authors,
+and timestamps were preserved. The final documentation commit updates
+these references and records the cleanup, bringing this copy to 74 commits.
+
+Verification included Gitleaks 8.30.1 over all publishable history, exact-value
+searches for all seven distinct known credentials across every local Git
+object (including unreachable objects), Python syntax checks, and Git
+integrity checks. No known credential matches or Gitleaks findings remained.
+This is bounded verification, not a guarantee about unknown/encoded secrets.
+The earlier build/live results still apply because compiled agent code was
+unchanged by the rewrite; example and helper token literals were replaced.
+
+The publication copy contains only the master branch, with no tags, remote,
+private Codex snapshot refs, deployed inventory, `.env`, or recovery archive.
+No GitHub push was performed. Use this cleaned copy for future publication;
+fetching or merging the private original can reintroduce the old history.
+The private commit map and verification reports were retained for recovery.
+
+Examples and smoke/floppy scripts now contain an explicit placeholder.
+Supply a unique real token outside version control before deployment or a
+live smoke test. Host-specific QEMU/firewall changes and the live Mac token
+rotation reside outside Git and are not deployed by cloning this repository.

@@ -99,7 +99,7 @@ read `PE32 executable for MS Windows 4.00 (console)`.
 ## 2. Deploy to each legacy machine
 
 Repeat this for every legacy box you want the bridge to reach — each one
-needs its own copy of the agent and, ideally, its own token.
+needs its own copy of the agent and its own unique token.
 
 Copy `llm_agent.exe` and `agent-win32/llm_agent.ini.example` (renamed to
 `llm_agent.ini`) to the target machine, in the same directory. Edit
@@ -162,7 +162,10 @@ Every section must describe an agent and include `host` and `exec_token`;
 an unrelated SSH-only section makes the current loader reject the entire
 file. Configuration is cached until the bridge restarts. Use unique ASCII
 tokens (up to 127 characters for compatibility with all ports), never the
-example token. The Mac agent currently uses a fixed port of 2222.
+example token. Examples, smoke scripts, and floppy builders use
+`REPLACE_WITH_UNIQUE_TOKEN`; substitute a private per-machine value before
+using them, and keep generated configuration/media out of Git. The Mac
+agent currently uses a fixed port of 2222.
 
 **Put your real `machines.ini` outside the repo**, e.g.
 `~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at
