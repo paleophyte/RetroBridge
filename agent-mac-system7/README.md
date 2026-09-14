@@ -196,6 +196,38 @@ document always intended them to be stripped afterwards. They are worth
 removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
 vector.
 
+## WINLIST is not available, and will not be
+
+Refused with `ERR:WINLIST unavailable, WindowList is per-process under
+MultiFinder`. This is a platform limit, not a missing feature.
+
+The obvious implementation -- walk the Window Manager list from `WindowList`
+(`0x09D6`) via `nextWindow` -- was written and works. It just cannot see
+anything useful: under MultiFinder `WindowList` is part of the per-process
+low-memory state the Process Manager swaps on each context switch, so a
+background application sees only its own windows.
+
+Measured rather than assumed. With the visible/title filters removed the walk
+returned exactly one entry:
+
+```
+hwnd 0x0FD425B0   (12,34) 621x441   windowKind 8   visible 1   titleLen 0
+```
+
+That is this agent's own untitled Retro68 console window, and `nextWindow` was
+NULL so it was the whole list -- while four windows belonging to other
+applications were plainly on screen at the time.
+
+Returning an empty list would be worse than refusing. The client documents
+`WINLIST` as "visible top-level windows", and `[]` reads as "there are no
+windows" when there are several that simply cannot be reached from here.
+
+The route that could work is **AppleEvents** -- asking each running application
+for its windows, the way a scripting client would. That needs real AppleEvent
+plumbing and only covers scriptable applications, so it is separate work rather
+than a fix. `WINLIST <parent>` is refused outright: it lists a dialog's child
+controls, and classic Mac controls are not windows.
+
 ## Clipboard: CLIPSET and CLIPGET
 
 `CLIPSET <text>` sets the clipboard (shared protocol, replies `OK` / `ERR:`).

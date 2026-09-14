@@ -501,6 +501,40 @@ static int PostMouseEvent(short what, Point where)
 }
 
 
+
+/* WINLIST -- NOT SUPPORTED, and the reason is worth keeping.
+ *
+ * The obvious implementation is to walk the Window Manager's list from the
+ * WindowList low-memory global (0x09D6) via nextWindow. That was written and
+ * it works -- it just cannot see anything useful, because under MultiFinder
+ * WindowList is part of the per-process low-memory state the Process Manager
+ * swaps on every context switch. A background application therefore sees only
+ * its own windows.
+ *
+ * Measured rather than assumed. With the visible/title filters removed, the
+ * walk returned exactly one entry:
+ *
+ *     hwnd 0x0FD425B0  (12,34) 621x441  windowKind 8  visible 1  titleLen 0
+ *
+ * -- a single untitled full-screen document window, which is this agent's own
+ * Retro68 console, while four windows from other applications were plainly on
+ * screen at the time. nextWindow was NULL, so that was the whole list.
+ *
+ * Returning an empty list would be worse than refusing: the client documents
+ * WINLIST as "visible top-level windows", and an empty result reads as "there
+ * are no windows" when in fact there are several that simply cannot be reached
+ * from here.
+ *
+ * The route that could actually work is AppleEvents -- asking each running
+ * application for its windows, which is how a scripting client would do it.
+ * That needs real AppleEvent plumbing and would only cover applications that
+ * are scriptable, so it is a separate piece of work rather than a fix.
+ */
+static void HandleWinList(void)
+{
+    SendCStr("ERR:WINLIST unavailable, WindowList is per-process under MultiFinder\n");
+}
+
 /* CLIPSET <text> -- set the clipboard to plain text.
  *
  * Scrap Manager: ZeroScrap() to empty the desk scrap, then PutScrap() with
@@ -2390,6 +2424,12 @@ static void HandleClient(void)
             HandlePslist();
         } else if (strcmp(gLine, "MOUSEPOS") == 0) {
             HandleMousePos();
+        } else if (strcmp(gLine, "WINLIST") == 0) {
+            HandleWinList();
+        } else if (strncmp(gLine, "WINLIST ", 8) == 0) {
+            /* The parent form lists a dialog's child controls and is
+             * Win16-specific; classic Mac controls are not windows. */
+            SendCStr("ERR:WINLIST <parent> not supported on this platform\n");
         } else if (strcmp(gLine, "CLIPGET") == 0) {
             HandleClipGet();
         } else if (strncmp(gLine, "CLIPSET ", 8) == 0) {
