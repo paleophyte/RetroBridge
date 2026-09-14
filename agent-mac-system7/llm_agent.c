@@ -636,167 +636,47 @@ static void HandleWinList(void)
     SendCStr("ERR:WINLIST unavailable, WindowList is per-process under MultiFinder\n");
 }
 
-/* CLIPSET <text> -- set the clipboard to plain text.
+/* CLIPSET / CLIPGET -- NOT SUPPORTED, and the reason took some finding.
  *
- * Scrap Manager: ZeroScrap() to empty the desk scrap, then PutScrap() with
- * type 'TEXT'. Both are plain inline traps (0xA9FC, 0xA9FE) and both return an
- * OSErr as a long, which is checked here -- a silently failing clipboard is
- * exactly the sort of thing that wastes an afternoon later.
+ * The scrap can be written here and read straight back, so this looked like it
+ * worked for a long time. It does not: the scrap low-memory state is
+ * per-process under MultiFinder, exactly like WindowList. This agent writes
+ * its own scrap, and other applications never see it.
  *
- * The scrap is global rather than per-process, so it does not matter that this
- * agent is a background application with no window.
+ * What established that, after three wrong theories:
  *
- * Text is stored exactly as received. No line-ending translation happens
- * because none is needed: agent_client.py rejects newlines in clipboard_set(),
- * and were that ever relaxed, classic Mac text uses CR rather than LF and the
- * conversion would have to be deliberate.
+ *   - CLIPSET then CLIPGET always round-tripped byte-exact, and ScrapInfo
+ *     (0x0960) always agreed -- scrapSize tracking the payload plus its
+ *     8-byte header, scrapCount incrementing every time. All of which only
+ *     ever proved this process was self-consistent with itself.
+ *   - With SimpleText frontmost and no application switch at all, pasting
+ *     produced text that had been copied inside ClarisWorks earlier, not what
+ *     CLIPSET had just written.
+ *   - Read while SimpleText was the current process, TEScrpLength (0x0AB0)
+ *     was 5 -- the length of that ClarisWorks text. Read straight after an
+ *     agent command it was 19, 20 or 26, matching whatever CLIPSET had set.
+ *     The same address, two values, depending on whose context was current.
+ *     ScrapInfo differs between contexts the same way.
  *
- * An empty payload is treated as "clear the clipboard" rather than an error --
- * ZeroScrap() alone does exactly that.
+ * So the TextEdit scrap mirror this used to do could only ever affect the
+ * agent's own copy, and neither UnloadScrap() nor LoadScrap() bridges the gap
+ * -- both were tried, in both directions, and neither changed what another
+ * application pasted.
+ *
+ * Returning OK for this would be a trap: a caller would set the clipboard,
+ * get a success, and paste something else entirely. It refuses instead, the
+ * same way WINLIST does for the same underlying reason.
+ *
+ * The untried idea, if this is ever worth another go: write the Clipboard
+ * file in the System Folder directly, in scrap file format, since that is
+ * what applications read through LoadScrap when they are resumed. Note that
+ * no such file existed on this volume when looked for, so the mechanism may
+ * not be as simple as it sounds.
  */
-
-/* 'TEXT' written out, to avoid relying on multi-character constants. */
-#define SCRAP_TYPE_TEXT 0x54455854L
-
 static void HandleClipSet(char *text)
 {
-    char buf[96];
-    long err;
-    long len;
-
-    len = (long)strlen(text);
-
-    err = ZeroScrap();
-    if (err != noErr) {
-        sprintf(buf, "ERR:ZeroScrap failed (OSErr %ld)\n", err);
-        SendCStr(buf);
-        return;
-    }
-
-    if (len == 0) {
-        SendCStr("OK\n");      /* cleared */
-        return;
-    }
-
-    err = PutScrap(len, (ResType)SCRAP_TYPE_TEXT, (Ptr)text);
-    if (err != noErr) {
-        sprintf(buf, "ERR:PutScrap failed (OSErr %ld)\n", err);
-        SendCStr(buf);
-        return;
-    }
-
-    /* Bring the scrap into memory.
-     *
-     * ScrapInfo (0x0960) showed scrapHandle NULL and scrapState 0 -- "on
-     * disk" -- for this whole session, left that way by UnloadScrap() calls
-     * an earlier version made, and never restored since. GetScrap reads it
-     * back from disk quite happily, so CLIPGET always worked, which is
-     * exactly why this went unnoticed: the clipboard looked correct from the
-     * outside while presenting a state no application sees after a real Copy.
-     *
-     * LoadScrap() pulls it back into memory and sets scrapHandle and
-     * scrapState accordingly. Failure is not fatal; the scrap still holds the
-     * text either way. */
-    (void)LoadScrap();
-
-    /* Deliberately NOT calling UnloadScrap() here.
-     *
-     * It was called originally, on the reasoning that flushing the scrap to
-     * its file made it durable rather than dependent on an application switch.
-     * That was wrong, and measurably so: UnloadScrap disposes the in-memory
-     * scrap, leaving ScrapInfo (0x0960) with scrapHandle NULL and scrapState 0
-     * ("on disk"). GetScrap still reads it back -- CLIPGET worked fine -- but
-     * that is not the state an application sees after a normal Copy, and
-     * ClarisWorks greyed out its Paste item accordingly.
-     *
-     * Leaving the scrap in memory is what a real Copy does. The Process
-     * Manager unloads it on an application switch when it needs to. */
-
-    /* Mirror it into the TextEdit scrap as well.
-     *
-     * Setting the desk scrap alone is not enough to make Paste work in most
-     * places. TextEdit keeps its own private scrap in low memory
-     * (TEScrpHandle/TEScrpLength), and that is what dialog text fields paste
-     * from -- an application is supposed to call TEFromScrap() itself, and
-     * plenty do not. Observed directly: after a desk-scrap-only CLIPSET,
-     * CLIPGET returned the text correctly but Cmd-V into Find File's search
-     * field produced nothing.
-     *
-     * Those low-memory globals are system-wide, so doing it here fixes paste
-     * for applications that never bother.
-     *
-     * TEFromScrap() itself cannot be called: Multiversal declares it but lists
-     * it in needs-glue.txt, so there is no trap encoding and no glue to link
-     * against -- it fails at link time with an undefined reference. What it
-     * does is small enough to do directly instead: read the desk scrap into
-     * the existing TE scrap handle and set the length. Both globals have
-     * accessors (TEScrpHandle at 0x0AB4, TEScrpLength at 0x0AB0).
-     *
-     * Skipped rather than forced if TextEdit has not set up a scrap handle
-     * yet; allocating one here would mean taking over ownership of a system
-     * global, which is not worth the risk for a convenience. Non-fatal either
-     * way, since the desk scrap is already set. */
-    {
-        Handle teScrap = LMGetTEScrpHandle();
-
-        if (teScrap != NULL) {
-            long teOffset = 0;
-            long teLen = GetScrap(teScrap, (ResType)SCRAP_TYPE_TEXT, &teOffset);
-
-            /* TEScrpLength is a 16-bit field, so anything larger simply
-             * cannot be represented there; the desk scrap still holds it. */
-            if (teLen >= 0 && teLen <= 32767L) {
-                LMSetTEScrpLength((short)teLen);
-            }
-        }
-    }
-
-    SendCStr("OK\n");
-}
-
-/* CLIPGET -- read the clipboard back as text. Not part of the shared protocol;
- * a Mac-side extension, added because without it CLIPSET cannot be verified at
- * all. Whether a given application's Paste picks the text up is a separate
- * question from whether the scrap holds it -- dialog text fields go through
- * TextEdit's private scrap and only see the desk scrap if the application
- * calls TEFromScrap() -- so this reports what the scrap actually contains. */
-static void HandleClipGet(void)
-{
-    Handle h;
-    long len;
-    long offset = 0;
-    char hdr[32];
-
-    h = NewHandle(0);
-    if (h == NULL) {
-        SendCStr("ERR:out of memory\n");
-        return;
-    }
-
-    len = GetScrap(h, (ResType)SCRAP_TYPE_TEXT, &offset);
-
-    /* noTypeErr (-102) means the scrap simply holds no TEXT -- an empty
-     * clipboard, which is an ordinary state and not a failure. Reporting it as
-     * ERR left callers unable to tell "clipboard is empty" from "something
-     * broke"; it is a zero-length result instead. Every other negative value
-     * is a real error and still says so. */
-    if (len == -102L) {
-        len = 0;
-    } else if (len < 0) {
-        DisposeHandle(h);
-        sprintf(hdr, "ERR:GetScrap failed (OSErr %ld)\n", len);
-        SendCStr(hdr);
-        return;
-    }
-
-    sprintf(hdr, "SIZE:%ld\n", len);
-    SendCStr(hdr);
-    if (len > 0) {
-        HLock(h);
-        SendAll(*h, (int)len);
-        HUnlock(h);
-    }
-    DisposeHandle(h);
+    (void)text;
+    SendCStr("ERR:CLIPSET unavailable, the scrap is per-process under MultiFinder\n");
 }
 
 /* CLICK x y [button] / DBLCLICK x y [button]
@@ -2196,8 +2076,6 @@ static void HandleClient(void)
             /* The parent form lists a dialog's child controls and is
              * Win16-specific; classic Mac controls are not windows. */
             SendCStr("ERR:WINLIST <parent> not supported on this platform\n");
-        } else if (strcmp(gLine, "CLIPGET") == 0) {
-            HandleClipGet();
         } else if (strncmp(gLine, "CLIPSET ", 8) == 0) {
             HandleClipSet(gLine + 8);
         } else if (strncmp(gLine, "KEY ", 4) == 0) {

@@ -168,8 +168,8 @@ Audited end to end against the real `../mcp-server/agent_client.py`, not by
 hand. Everything below was actually exercised through that client.
 
 **Implemented and verified:** `PING`, `SYSINFO`, `PSLIST`, `SCREENSHOT`,
-`PUT`, `GET`, `CLICK`, `KEY`, `TYPE`, `CLIPSET`, `PSKILL`, `REBOOT`,
-`SHUTDOWN`, `UPDATE`, `QUIT`, plus the
+`PUT`, `GET`, `CLICK`, `KEY`, `TYPE`, `PSKILL`, `REBOOT`, `SHUTDOWN`,
+`UPDATE`, `QUIT`, plus the
 Mac-only `DBLCLICK`, `MOUSEPOS`, `QUITAGENT` and the incomplete `DRAG`.
 
 Anything unimplemented answers `ERR:unknown command` and the agent stays up --
@@ -268,73 +268,65 @@ plumbing and only covers scriptable applications, so it is separate work rather
 than a fix. `WINLIST <parent>` is refused outright: it lists a dialog's child
 controls, and classic Mac controls are not windows.
 
-## Clipboard: CLIPSET and CLIPGET
+## CLIPSET is not available, and neither is CLIPGET
 
-`CLIPSET <text>` sets the clipboard (shared protocol, replies `OK` / `ERR:`).
-`CLIPGET` reads it back and is a Mac-only extension -- it exists because
-without it `CLIPSET` cannot be verified at all.
+Refused with `ERR:CLIPSET unavailable, the scrap is per-process under
+MultiFinder`. `CLIPGET` has been removed entirely -- it only ever existed to
+verify `CLIPSET`, and it verified nothing.
 
-Scrap Manager: `ZeroScrap()`, then `PutScrap()` with type `TEXT`, then
-`UnloadScrap()` to flush it to the scrap file so it does not depend on an
-application switch happening. Both OSErrs are checked -- a silently failing
-clipboard is exactly the kind of thing that wastes an afternoon later. An empty
-payload clears the clipboard rather than erroring.
+This one looked like it worked for a long time, which is the interesting part.
+The scrap can be written from here and read straight back, and every
+system-level indicator agrees. It still never reaches another application.
 
-`CLIPSET` also mirrors the text into the **TextEdit scrap**, because setting
-the desk scrap alone does not make Paste work in most places: TextEdit keeps a
-private scrap in low memory and that is what dialog text fields paste from.
-`TEFromScrap()` cannot be called for this -- Multiversal declares it but lists
-it in `needs-glue.txt`, so it fails at link time with an undefined reference --
-so the same work is done directly against `TEScrpHandle` (`0x0AB4`) and
-`TEScrpLength` (`0x0AB0`).
+### Why it does not work
 
-### What is verified, and what is not
+The scrap low-memory state is **per-process** under MultiFinder, exactly like
+`WindowList`. The agent writes its own scrap; other applications have theirs.
 
-`CLIPSET` genuinely sets the clipboard, at both levels:
+The measurement that settles it: read `TEScrpLength` (`0x0AB0`) while
+SimpleText is the current process and it reads **5**, the length of text copied
+inside ClarisWorks earlier. Read the same address immediately after an agent
+command and it reads **19**, **20** or **26** -- whatever `CLIPSET` last wrote.
+One address, two values, depending on whose context is current. `ScrapInfo`
+(`0x0960`) behaves the same way.
 
-- `CLIPSET` then `CLIPGET` round-trips exactly -- 20, 18 and 41-byte strings
-  each came back byte-identical with the right `SIZE:`.
-- Reading `0x0AB0` directly shows `TEScrpLength` tracking the text (14 after a
-  14-character set, 8 after an 8-character one), so the TextEdit mirror works.
-- `CLIPGET` on an empty clipboard returns `SIZE:0`. It used to report
-  `ERR:GetScrap failed (OSErr -102)`, but `-102` is `noTypeErr` -- "no TEXT in
-  the scrap" -- which is an ordinary empty state, not a failure. Callers could
-  not tell "empty" from "broken".
+Confirmed behaviourally too: with SimpleText frontmost and **no application
+switch at all**, pasting produced the ClarisWorks text rather than what
+`CLIPSET` had just written and `CLIPGET` had just read back.
 
-**Pasting into an application does not work, and the cause is not the
-clipboard.** Tested against ClarisWorks 4.0 with a live word-processing
-document, which is as fair a target as exists here:
+Both `UnloadScrap()` and `LoadScrap()` were tried, in both directions. Neither
+changed what another application pasted.
 
-| action | result |
-|---|---|
-| `CLIPSET` + `CLIPGET` | text stored and read back exactly |
-| `TYPE hello` into the document | **works** -- "hello" appears |
-| `KEY cmd-v` into the document | nothing pasted |
-| `CLICK` on the Edit menu title | menu does not open |
+### Why it returns an error rather than OK
 
-So plain keystrokes reach a real third-party application, and the scrap holds
-the text -- but neither the Command-key equivalent nor a click on the menu bar
-does anything. Use `TYPE` when you need text into an application; `CLIPSET` is
-still the right call when something else will do the pasting.
+Returning `OK` would be a trap: a caller sets the clipboard, gets a success,
+and then pastes something else entirely. Same reasoning as `WINLIST`, and the
+same underlying cause.
 
-### The pattern behind this, and DRAG
+### What misled me, recorded so it does not happen again
 
-These failures look like one thing: **anything driven by a Toolbox tracking
-loop is unreachable by synthetic events.** `MenuSelect` for menus,
-`DragGrayRgn`/`WaitMouseUp` for dragging. Simple event *delivery* works fine --
-icon selection, double-click-to-open, plain typing all do -- but a loop that
-polls live hardware state does not see anything posted to the event queue.
+`CLIPSET` then `CLIPGET` round-tripped byte-exact every single time, and
+`ScrapInfo` always corroborated it -- `scrapSize` tracking the payload plus its
+8-byte header, `scrapCount` incrementing on every set. All of that only ever
+proved **this process was self-consistent with itself**. Reading back your own
+write is not evidence that anyone else can see it, and on a system with
+per-process low memory it is not even weak evidence.
 
-That is the same wall `DRAG` hit, where `WaitMouseUp` never returned false no
-matter what was posted, and where patching the trap showed it was never even
-called through the dispatch table.
+Three theories were published as fact along the way and all three were wrong:
+that ClarisWorks merely needed a resume event; that a suspending application
+overwrites the scrap; and that ClarisWorks ignores the desk scrap entirely. The
+evidence that broke them was always the same kind -- watching what *another*
+application did, rather than what this one reported about itself.
 
-One inconsistency is unexplained and worth knowing about: `KEY cmd-w` and
-`KEY cmd-f` **do** work when the Finder is frontmost. So the Finder acts on the
-event's own modifier bits while ClarisWorks apparently does not -- possibly
-consulting live modifier state instead. Anyone picking this up should start
-there, since it is the difference between Command keys working everywhere and
-only in the Finder.
+### If it is ever worth another attempt
+
+Write the `Clipboard` file in the System Folder directly, in scrap file format,
+since that is what applications read through `LoadScrap` when resumed. Note
+that no such file existed on this volume when looked for, so the mechanism may
+not be as straightforward as it sounds.
+
+Use `TYPE` to get text into an application. That is verified working, including
+into ClarisWorks and Find File.
 
 ## Keyboard: KEY and TYPE
 
