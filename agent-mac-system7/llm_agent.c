@@ -636,52 +636,60 @@ static void HandleWinList(void)
     SendCStr("ERR:WINLIST unavailable, WindowList is per-process under MultiFinder\n");
 }
 
-/* CLIPSET / CLIPGET -- NOT SUPPORTED. Cause not fully identified.
+/* CLIPSET / CLIPGET -- NOT SUPPORTED. The scrap is per-process.
  *
- * Both refuse. Neither reliably does what a caller would expect, and
- * answering OK would be a trap -- set the clipboard, get a success, paste
- * something else.
+ * Both refuse. Answering OK would be a trap: set the clipboard, get a
+ * success, then paste something else entirely.
  *
- * What is established:
+ * THE EVIDENCE, because this took four wrong answers to pin down.
  *
- *  - The desk scrap IS shared between applications. ScrapInfo (0x0960) reads
- *    identically in every process context, idle or immediately after an agent
- *    command, and it changed when text was copied by hand inside SimpleText
- *    (scrapSize 44 -> 46, scrapCount 11 -> 8). An earlier claim in this file
- *    that the scrap is per-process was WRONG and is retracted.
- *  - The TextEdit scrap genuinely is per-process: TEScrpLength (0x0AB0) reads
- *    one value here and another while SimpleText is current. Mirroring into it
- *    was therefore pointless and has been dropped.
- *  - ZeroScrap/PutScrap from here appear to work: scrapSize tracks the payload
- *    plus its 8-byte header and scrapCount increments every time.
+ * The scrap variables really are swapped per process by the Process Manager,
+ * the same way WindowList is. InfoScrap() returns 0x0960, so that address is
+ * right -- but its *contents* depend on whose context is current. Reading it
+ * from the hypervisor repeatedly while asking the agent the same question
+ * shows two different value sets at one address:
  *
- * What is not explained, and is the thing to pick up:
+ *     host 0x0960: size=46 handle=00000000 state=0    <- other applications
+ *     host 0x0960: size=30 handle=0fc040b4 state=1    <- this agent
+ *     agent InfoScrap(): size=30 handle=0fc040b4 state=1
  *
- *  - After SimpleText copied text, ScrapInfo showed 46 bytes present, yet
- *    GetScrap('TEXT') from here returned -102 (noTypeErr) -- no TEXT entry
- *    found. So the scrap holds something this process cannot read as text.
- *  - LoadScrap() returns noErr while leaving scrapHandle NULL and scrapState
- *    0, i.e. it reports success and does nothing. Until that is understood
- *    there is no basis for claiming why writes from here never reach another
- *    application.
+ * The second host sample caught this process scheduled and matches the
+ * agent's own view exactly. Applications share a scrap among themselves that
+ * this one simply is not part of.
  *
- * Next step for anyone resuming this: dump the raw scrap bytes after a native
- * Copy and decode the entry types. The data is on disk, so that means reading
- * the System Folder's scrap file rather than dereferencing scrapHandle, which
- * stays NULL. Knowing what type SimpleText actually wrote would say whether
- * this is a type mismatch or a file-access difference.
+ * That is also why GetScrap('TEXT') returns -102 here while a perfectly good
+ * scrap exists elsewhere in memory. Dumping guest RAM finds the real chain --
+ *
+ *     TEXT len=5  "hello"
+ *     styl len=22
+ *
+ * -- at 0x001705A0 in the System heap, holding text copied inside ClarisWorks.
+ * It is not reachable from this process.
+ *
+ * Related, and worth knowing separately: applications write the desk scrap
+ * when they are *suspended*, not when Copy is pressed. Text copied by hand in
+ * SimpleText did not change the shared scrap at all until the application was
+ * switched away from.
+ *
+ * WHAT MISLED ME, since the same trap is easy to fall into again: CLIPSET
+ * then CLIPGET round-tripped byte-exact every single time, and ScrapInfo
+ * always corroborated it. All of that only ever proved this process was
+ * self-consistent with itself. On a system with per-process low memory,
+ * reading back your own write is not even weak evidence that anyone else can
+ * see it. Every genuine advance came from watching what another application
+ * did, or from catching the two contexts side by side.
  *
  * Use TYPE to get text into an application; that is verified working.
  */
 static void HandleClipSet(char *text)
 {
     (void)text;
-    SendCStr("ERR:CLIPSET does not reach other applications, cause unresolved\n");
+    SendCStr("ERR:CLIPSET unavailable, the scrap is per-process\n");
 }
 
 static void HandleClipGet(void)
 {
-    SendCStr("ERR:CLIPGET unreliable, cannot read scrap written by other applications\n");
+    SendCStr("ERR:CLIPGET unavailable, the scrap is per-process\n");
 }
 
 /* CLICK x y [button] / DBLCLICK x y [button]

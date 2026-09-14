@@ -268,57 +268,65 @@ plumbing and only covers scriptable applications, so it is separate work rather
 than a fix. `WINLIST <parent>` is refused outright: it lists a dialog's child
 controls, and classic Mac controls are not windows.
 
-## CLIPSET and CLIPGET are not available
+## CLIPSET and CLIPGET are not available: the scrap is per-process
 
-Both refuse. Neither reliably does what a caller would expect, and answering
-`OK` would be a trap -- set the clipboard, get a success, paste something else.
+Both refuse. Answering `OK` would be a trap -- set the clipboard, get a
+success, then paste something else entirely.
 
-**The cause is not fully identified.** An earlier version of this file claimed
-the scrap is per-process; that was wrong and is retracted.
+Copy and paste **does** work normally between applications on this machine.
+The agent simply is not part of the exchange.
 
-### What is established
+### The evidence
 
-- **The desk scrap is shared between applications.** `ScrapInfo` (`0x0960`)
-  reads identically in every process context -- idle, or immediately after an
-  agent command -- and it changed when text was copied by hand inside
-  SimpleText (`scrapSize` 44 to 46, `scrapCount` 11 to 8). So other
-  applications' writes are visible from here.
-- **The TextEdit scrap genuinely is per-process.** `TEScrpLength` (`0x0AB0`)
-  reads one value here and another while SimpleText is current. Mirroring into
-  it was pointless and has been dropped.
-- `ZeroScrap`/`PutScrap` from here appear to work: `scrapSize` tracks the
-  payload plus its 8-byte header and `scrapCount` increments every time.
+`InfoScrap()` returns `0x0960`, so that address is correct -- but its
+*contents* depend on whose context is current. Reading it from the hypervisor
+repeatedly while asking the agent the same question shows two different value
+sets at one address:
 
-### What is unexplained
+```
+host  0x0960:       size=46  handle=00000000  state=0   <- other applications
+host  0x0960:       size=30  handle=0fc040b4  state=1   <- this agent
+agent InfoScrap():  size=30  handle=0fc040b4  state=1
+```
 
-- After SimpleText copied text, `ScrapInfo` showed 46 bytes present, yet
-  `GetScrap('TEXT')` from here returned `-102` (`noTypeErr`). The scrap holds
-  something this process cannot read as text.
-- `LoadScrap()` returns `noErr` while leaving `scrapHandle` NULL and
-  `scrapState` 0 -- it reports success and does nothing.
+The second host sample caught the agent scheduled, and matches its own view
+exactly. The scrap variables are swapped per process by the Process Manager,
+the same way `WindowList` is.
 
-Until those are understood there is no basis for asserting *why* writes from
-here never reach another application.
+That is also why `GetScrap('TEXT')` returns `-102` here while a perfectly good
+scrap exists elsewhere. Dumping guest RAM finds the real chain --
 
-### Next step if resuming
+```
+TEXT len=5   "hello"
+styl len=22
+```
 
-Dump the raw scrap bytes after a native Copy and decode the entry types. The
-data is on disk, so that means reading the System Folder scrap file rather
-than dereferencing `scrapHandle`, which stays NULL. Knowing what type
-SimpleText actually wrote would distinguish a type mismatch from a
-file-access difference.
+-- at `0x001705A0` in the System heap, holding text copied inside ClarisWorks.
+It is not reachable from this process.
 
-### A methodological note worth keeping
+### A separate fact worth knowing
 
-This went wrong repeatedly because `CLIPSET` then `CLIPGET` round-tripped
-byte-exact every time and `ScrapInfo` always corroborated it. That only ever
-proved **this process was self-consistent with itself**. Every real advance
-came from watching what *another application* did -- pasting in ClarisWorks,
-pasting in SimpleText, copying in SimpleText and looking for the change. Four
-successive explanations were published as fact and all four were wrong.
+Applications write the desk scrap when they are **suspended**, not when Copy is
+pressed. Text copied by hand in SimpleText did not change the shared scrap at
+all until the application was switched away from.
 
-Use `TYPE` to get text into an application. That is verified working, into
-both ClarisWorks and Find File.
+### What misled me
+
+Four successive explanations were published as fact before this one, and the
+cause was the same every time: `CLIPSET` then `CLIPGET` round-tripped
+byte-exact, and `ScrapInfo` always corroborated it. That only ever proved
+**this process was self-consistent with itself**. On a system with per-process
+low memory, reading back your own write is not even weak evidence that anyone
+else can see it.
+
+One of those four was a retraction of the correct answer: the per-process
+explanation was reached, then withdrawn because four consecutive host samples
+happened to catch the same non-agent context and looked identical. Sampling a
+swapped global without controlling for which process is scheduled is worthless.
+The fix was to read both views side by side in the same breath.
+
+Use `TYPE` to get text into an application. That is verified working, into both
+ClarisWorks and Find File.
 
 ## Keyboard: KEY and TYPE
 
