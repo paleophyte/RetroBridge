@@ -116,7 +116,11 @@ def legacy_list_machines() -> str:
         return f"[config error] {e}"
     if not machines:
         return "no machines configured"
-    return "\n".join(f"{m.name}: host={m.host} exec_port={m.exec_port}" for m in machines.values())
+    lines = []
+    for m in machines.values():
+        suffix = f" vm_name={m.vm_name}" if m.vm_name else ""
+        lines.append(f"{m.name}: host={m.host} exec_port={m.exec_port}{suffix}")
+    return "\n".join(lines)
 
 
 @srv.tool()
@@ -703,6 +707,47 @@ def legacy_self_update(
     msg = f"update launched on {machine}: {result.reply}"
     if wait_for_agent:
         msg += "\n" + _wait_for_replaced_agent(machine, remote_dir, old_pid)
+    return msg
+
+
+@srv.tool()
+def legacy_win16_self_update(
+    machine: str,
+    new_agent_local_path: str,
+    restart_exe_local_path: str,
+    remote_dir: str,
+    wait_for_agent: bool = True,
+) -> str:
+    """Update a Windows for Workgroups 3.11 Win16 agent safely.
+
+    Unlike the Win32/OS2 updater, this stages the new agent as
+    LLMNEW.EXE and then sends the agent's UPDATE command. RESTART.EXE
+    does the swap only after the old Win16 task exits, preserving the
+    previous binary as LLMAGENT.OLD for local recovery.
+    """
+    remote_dir = remote_dir.rstrip("\\")
+    remote_new_agent = f"{remote_dir}\\LLMNEW.EXE"
+    remote_restart = f"{remote_dir}\\RESTART.EXE"
+
+    try:
+        agent = _agent(machine)
+        n_agent = agent.put(new_agent_local_path, remote_new_agent)
+        n_restart = agent.put(restart_exe_local_path, remote_restart)
+        agent.update()
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection/file error] {e}"
+
+    msg = (
+        f"Win16 update staged on {machine}: "
+        f"{n_agent} bytes to {remote_new_agent}, "
+        f"{n_restart} bytes to {remote_restart}; UPDATE accepted"
+    )
+    if wait_for_agent:
+        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=120, interval_seconds=5)
     return msg
 
 

@@ -5,10 +5,10 @@
  * drive a WFW guest with no protocol fork.
  *
  * Networking uses WFW's own Winsock 1.1 stack (WINSOCK.DLL) -- no packet
- * driver / Watt-32 needed here, unlike the DOS port. 16-bit Winsock runs
- * a default "blocking hook" that pumps Windows messages while a call
- * like accept()/recv() is blocked, so the plain blocking accept/recv
- * loop below does not freeze the GUI the way a naive port might expect.
+ * driver / Watt-32 needed here, unlike the DOS port.  The idle listener
+ * uses WSAAsyncSelect()+WaitMessage() instead of a blocking accept():
+ * WFW's default blocking hook keeps the GUI paintable, but on this VM it
+ * spins hard enough to pin the host CPU while merely waiting for a client.
  *
  * Supported: auth, PING, QUIT, EXEC, EXECDETACH, PUT, GET, SYSINFO,
  *            SCREENSHOT, REBOOT, KEY, TYPE, CLICK, WINLIST, WINMSG,
@@ -66,6 +66,7 @@
 #define _EXPORT __export
 
 #define IDC_EXIT_BTN 100
+#define WM_AGENT_SOCKET (WM_USER + 100)
 
 #define DEFAULT_PORT 2222
 #define LINE_MAX_LEN 512
@@ -81,6 +82,7 @@ static char g_ipstr[32] = "?";
 static SOCKET g_listen = INVALID_SOCKET;
 static SOCKET g_client = INVALID_SOCKET;
 static int g_shutdown = 0;
+static int g_accept_ready = 0;
 
 /* Large I/O buffers as statics: -bt=windows here uses one near data
    segment (max 64K) shared by every global below plus the C library's
@@ -1160,11 +1162,12 @@ static int handle_shutdown(void) {
    in memory by name until every instance of it has exited
    (GetModuleUsage() hits zero), so WinExec()'ing the same path again
    while we're still up would just hand back another instance of the
-   OLD code already loaded, not the new bytes on disk. RESTART.EXE
+   OLD code already loaded, not the new bytes on disk. So the update
+   client stages the new binary as LLMNEW.EXE, and RESTART.EXE
    (restart.c, a separate tiny helper, built via build_restart.bat) is
-   the piece that has to outlive us: it polls for our module's usage
-   count to actually reach zero, then launches a fresh copy. We can't do
-   that waiting ourselves, since we won't exist anymore once we exit.
+   the piece that has to outlive us: it waits for us to exit, renames
+   LLMAGENT.EXE to LLMAGENT.OLD for recovery, moves LLMNEW.EXE into
+   place, then launches the fresh copy.
 
    Does NOT call DestroyWindow() to reuse the Exit button's WM_DESTROY
    cleanup path, despite how tempting that looked -- confirmed by direct
@@ -1210,7 +1213,8 @@ static int handle_update(void) {
         Yield();
     }
 
-    sprintf(cmd, "%s\\RESTART.EXE %s\\LLMAGENT.EXE", g_exedir, g_exedir);
+    sprintf(cmd, "%s\\RESTART.EXE %s\\LLMNEW.EXE %s\\LLMAGENT.EXE",
+            g_exedir, g_exedir, g_exedir);
     WinExec(cmd, SW_SHOWMINNOACTIVE);
 
     g_shutdown = 1;
@@ -1402,16 +1406,21 @@ long _EXPORT FAR PASCAL WndProc(HWND hwnd, unsigned msg, UINT wParam, LONG lPara
             return 0L;
         }
         return DefWindowProc(hwnd, msg, wParam, lParam);
+    case WM_AGENT_SOCKET:
+        if (WSAGETSELECTERROR(lParam) != 0) {
+            return 0L;
+        }
+        if (WSAGETSELECTEVENT(lParam) == FD_ACCEPT) {
+            g_accept_ready = 1;
+            return 0L;
+        }
+        if (WSAGETSELECTEVENT(lParam) == FD_CLOSE) {
+            return 0L;
+        }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_DESTROY:
-        /* There is no GetMessage/DispatchMessage loop anywhere in this
-           app -- server_main()'s blocking accept()/recv() calls (message-
-           pumped internally by Winsock's blocking hook) ARE the message
-           loop. PostQuitMessage() alone would queue a WM_QUIT nothing
-           ever reads, leaving the process running headless, still bound
-           to the port, after its window is gone -- exactly the state
-           that made "close and relaunch" stop working earlier. Force any
-           blocked accept()/recv() to fail right now so server_main()'s
-           loop actually notices and exits. */
+        /* Force any blocked recv() to fail and wake server_main()'s
+           WaitMessage()-based listener so the process exits cleanly. */
         g_shutdown = 1;
         if (g_client != INVALID_SOCKET) closesocket(g_client);
         if (g_listen != INVALID_SOCKET) closesocket(g_listen);
@@ -1512,14 +1521,46 @@ static int server_main(void) {
             g_listen = INVALID_SOCKET;
             return 1;
         }
+        if (WSAAsyncSelect(g_listen, g_hwnd, WM_AGENT_SOCKET, FD_ACCEPT | FD_CLOSE) == SOCKET_ERROR) {
+            MessageBox(g_hwnd, "WSAAsyncSelect() failed for listening socket",
+                       "llm_agent-win16", MB_OK | MB_ICONHAND);
+            closesocket(g_listen);
+            g_listen = INVALID_SOCKET;
+            return 1;
+        }
 
         while (!g_shutdown) {
-            g_client = accept(g_listen, NULL, NULL);
-            if (g_client == INVALID_SOCKET) break;
-            handle_client();
-            closesocket(g_client);
-            g_client = INVALID_SOCKET;
+            MSG msg;
+            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    g_shutdown = 1;
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            if (g_shutdown) break;
+
+            if (g_accept_ready) {
+                g_accept_ready = 0;
+                for (;;) {
+                    unsigned long blocking = 0;
+
+                    g_client = accept(g_listen, NULL, NULL);
+                    if (g_client == INVALID_SOCKET) break;
+
+                    WSAAsyncSelect(g_client, g_hwnd, 0, 0);
+                    ioctlsocket(g_client, FIONBIO, &blocking);
+                    handle_client();
+                    closesocket(g_client);
+                    g_client = INVALID_SOCKET;
+                    if (g_shutdown) break;
+                }
+            }
+
+            if (!g_shutdown) WaitMessage();
         }
+        WSAAsyncSelect(g_listen, g_hwnd, 0, 0);
         closesocket(g_listen);
         g_listen = INVALID_SOCKET;
     }

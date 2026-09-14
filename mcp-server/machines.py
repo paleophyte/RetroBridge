@@ -22,6 +22,7 @@ class MachineConfig:
     host: str
     exec_port: int = 2222
     exec_token: str = ""
+    vm_name: str | None = None
 
 
 def load_machines(path: Path) -> dict[str, MachineConfig]:
@@ -48,5 +49,6 @@ def load_machines(path: Path) -> dict[str, MachineConfig]:
             host=host,
             exec_port=section.getint("exec_port", fallback=2222),
             exec_token=token,
+            vm_name=section.get("vm_name"),
         )
     return machines

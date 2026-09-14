@@ -30,15 +30,16 @@ Everything else (`CLIPSET`, `REG*`) returns `ERR:not supported on Windows 3.11`.
 
 ### UPDATE: self-update without a full REBOOT
 
-`PUT`ting a new `LLMAGENT.EXE` over the running one never took effect on
-its own -- Windows 3.1 keeps a module's code resident in memory by name
-until every instance of it has exited (`GetModuleUsage()` hits zero), so
-`WinExec()`ing the same path again while the old instance is still up
-just hands back another instance of the OLD code already loaded, not
-the new bytes on disk. `UPDATE` launches `RESTART.EXE` (`restart.c`, a
-separate tiny helper built via `build_restart.bat`) and then exits
-itself; `RESTART.EXE` is the piece that has to outlive the old agent and
-launch the fresh copy once it's safe to.
+Do **not** `PUT` a new `LLMAGENT.EXE` over the running one. Windows 3.1
+keeps a module's code resident in memory by name until every instance of
+it has exited (`GetModuleUsage()` hits zero), so the Win16-safe update
+flow stages the new binary as `LLMNEW.EXE` instead. `UPDATE` launches
+`RESTART.EXE` (`restart.c`, a separate tiny helper built via
+`build_restart.bat`) and then exits itself; `RESTART.EXE` waits for the
+old agent to unload, renames `LLMAGENT.EXE` to `LLMAGENT.OLD`, moves
+`LLMNEW.EXE` into place, and launches the fresh copy. The `.OLD` backup
+is deliberately preserved for local recovery if a new build cannot speak
+TCP.
 
 Getting there took three rounds, each surfacing a different failure:
 
@@ -83,6 +84,9 @@ recurred since this fix, but this OS has earned the caveat), it'll block
 `RESTART.EXE`'s relaunch the same way it always did -- dismiss it by
 hand and the new instance should come up right after, or fall back to
 `REBOOT` if it doesn't.
+
+Future bridge-side updates should use `legacy_win16_self_update`, which
+uploads `LLMNEW.EXE` and `RESTART.EXE` before sending `UPDATE`.
 
 
 ### PSLIST/PSKILL use HTASK as the "PID"
