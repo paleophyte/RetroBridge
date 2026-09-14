@@ -626,6 +626,40 @@ static volatile long *gForceUpPtr = NULL;
 static volatile long gA977Hits = 0;      /* every call that reached the stub */
 static volatile long gA977Forced = 0;    /* calls answered false by us */
 
+/* CONTROL for the a977_hits=0 result. The ROM drag loop calls GetMouse
+ * (0xA972) every iteration, right next to the WaitMouseUp that never reached
+ * our patch. Counting GetMouse the same way separates two very different
+ * explanations:
+ *
+ *   a972_hits > 0  the trap table IS live for this loop, so the WaitMouseUp
+ *                  miss is something specific to that trap or that patch;
+ *   a972_hits == 0 ROM-internal A-traps here bypass the dispatch table
+ *                  altogether, and no trap patch will ever reach this loop.
+ *
+ * This stub only counts and jumps through -- it never changes behaviour --
+ * which matters because GetMouse is called constantly by everything running. */
+static void *gRealA972 = NULL;
+static volatile long gA972Hits = 0;
+/* Control-of-the-control: a hit count of zero only means "ROM bypasses the
+ * table" if the patch was in the table to begin with. Read the vector straight
+ * back after installing and compare it with the stub's own address. */
+static unsigned long gA972Before = 0;
+static unsigned long gA972After = 0;
+static unsigned long gA972StubAddr = 0;
+
+static void GetMouseStub(void)
+{
+    asm volatile (
+        "addql  #1,%1\n\t"
+        "unlk   %%fp\n\t"
+        "movel  %0,%%a0\n\t"
+        "jmp    %%a0@"
+        :
+        : "m"(gRealA972), "m"(gA972Hits)
+        : "a0", "cc", "memory"
+    );
+}
+
 static void WaitMouseUpStub(void)
 {
     /* Stack here, after GCC's own linkw prologue (verified by disassembly):
@@ -661,6 +695,10 @@ static void RestoreWaitMouseUp(void)
     if (gRealA977 != NULL) {
         SetTrapAddress((ProcPtr)gRealA977, 0xA977);
         gRealA977 = NULL;
+    }
+    if (gRealA972 != NULL) {
+        SetTrapAddress((ProcPtr)gRealA972, 0xA972);
+        gRealA972 = NULL;
     }
     gForceUpPtr = NULL;
     if (gDragRec != NULL) {
@@ -839,7 +877,17 @@ static void HandleDrag(short x0, short y0, short x1, short y1,
     gDragRec->forceUp = 0;
     gA977Hits = 0;
     gA977Forced = 0;
+    gA972Hits = 0;
     gForceUpPtr = &gDragRec->forceUp;
+
+    /* Arm the GetMouse control (counts only, never alters behaviour). */
+    if (gRealA972 == NULL) {
+        gRealA972 = (void *)GetTrapAddress(0xA972);
+        gA972Before = (unsigned long)gRealA972;
+        gA972StubAddr = (unsigned long)GetMouseStub;
+        SetTrapAddress((ProcPtr)GetMouseStub, 0xA972);
+        gA972After = (unsigned long)GetTrapAddress(0xA972);
+    }
 
     /* DISARMED -- do not re-enable without reading this.
      *
@@ -900,7 +948,7 @@ static void HandleDrag(short x0, short y0, short x1, short y1,
  * no effect. */
 static void HandleDragStat(void)
 {
-    char buf[256];
+    char buf[640];   /* grew past 256 once and smashed the stack */
     char hdr[32];
     int len;
 
@@ -914,7 +962,7 @@ static void HandleDragStat(void)
                   "ticks_used=%d\r\nmax_ticks=%d\r\nticks_per_step=%d\r\n"
                   "from=%d,%d\r\nto=%d,%d\r\nsaved_couple=%02x\r\n"
                   "vbl_count=%d\r\nvbl_qtype=%d\r\n"
-                  "a977_hits=%ld\r\na977_forced=%ld\r\n"
+                  "a977_hits=%ld\r\na977_forced=%ld\r\na972_hits=%ld\r\na972_before=%08lx\r\na972_after=%08lx\r\na972_stub=%08lx\r\n"
                   "release_ticks=%d\r\nup_posted=%d\r\nup_err=%d\r\nmb_at_end=%02x\r\n",
                   gDragRec->installed, gDragRec->finished,
                   gDragRec->step, gDragRec->nSteps,
@@ -924,7 +972,8 @@ static void HandleDragStat(void)
                   gDragRec->x1, gDragRec->y1,
                   (unsigned char)gDragRec->savedCouple,
                   gDragRec->vbl.vblCount, gDragRec->vbl.qType,
-                  gA977Hits, gA977Forced,
+                  gA977Hits, gA977Forced, gA972Hits,
+                  gA972Before, gA972After, gA972StubAddr,
                   gDragRec->releaseTicks, gDragRec->upPosted, gDragRec->upErr,
                   (unsigned char)gDragRec->mbAtEnd);
 
