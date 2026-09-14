@@ -526,6 +526,333 @@ static void HandleClick(short x, short y, int dbl)
     SendAll(buf, len);
 }
 
+/* ---- Synthetic click-and-drag ----------------------------------------
+ *
+ * A drag cannot be done the way CLICK is. Dragging puts the Finder into a
+ * *blocking* tracking loop (StillDown()/GetMouse()), and classic Mac OS is
+ * cooperatively scheduled, so while that loop spins llm_agent gets no CPU
+ * at all. Confirmed live: PING goes unanswered for as long as a real mouse
+ * button is held down over an icon, and only recovers on release. Driving
+ * a drag straight from the command handler would therefore deadlock -- we
+ * would be waiting to move the very mouse the Finder is waiting on.
+ *
+ * So the drag runs from a VBL task, at interrupt time, which keeps ticking
+ * while the Finder blocks. QuicKeys evidently does the same: the
+ * investigation notes a step counter driving smooth multi-step movement in
+ * its own code rather than an instant jump.
+ *
+ *   main code   position at source, MBState = down, post mouseDown,
+ *               install the VBL task, reply, return to the event loop
+ *   Finder      picks up the mouseDown, enters its tracking loop, blocks
+ *   VBL @60Hz   steps the cursor along the path, holding MBState down
+ *   VBL last    lands on the target and sets MBState = up
+ *   Finder      loop exits, the drop happens
+ *
+ * MBState matters here in a way it does not for a plain click: StillDown()
+ * reads it, and it is what keeps the Finder's loop alive mid-drag. That is
+ * also why a stuck MBState is dangerous -- the whole machine would believe
+ * the button is held -- hence the hard tick budget below.
+ *
+ * STATUS: INCOMPLETE -- DO NOT USE UNATTENDED.
+ *
+ * The movement half works: the VBL interpolation drives the cursor along
+ * the path and the dragged object visibly follows it (confirmed on screen).
+ * What does not work is *ending* the drag. The ROM tracking loop on this
+ * machine is
+ *     while (WaitMouseUp()) { GetMouse(...); ... }
+ * with WaitMouseUp (trap 0xA977) at 0x408193f0 and GetMouse (0xA972) at
+ * 0x4081937c, and it will not exit for anything this code can do:
+ *   - releasing MBState is not enough (mb_at_end=80 confirmed);
+ *   - posting a mouseUp is not enough, and the post itself demonstrably
+ *     succeeds (up_posted=1, up_err=0 straight out of the VBL);
+ *   - re-posting a mouseUp every tick for 12 ticks is not enough either.
+ * Only a genuine hardware click ends it. WaitMouseUp appears to consult
+ * live ADB state rather than the software event queue -- which is the one
+ * place the old "clicks are impossible" claim in README.md was right, even
+ * though it is wrong for ordinary click delivery (CLICK works fine).
+ *
+ * Until that is solved, a DRAG leaves the Finder spinning in its tracking
+ * loop, which starves this agent of CPU (cooperative scheduling) until a
+ * human clicks. DRAGRESET and DRAGSTAT exist for exactly that situation.
+ * The untried next idea is patching trap 0xA977 for the duration of the
+ * drag so it returns false on demand -- note README.md technique 3, where
+ * an unrestored trap patch caused a hard fault, so any attempt must restore
+ * the vector on every exit path including QUITAGENT/UPDATE.
+ *
+ * The VBL procedure runs with no valid A5, so it must not touch globals or
+ * call helpers that do. It works only through the record pointer it gets in
+ * A0 and through absolute low-memory addresses, and it must never spin
+ * (no CrsrBusy wait) because it is interrupt context.
+ */
+
+typedef struct {
+    VBLTask vbl;            /* MUST be first: A0 points here at VBL time */
+    short   step;
+    short   nSteps;
+    short   ticksPerStep;
+    short   x0, y0;
+    short   x1, y1;
+    short   ticksUsed;
+    short   maxTicks;
+    short   finished;
+    short   installed;
+    short   savedCouple;
+    short   releaseTicks;  /* mouseUp reposts remaining after the path ends */
+    short   upPosted;      /* 1 if the VBL's mouseUp PPostEvent gave an element */
+    short   upErr;         /* the OSErr it returned */
+    short   mbAtEnd;       /* MBState as the VBL left it */
+} DragRec;
+
+static DragRec *gDragRec = NULL;
+
+static void DragVBLProc(void)
+{
+    DragRec *r;
+    Point p;
+    long packed;
+
+    /* A0 holds the VBLTask pointer, which is also the DragRec pointer. */
+    asm volatile ("movea.l %%a0,%0" : "=a"(r));
+
+    if (r->finished) {
+        r->vbl.vblCount = 0;
+        return;
+    }
+
+    r->ticksUsed += r->ticksPerStep;
+    r->step++;
+
+    if (r->step >= r->nSteps || r->ticksUsed >= r->maxTicks) {
+        p.h = r->x1;
+        p.v = r->y1;
+        packed = *(long *)&p;
+        *(long *)0x0828L = packed;               /* MTemp    */
+        *(long *)0x082CL = packed;               /* RawMouse */
+        *(long *)0x0830L = packed;               /* Mouse    */
+        *(unsigned char *)0x08CEL = 0xFF;        /* CrsrNew  */
+        *(unsigned char *)0x0172L = 0x80;        /* MBState: button UP */
+        *(unsigned char *)0x08CFL =
+            (unsigned char)r->savedCouple;       /* recouple the cursor */
+
+        /* Post a real mouseUp. This is what actually ends the drag:
+         * DragWindow/DragGrayRgn exit on the mouseUp *event*, not on
+         * MBState, so releasing MBState alone leaves the Finder tracking
+         * forever -- observed live, the window kept following the physical
+         * mouse until a human clicked. PPostEvent is inlined here rather
+         * than calling the shared helper because this is interrupt context. */
+        {
+            register long  d0 asm("%d0") = 0;
+            register void *a0 asm("%a0") = (void *)2L;   /* mouseUp */
+
+            asm volatile (
+                ".word 0xA12F"
+                : "+d"(d0), "+a"(a0)
+                :
+                : "d1", "a1", "cc", "memory"
+            );
+
+            r->upErr = (short)d0;
+            r->upPosted = (a0 != NULL && (short)d0 == 0) ? 1 : 0;
+            if (a0 != NULL && (short)d0 == 0) {
+                EvQEl *q = (EvQEl *)a0;
+                q->qType = 4;
+                q->evtQWhat = 2;                 /* mouseUp */
+                q->evtQMessage = 0;
+                q->evtQWhere = p;
+                q->evtQModifiers = 0x0080;
+            }
+        }
+
+        r->mbAtEnd = (short)(*(unsigned char *)0x0172L);
+
+        /* Re-post rather than fire once. The ROM tracking loop is
+         *     while (WaitMouseUp()) { GetMouse(...); }
+         * (trap 0xA977 at 0x408193f0 on this ROM), and WaitMouseUp *removes*
+         * the mouseUp it finds. A single posted event can therefore be
+         * consumed by something else before the loop next looks, leaving it
+         * spinning forever -- which is exactly what was observed, with
+         * up_posted=1 and up_err=0 proving the post itself succeeded. So keep
+         * re-posting for a few ticks until the loop actually takes one. */
+        if (r->releaseTicks > 0) {
+            r->releaseTicks--;
+            r->step = r->nSteps;        /* stay in the release branch */
+            r->vbl.vblCount = 1;        /* every tick */
+            return;
+        }
+
+        r->finished = 1;
+        r->vbl.vblCount = 0;
+        return;
+    }
+
+    p.h = (short)(r->x0 + ((long)(r->x1 - r->x0) * (long)r->step) / (long)r->nSteps);
+    p.v = (short)(r->y0 + ((long)(r->y1 - r->y0) * (long)r->step) / (long)r->nSteps);
+    packed = *(long *)&p;
+    *(long *)0x0828L = packed;
+    *(long *)0x082CL = packed;
+    *(long *)0x0830L = packed;
+    *(unsigned char *)0x08CEL = 0xFF;
+    *(unsigned char *)0x0172L = 0x00;            /* MBState: hold DOWN */
+
+    r->vbl.vblCount = r->ticksPerStep;
+}
+
+/* DRAG x0 y0 x1 y1 [steps] [ticksPerStep] -- global screen coordinates.
+ * Returns as soon as the drag is armed; the drop completes asynchronously
+ * a few ticks later, so poll MOUSEPOS or take a screenshot to confirm. */
+static void HandleDrag(short x0, short y0, short x1, short y1,
+                       short steps, short ticksPerStep)
+{
+    Point p;
+    char buf[160];
+    char hdr[32];
+    int len;
+
+    if (steps < 2) { steps = 2; }
+    if (steps > 200) { steps = 200; }
+    if (ticksPerStep < 1) { ticksPerStep = 1; }
+    if (ticksPerStep > 10) { ticksPerStep = 10; }
+
+    if (gDragRec == NULL) {
+        gDragRec = (DragRec *)NewPtrSys((Size)sizeof(DragRec));
+        if (gDragRec == NULL) {
+            SendCStr("ERR:NewPtrSys failed for drag record\n");
+            return;
+        }
+        memset(gDragRec, 0, sizeof(DragRec));
+    }
+
+    /* A previous drag could still be installed if it was cut short. */
+    if (gDragRec->installed) {
+        VRemove((VBLTaskPtr)&gDragRec->vbl);
+        gDragRec->installed = 0;
+    }
+    LMSetMBState(0x80);      /* never start from a stuck button */
+
+    gDragRec->step = 0;
+    gDragRec->nSteps = steps;
+    gDragRec->ticksPerStep = ticksPerStep;
+    gDragRec->x0 = x0;
+    gDragRec->y0 = y0;
+    gDragRec->x1 = x1;
+    gDragRec->y1 = y1;
+    gDragRec->ticksUsed = 0;
+    gDragRec->finished = 0;
+    gDragRec->releaseTicks = 12;
+    gDragRec->upPosted = 0;
+    gDragRec->upErr = 0;
+    gDragRec->mbAtEnd = 0;
+
+    /* Hard budget. However the interpolation goes, the button is released
+     * within this many ticks -- a stuck-down MBState would leave the entire
+     * machine believing the mouse is held, so this is not optional. */
+    gDragRec->maxTicks = (short)(steps * ticksPerStep + 90);
+    if (gDragRec->maxTicks > 600) {
+        gDragRec->maxTicks = 600;
+    }
+
+    gDragRec->vbl.qType = 1;              /* vType */
+    gDragRec->vbl.vblAddr = (ProcPtr)DragVBLProc;
+    gDragRec->vbl.vblCount = ticksPerStep;
+    gDragRec->vbl.vblPhase = 0;
+
+    p.h = x0;
+    p.v = y0;
+    SetMouseTo(p);
+
+    /* Decouple the cursor from the physical mouse for the duration. With it
+     * coupled, the ADB interrupt keeps rewriting RawMouse/Mouse from the real
+     * hardware and simply overwrites every position this drag writes -- seen
+     * live, the dragged window followed the human's mouse instead of the
+     * programmed path. QuicKeys' own routine clears this for the same reason.
+     * The VBL restores it on the final step, and DRAGRESET is the backstop. */
+    gDragRec->savedCouple = (short)LM_CRSRCOUPLE;
+    if (gDragRec->savedCouple == 0) {
+        gDragRec->savedCouple = 0xFF;     /* never persist a stuck value */
+    }
+    LM_CRSRCOUPLE = 0;
+
+    LMSetMBState(0x00);                   /* button down */
+    if (!PostMouseEvent(mouseDown, p)) {
+        LMSetMBState(0x80);
+        LM_CRSRCOUPLE = (unsigned char)gDragRec->savedCouple;
+        SendCStr("ERR:PPostEvent gave no queue element (drag mouseDown)\n");
+        return;
+    }
+
+    if (VInstall((VBLTaskPtr)&gDragRec->vbl) != noErr) {
+        LMSetMBState(0x80);
+        LM_CRSRCOUPLE = (unsigned char)gDragRec->savedCouple;
+        SendCStr("ERR:VInstall failed\n");
+        return;
+    }
+    gDragRec->installed = 1;
+
+    len = sprintf(buf, "drag=%d,%d->%d,%d\r\nsteps=%d\r\nticks_per_step=%d\r\n",
+                  x0, y0, x1, y1, steps, ticksPerStep);
+    sprintf(hdr, "SIZE:%d\n", len);
+    SendCStr(hdr);
+    SendAll(buf, len);
+}
+
+
+/* DRAGSTAT -- reports the drag record after the fact. The agent gets no CPU
+ * while a drag is in flight (the Finder's tracking loop blocks it), so this
+ * cannot be polled live -- but read afterwards it answers the question that
+ * matters: did the VBL task actually run? step/ticks_used stay 0 if it never
+ * fired, which is otherwise indistinguishable from a drag that ran but had
+ * no effect. */
+static void HandleDragStat(void)
+{
+    char buf[256];
+    char hdr[32];
+    int len;
+
+    if (gDragRec == NULL) {
+        SendCStr("SIZE:16\nno_drag_record\r\n");
+        return;
+    }
+
+    len = sprintf(buf,
+                  "installed=%d\r\nfinished=%d\r\nstep=%d\r\nnsteps=%d\r\n"
+                  "ticks_used=%d\r\nmax_ticks=%d\r\nticks_per_step=%d\r\n"
+                  "from=%d,%d\r\nto=%d,%d\r\nsaved_couple=%02x\r\n"
+                  "vbl_count=%d\r\nvbl_qtype=%d\r\n"
+                  "release_ticks=%d\r\nup_posted=%d\r\nup_err=%d\r\nmb_at_end=%02x\r\n",
+                  gDragRec->installed, gDragRec->finished,
+                  gDragRec->step, gDragRec->nSteps,
+                  gDragRec->ticksUsed, gDragRec->maxTicks,
+                  gDragRec->ticksPerStep,
+                  gDragRec->x0, gDragRec->y0,
+                  gDragRec->x1, gDragRec->y1,
+                  (unsigned char)gDragRec->savedCouple,
+                  gDragRec->vbl.vblCount, gDragRec->vbl.qType,
+                  gDragRec->releaseTicks, gDragRec->upPosted, gDragRec->upErr,
+                  (unsigned char)gDragRec->mbAtEnd);
+
+    sprintf(hdr, "SIZE:%d\n", len);
+    SendCStr(hdr);
+    SendAll(buf, len);
+}
+
+/* DRAGRESET -- panic button. Releases the mouse button and tears down any
+ * in-flight drag, for when a drag leaves the machine thinking the button is
+ * still held. */
+static void HandleDragReset(void)
+{
+    if (gDragRec != NULL && gDragRec->installed) {
+        VRemove((VBLTaskPtr)&gDragRec->vbl);
+        gDragRec->installed = 0;
+        gDragRec->finished = 1;
+    }
+    LMSetMBState(0x80);
+    LM_CRSRCOUPLE = 0xFF;
+    /* A tracking loop waits on the mouseUp event, so releasing MBState is
+     * not enough on its own to free a Finder stuck mid-drag. */
+    PostMouseEvent(mouseUp, LMGetMouseLocation());
+    SendCStr("OK\n");
+}
+
 /* TEMP DIAGNOSTIC -- broadened version of the earlier single-site
  * 0xA88F (_OSDispatch) observer: instead of filtering for one exact
  * (selector, return-addr) pair, logs the (selector, return-addr) of
@@ -1409,6 +1736,22 @@ static void HandleClient(void)
             long cx = strtol(gLine + 9, &csp, 10);
             long cy = strtol(csp, NULL, 10);
             HandleClick((short)cx, (short)cy, 1);
+        } else if (strcmp(gLine, "DRAGRESET") == 0) {
+            HandleDragReset();
+        } else if (strcmp(gLine, "DRAGSTAT") == 0) {
+            HandleDragStat();
+        } else if (strncmp(gLine, "DRAG ", 5) == 0) {
+            char *dsp = gLine + 5;
+            long dx0 = strtol(dsp, &dsp, 10);
+            long dy0 = strtol(dsp, &dsp, 10);
+            long dx1 = strtol(dsp, &dsp, 10);
+            long dy1 = strtol(dsp, &dsp, 10);
+            long dst = strtol(dsp, &dsp, 10);
+            long dtp = strtol(dsp, NULL, 10);
+            if (dst <= 0) { dst = 20; }
+            if (dtp <= 0) { dtp = 2; }
+            HandleDrag((short)dx0, (short)dy0, (short)dx1, (short)dy1,
+                       (short)dst, (short)dtp);
         } else if (strcmp(gLine, "TRAPADDR") == 0) {
             HandleTrapAddr(); /* temp diagnostic */
         } else if (strncmp(gLine, "DEVPROBE ", 9) == 0) {
