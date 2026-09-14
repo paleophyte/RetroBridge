@@ -196,6 +196,54 @@ document always intended them to be stripped afterwards. They are worth
 removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
 vector.
 
+## Keyboard: KEY and TYPE
+
+Both implemented and verified end to end through the real
+`../mcp-server/agent_client.py`. They reply `OK` / `ERR:...`.
+
+`TYPE <text>` types literal text. `KEY <keyspec> [<keyspec> ...]` sends named
+keys; each keyspec may carry `-`-joined modifiers. Modifier names follow the
+other ports (`ctrl`, `alt`, `shift`) with the Mac spellings added: `cmd` /
+`command`, and `opt` / `option` as aliases for `alt`.
+
+```
+TYPE Hello
+KEY enter
+KEY cmd-w          # verified: closes the front Finder window
+KEY shift-tab down
+```
+
+Named keys: `enter`/`return`, `tab`, `space`, `esc`/`escape`,
+`bksp`/`backspace`/`del`, `fwddel`/`delete`, `left`/`right`/`up`/`down`,
+`home`/`end`/`pgup`/`pgdn`, `f1`-`f12`. Anything unrecognised is refused with
+`ERR:unknown keyspec` rather than silently dropped.
+
+### How it works
+
+Same route as `CLICK`: `PPostEvent` (trap `0xA12F`) returns the queue element
+and the fields are filled in. The message layout came from a real keypress
+captured off the event queue, not from a manual --
+`evtQMessage = 0x00023260` for a grave keypress, i.e.
+`(adbAddr << 16) | (keyCode << 8) | charCode` with adbAddr 2, and `0x32` is
+indeed the ADB code for the grave key. The US key-code table is anchored to
+that observation.
+
+> **keyUp is best-effort, and that is correct.** Classic Mac OS leaves
+> `keyUpMask` out of `SysEvtMask` by default, so `PostEvent` refuses keyUp with
+> `evtNotEnb` -- real keypresses do not enqueue a keyUp either. The first cut
+> treated that refusal as fatal and rejected every single character. keyDown is
+> the event that must land; keyUp is posted and its failure ignored.
+
+### Limits
+
+The event queue is a fixed pool that only drains when the receiving
+application runs, and it cannot run until the command returns. A long enough
+`TYPE` will therefore exhaust the queue. That surfaces as
+`ERR:keyDown rejected (OSErr n) after <k> of <n> characters` -- a short count,
+never silent truncation. Split long text across several `TYPE` calls.
+
+The key-code table is US layout only.
+
 ## Clicking
 
 `CLICK <x> <y> [button]` and `DBLCLICK <x> <y> [button]`, in global screen

@@ -552,6 +552,291 @@ static void HandleClick(short x, short y, int dbl, short button)
     SendCStr("OK\n");
 }
 
+/* ---- Synthetic keyboard: KEY and TYPE ---------------------------------
+ *
+ * Same route as CLICK -- PPostEvent (trap 0xA12F) hands back the queue
+ * element and we fill it in. The message layout was taken from a real
+ * keypress captured off the event queue rather than from a manual:
+ *
+ *     evtQWhat    0x0003            keyDown
+ *     evtQMessage 0x00023260        (adbAddr<<16) | (keyCode<<8) | charCode
+ *
+ * 0x32 is the ADB code for the grave key and 0x60 is '`', which is exactly
+ * what had been pressed, so both the layout and the key-code table below are
+ * anchored to observed reality. adbAddr is 2, the usual keyboard address.
+ *
+ * No cursor positioning is involved, so unlike CLICK this touches no
+ * low-memory globals and has no CrsrCouple hazard.
+ */
+
+#define ADB_KEYBOARD_ADDR 0x02L
+
+/* US layout, ADB virtual key codes. The two strings are index-aligned: the
+ * same key produces kUnshiftedChars[i] alone and kShiftedChars[i] with shift,
+ * and its key code is kKeyCodes[i]. */
+static const char kUnshiftedChars[] =
+    "abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;',./` ";
+static const char kShiftedChars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ)!@#$%^&*(_+{}|:\"<>?~ ";
+static const unsigned char kKeyCodes[] = {
+    0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25,
+    0x2E, 0x2D, 0x1F, 0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07,
+    0x10, 0x06,                                             /* a-z */
+    0x1D, 0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19,   /* 0-9 */
+    0x1B, 0x18, 0x21, 0x1E, 0x2A, 0x29, 0x27, 0x2B, 0x2F, 0x2C, 0x32,
+    0x31                                                    /* space */
+};
+
+/* Named keys, for KEY. charCode then ADB key code. */
+typedef struct {
+    const char    *name;
+    unsigned char  charCode;
+    unsigned char  keyCode;
+} NamedKey;
+
+static const NamedKey kNamedKeys[] = {
+    { "enter",     0x0D, 0x24 }, { "return",   0x0D, 0x24 },
+    { "tab",       0x09, 0x30 }, { "space",    0x20, 0x31 },
+    { "esc",       0x1B, 0x35 }, { "escape",   0x1B, 0x35 },
+    { "bksp",      0x08, 0x33 }, { "backspace",0x08, 0x33 },
+    { "del",       0x08, 0x33 },              /* Mac Delete = backspace */
+    { "fwddel",    0x7F, 0x75 }, { "delete",   0x7F, 0x75 },
+    { "left",      0x1C, 0x7B }, { "right",    0x1D, 0x7C },
+    { "up",        0x1E, 0x7E }, { "down",     0x1F, 0x7D },
+    { "home",      0x01, 0x73 }, { "end",      0x04, 0x77 },
+    { "pgup",      0x0B, 0x74 }, { "pgdn",     0x0C, 0x79 },
+    { "f1",  0x10, 0x7A }, { "f2",  0x10, 0x78 }, { "f3",  0x10, 0x63 },
+    { "f4",  0x10, 0x76 }, { "f5",  0x10, 0x60 }, { "f6",  0x10, 0x61 },
+    { "f7",  0x10, 0x62 }, { "f8",  0x10, 0x64 }, { "f9",  0x10, 0x65 },
+    { "f10", 0x10, 0x6D }, { "f11", 0x10, 0x67 }, { "f12", 0x10, 0x6F },
+    { NULL, 0, 0 }
+};
+
+/* Event modifier bits. btnState is set because the button is up. */
+#define MOD_BTNSTATE 0x0080
+#define MOD_CMD      0x0100
+#define MOD_SHIFT    0x0200
+#define MOD_OPTION   0x0800
+#define MOD_CONTROL  0x1000
+
+static short gLastKeyErr = 0;
+
+static int PostKeyEvent(short what, unsigned char charCode,
+                        unsigned char keyCode, short modifiers)
+{
+    short err = 0;
+    EvQEl *qel = PPostEventTrap(what, 0, &err);
+
+    gLastKeyErr = err;
+    if (err != noErr || qel == NULL) {
+        return 0;
+    }
+    qel->qType = EVQEL_TYPE;
+    qel->evtQWhat = what;
+    qel->evtQMessage = (ADB_KEYBOARD_ADDR << 16)
+                     | ((long)keyCode << 8)
+                     | (long)charCode;
+    qel->evtQWhere = LMGetMouseLocation();
+    qel->evtQModifiers = modifiers;
+    return 1;
+}
+
+/* One keypress.
+ *
+ * keyDown is the one that has to land. keyUp is posted best-effort and its
+ * failure is deliberately ignored: classic Mac OS leaves keyUpMask out of
+ * SysEvtMask by default, so PostEvent refuses keyUp with evtNotEnb (-1) and
+ * real keypresses do not enqueue a keyUp either. Treating that as fatal is
+ * what made the first cut of this fail with every character rejected. */
+static int TapKey(unsigned char charCode, unsigned char keyCode, short modifiers)
+{
+    long finalTicks;
+
+    if (!PostKeyEvent(3, charCode, keyCode, (short)(modifiers | MOD_BTNSTATE))) {
+        return 0;
+    }
+    Delay(1, &finalTicks);
+    (void)PostKeyEvent(4, charCode, keyCode, (short)(modifiers | MOD_BTNSTATE));
+    return 1;
+}
+
+/* Find a printable character's key code, and whether it needs shift. */
+static int LookupChar(char ch, unsigned char *keyCode, int *needShift)
+{
+    const char *q;
+
+    q = strchr(kUnshiftedChars, ch);
+    if (q != NULL && ch != '\0') {
+        *keyCode = kKeyCodes[q - kUnshiftedChars];
+        *needShift = 0;
+        return 1;
+    }
+    q = strchr(kShiftedChars, ch);
+    if (q != NULL && ch != '\0') {
+        *keyCode = kKeyCodes[q - kShiftedChars];
+        *needShift = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* TYPE <text> -- literal text, no newlines (the client rejects those and
+ * tells callers to use KEY enter instead).
+ *
+ * Every character is posted as a keyDown/keyUp pair. The event queue is a
+ * fixed pool and only drains when the receiving application runs, which it
+ * cannot do until this command returns, so a long enough string will exhaust
+ * it. That shows up as a short count rather than silent truncation. */
+static void HandleType(char *text)
+{
+    char buf[80];
+    int sent = 0;
+    int i;
+
+    if (*text == '\0') {
+        SendCStr("ERR:TYPE needs text\n");
+        return;
+    }
+
+    for (i = 0; text[i] != '\0'; i++) {
+        unsigned char keyCode = 0;
+        int needShift = 0;
+
+        if (!LookupChar(text[i], &keyCode, &needShift)) {
+            sprintf(buf, "ERR:no key for character 0x%02x at offset %d\n",
+                    (unsigned char)text[i], i);
+            SendCStr(buf);
+            return;
+        }
+        if (!TapKey((unsigned char)text[i], keyCode,
+                    (short)(needShift ? MOD_SHIFT : 0))) {
+            sprintf(buf, "ERR:keyDown rejected (OSErr %d) after %d of %d characters\n",
+                    (int)gLastKeyErr, sent, (int)strlen(text));
+            SendCStr(buf);
+            return;
+        }
+        sent++;
+    }
+
+    SendCStr("OK\n");
+}
+
+/* KEY <keyspec> [<keyspec> ...] -- keyspecs are space separated, and each may
+ * carry '-'-joined modifiers, e.g. "cmd-q", "shift-tab", "enter". Modifier
+ * names follow the other ports (ctrl, alt, shift) with Mac spellings added:
+ * cmd/command, and opt/option as an alias for alt. */
+static void HandleKey(char *args)
+{
+    char spec[64];
+    char buf[96];
+    int nkeys = 0;
+
+    while (*args == ' ') {
+        args++;
+    }
+    if (*args == '\0') {
+        SendCStr("ERR:KEY needs at least one keyspec\n");
+        return;
+    }
+
+    while (*args != '\0') {
+        char *tok;
+        char *save;
+        short modifiers = 0;
+        unsigned char charCode = 0;
+        unsigned char keyCode = 0;
+        int haveBase = 0;
+        int n = 0;
+
+        while (*args == ' ') {
+            args++;
+        }
+        if (*args == '\0') {
+            break;
+        }
+        while (args[n] != '\0' && args[n] != ' ' && n < (int)sizeof(spec) - 1) {
+            spec[n] = args[n];
+            n++;
+        }
+        spec[n] = '\0';
+        args += n;
+
+        /* Split the keyspec on '-'. Everything but the last piece is a
+         * modifier. A literal '-' key still works because it only ever
+         * appears as the final piece. */
+        for (tok = spec, save = spec; ; save++) {
+            if (*save != '-' && *save != '\0') {
+                continue;
+            }
+            {
+                char had = *save;
+                const NamedKey *nk;
+                int isMod = 0;
+
+                *save = '\0';
+                if (had == '-' && *tok != '\0') {
+                    if (strcmp(tok, "cmd") == 0 || strcmp(tok, "command") == 0) {
+                        modifiers |= MOD_CMD; isMod = 1;
+                    } else if (strcmp(tok, "shift") == 0) {
+                        modifiers |= MOD_SHIFT; isMod = 1;
+                    } else if (strcmp(tok, "alt") == 0 ||
+                               strcmp(tok, "opt") == 0 ||
+                               strcmp(tok, "option") == 0) {
+                        modifiers |= MOD_OPTION; isMod = 1;
+                    } else if (strcmp(tok, "ctrl") == 0 ||
+                               strcmp(tok, "control") == 0) {
+                        modifiers |= MOD_CONTROL; isMod = 1;
+                    }
+                }
+                if (!isMod && *tok != '\0') {
+                    /* Base key: a name, or a single character. */
+                    for (nk = kNamedKeys; nk->name != NULL; nk++) {
+                        if (strcmp(tok, nk->name) == 0) {
+                            charCode = nk->charCode;
+                            keyCode = nk->keyCode;
+                            haveBase = 1;
+                            break;
+                        }
+                    }
+                    if (!haveBase && tok[1] == '\0') {
+                        int needShift = 0;
+                        if (LookupChar(tok[0], &keyCode, &needShift)) {
+                            charCode = (unsigned char)tok[0];
+                            if (needShift) {
+                                modifiers |= MOD_SHIFT;
+                            }
+                            haveBase = 1;
+                        }
+                    }
+                }
+                if (had == '\0') {
+                    break;
+                }
+                tok = save + 1;
+            }
+        }
+
+        if (!haveBase) {
+            sprintf(buf, "ERR:unknown keyspec\n");
+            SendCStr(buf);
+            return;
+        }
+        if (!TapKey(charCode, keyCode, modifiers)) {
+            sprintf(buf, "ERR:keyDown rejected (OSErr %d) after %d key(s)\n",
+                    (int)gLastKeyErr, nkeys);
+            SendCStr(buf);
+            return;
+        }
+        nkeys++;
+    }
+
+    if (nkeys == 0) {
+        SendCStr("ERR:KEY needs at least one keyspec\n");
+        return;
+    }
+    SendCStr("OK\n");
+}
+
 /* ---- Synthetic click-and-drag ----------------------------------------
  *
  * A drag cannot be done the way CLICK is. Dragging puts the Finder into a
@@ -1969,6 +2254,10 @@ static void HandleClient(void)
             HandlePslist();
         } else if (strcmp(gLine, "MOUSEPOS") == 0) {
             HandleMousePos();
+        } else if (strncmp(gLine, "KEY ", 4) == 0) {
+            HandleKey(gLine + 4);
+        } else if (strncmp(gLine, "TYPE ", 5) == 0) {
+            HandleType(gLine + 5);
         } else if (strncmp(gLine, "CLICK ", 6) == 0) {
             char *csp;
             long cx = strtol(gLine + 6, &csp, 10);
