@@ -150,9 +150,19 @@ itself needs a new build.
 investigated at length (an entire session), including a real
 ground-truth check against QuicKeys 3.5.3 (the actual commercial
 automation tool this era's technique is modeled on) running in the same
-guest. Conclusion: **synthetic keyboard events work reliably; synthetic
-mouse clicks/drags fundamentally cannot, via any known software
-technique, on classic Mac OS.**
+guest. **This conclusion was WRONG and has been superseded.** A later session
+watchpointed the low-level event queue while a real QuicKeys click fired
+and caught the mechanism directly: QuicKeys writes the target point into
+`MTemp`/`RawMouse`/`Mouse`, then `Enqueue()`s a `mouseDown` `EvQEl`
+whose `evtQWhere` is that same point, then a matching `mouseUp` about two
+ticks later. `MBState` is never written and journaling is never used.
+Synthetic clicks **are** possible; see
+`QUICKEYS_CLICK_INVESTIGATION.md` for the evidence and the recipe.
+
+The failures below are still accurate as records of what does not work on
+its own -- in particular technique 4 failed because it enqueued an event
+*without* first placing the cursor, which is the step that makes the
+Toolbox believe the click.
 
 ### What was tried for mouse clicks, and why each failed
 
