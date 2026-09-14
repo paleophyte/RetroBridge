@@ -168,7 +168,8 @@ Audited end to end against the real `../mcp-server/agent_client.py`, not by
 hand. Everything below was actually exercised through that client.
 
 **Implemented and verified:** `PING`, `SYSINFO`, `PSLIST`, `SCREENSHOT`,
-`PUT`, `GET`, `CLICK`, `REBOOT`, `SHUTDOWN`, `UPDATE`, `QUIT`, plus the
+`PUT`, `GET`, `CLICK`, `KEY`, `TYPE`, `REBOOT`, `SHUTDOWN`, `UPDATE`,
+`QUIT`, plus the
 Mac-only `DBLCLICK`, `MOUSEPOS`, `QUITAGENT` and the incomplete `DRAG`.
 
 Anything unimplemented answers `ERR:unknown command` and the agent stays up --
@@ -179,7 +180,6 @@ hang or crash it.
 
 | command | feasibility on System 7.5.3 |
 |---|---|
-| `KEY` / `TYPE` | **Proven possible.** Synthetic keyboard events were shown to work during the mouse investigation, and `PPostEvent` is now understood. Highest-value gap. |
 | `CLIPSET` | **Easy.** Scrap Manager: `ZeroScrap()` then `PutScrap(len, 'TEXT', buf)`. |
 | `WINLIST` | **Feasible.** Walk the Window Manager's `WindowList` low-memory global (`0x09D6`) and read each title and `portRect`. Read-only, low risk. |
 | `PSKILL` | **Partly.** Classic Mac OS has no kill. The nearest equivalent is a `kAEQuitApplication` AppleEvent, which an app may refuse -- so it would be "ask to quit", not "kill", and must be documented as such. |
