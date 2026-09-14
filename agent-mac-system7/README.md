@@ -144,6 +144,23 @@ From then on, updates go through `UPDATE` — see above — with `llm_agent`
 and `llm_updater` never touched by hand again unless `llm_updater`
 itself needs a new build.
 
+## QuicKeys is no longer required
+
+QuicKeys 3.5.3 was the reference implementation the click mechanism was
+reverse-engineered from. It is **not** a runtime dependency: with QuicKeys
+removed from Startup Items entirely -- driver not resident, 
+absent from , control panel gone --  still selects a Finder icon
+exactly as before. The mechanism was reimplemented natively, not delegated.
+
+It is still worth being able to put back for one reason: if the unsolved half of
+ is picked up again, QuicKeys is the only known working example of a macro
+tool ending a Finder tracking loop on this OS, and watching it do that is likely
+the fastest route to the answer.
+
+Removing it also shifts the heap, so any absolute address recorded in
+ is stale again. Re-find them with a host-side
+ dump plus  rather than trusting the written values.
+
 ## Protocol surface
 
 Audited end to end against the real `../mcp-server/agent_client.py`, not by
