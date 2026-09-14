@@ -187,12 +187,22 @@ hang or crash it.
 
 ### Housekeeping
 
-The `TEMP DIAGNOSTIC` commands (`PEEK`, `SCANSIG`, `SCANCDRV`, `HLEWATCH`,
-`DEVPROBE`, `TRAPADDR`, `RESLOOKUP`) are still present. They exist for the
-QuicKeys click investigation, which is now solved, and the investigation
-document always intended them to be stripped afterwards. They are worth
-removing: `PEEK` can crash the agent by design, and `HLEWATCH` patches a trap
-vector.
+The `TEMP DIAGNOSTIC` commands built for the QuicKeys click investigation --
+`PEEK`, `SCANSIG`, `SCANCDRV`, `HLEWATCH`, `DEVPROBE`, `DEVPROBE2`,
+`TRAPADDR`, `RESLOOKUP` -- **have been removed** now that the investigation is
+solved. 425 lines went, and the binary dropped from 72,576 to 67,712 bytes.
+
+They were worth removing rather than leaving idle: `PEEK` crashes the agent by
+design when pointed at unmapped memory, and `HLEWATCH` patches a trap vector,
+which is the single most dangerous thing in this codebase if it is ever left
+installed. Most of what they did is better done from the host anyway --
+`pmemsave` plus `findsig.py` reads guest memory with no crash risk at all, and
+the gdbstub gives breakpoints and watchpoints the guest cannot notice.
+
+They remain in git history if ever needed again.
+
+`DRAGSTAT` and `DRAGRESET` were deliberately kept: `DRAG` is unfinished, and
+they are its instrumentation and its escape hatch.
 
 ## PSKILL asks, it does not kill
 
