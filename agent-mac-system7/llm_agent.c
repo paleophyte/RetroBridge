@@ -789,6 +789,11 @@ static void HandleSysinfo(void)
 
     len += sprintf(buf + len, "os_family=mac68k\r\n");
 
+    /* Build stamp, so a live UPDATE can be verified as having actually taken
+     * effect. Without it a successful-looking update is indistinguishable from
+     * the old binary still running. */
+    len += sprintf(buf + len, "agent_build=%s %s\r\n", __DATE__, __TIME__);
+
     err = Gestalt(gestaltSystemVersion, &sysVersion);
     if (err == noErr) {
         /* BCD-ish: 0x0753 style for 7.5.3, 0x0705 for 7.0.5 etc. */
