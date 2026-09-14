@@ -6,7 +6,7 @@ from pyfatfs.PyFat import PyFat
 from pyfatfs.PyFatFS import PyFatFS
 
 root = Path(__file__).resolve().parent
-out = root / "llm_agent.flp"
+out = root / "llm_agent_os2.flp"
 FLOPPY_SIZE = 1474560
 
 INI = """port=2222
