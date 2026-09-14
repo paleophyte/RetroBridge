@@ -5,6 +5,36 @@ itself; it speaks the **same** token-authed TCP wire protocol as the
 other ports, so [`../mcp-server/server.py`](../mcp-server/server.py) can
 expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 
+## Command status at a glance
+
+| command | status |
+|---|---|
+| `PING` `SYSINFO` `PSLIST` `SCREENSHOT` | working |
+| `PUT` `GET` | working (paths may contain spaces) |
+| `CLICK` `DBLCLICK` | working, optional third `button` argument; only button 1 exists |
+| `KEY` `TYPE` | working; US layout only |
+| `PSKILL` | working, but it *asks* a process to quit rather than killing it |
+| `REBOOT` `SHUTDOWN` | working, clean shutdown via the Shutdown Manager |
+| `UPDATE` `QUITAGENT` `QUIT` | working |
+| `MOUSEPOS` | working (Mac-only extension) |
+| `CLIPSET` `CLIPGET` | **disabled** -- the scrap is per-process, writes never reach other applications |
+| `WINLIST` | **disabled** -- `WindowList` is per-process, only this agent's own windows are visible |
+| `DRAG` `DRAGSTAT` `DRAGRESET` | **incomplete** -- movement works, the drag never terminates |
+| `EXEC` `EXECDETACH` | not applicable, classic Mac OS has no shell |
+
+Disabled commands return `ERR:` with the reason rather than a misleading `OK`.
+
+Two recurring themes are worth knowing before extending this:
+
+1. **Several low-memory globals are swapped per process** by the Process
+   Manager -- the scrap variables and `WindowList` among them. A background
+   agent sees its own copy, not the system's. Reading back your own write
+   proves nothing; compare against another process's view.
+2. **Toolbox tracking loops are unreachable by synthetic events.**
+   `MenuSelect` for menus, `WaitMouseUp`/`DragGrayRgn` for dragging. Plain
+   event delivery works fine -- clicks, double-clicks, typing -- but a loop
+   polling live hardware state ignores anything posted to the event queue.
+
 Uses **MacTCP** (driver-style `PBControlSync`/`PBControlAsync` on a
 `TCPiopb`, not Berkeley sockets) for networking. Built with
 [Retro68](https://github.com/autc04/Retro68) targeting plain 68000 (runs
