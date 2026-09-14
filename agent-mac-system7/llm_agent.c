@@ -685,12 +685,18 @@ static void HandleClipSet(char *text)
         return;
     }
 
-    /* Flush the in-memory scrap out to the scrap file. The Process Manager
-     * normally does this when applications switch; doing it here means the
-     * scrap is durable for whoever reads it next rather than depending on a
-     * switch happening. Failure is not fatal -- the in-memory scrap is still
-     * set -- so it is not reported.  */
-    (void)UnloadScrap();
+    /* Deliberately NOT calling UnloadScrap() here.
+     *
+     * It was called originally, on the reasoning that flushing the scrap to
+     * its file made it durable rather than dependent on an application switch.
+     * That was wrong, and measurably so: UnloadScrap disposes the in-memory
+     * scrap, leaving ScrapInfo (0x0960) with scrapHandle NULL and scrapState 0
+     * ("on disk"). GetScrap still reads it back -- CLIPGET worked fine -- but
+     * that is not the state an application sees after a normal Copy, and
+     * ClarisWorks greyed out its Paste item accordingly.
+     *
+     * Leaving the scrap in memory is what a real Copy does. The Process
+     * Manager unloads it on an application switch when it needs to. */
 
     /* Mirror it into the TextEdit scrap as well.
      *
