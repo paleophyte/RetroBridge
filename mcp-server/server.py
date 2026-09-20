@@ -44,6 +44,7 @@ from PIL import Image as PILImage
 from agent_client import AgentAuthError, AgentClient, AgentProtocolError
 from capabilities import describe as describe_capabilities, profile_for
 from machines import MachineConfig, MachineConfigError, load_machines
+from text_codec import normalize_encoding, decode_text
 
 MACHINES_FILE = Path(
     os.environ.get("LEGACY_MACHINES_FILE") or (Path(__file__).parent / "machines.ini")
@@ -117,7 +118,9 @@ def _agent(machine: str) -> AgentClient:
         )
     return AgentClient(m.host, m.exec_port, m.exec_token,
                        max_command_bytes=m.max_command_bytes,
-                       max_response_bytes=m.max_response_bytes)
+                       max_response_bytes=m.max_response_bytes,
+                       text_encoding=m.text_encoding, exec_encoding=m.exec_encoding,
+                       exec_command_encoding=m.exec_command_encoding, file_encoding=m.file_encoding)
 
 
 @srv.tool()
@@ -142,20 +145,30 @@ def legacy_list_machines() -> str:
 
 
 @srv.tool()
-def legacy_exec(machine: str, command: str) -> str:
+def legacy_exec(machine: str, command: str, output_encoding: str | None = None) -> str:
     """Run a command using the target platform's shell/console command handler.
     Returns captured output and exit status where supported; NetWare provides
     no output capture, and Mac has no shell. One-shot per call with no persisted
-    shell state. Synchronous commands can occupy a single-client agent."""
+    shell state. Synchronous commands can occupy a single-client agent.
+    Output uses the machine's exec_encoding, or a per-call output_encoding
+    override (e.g. utf-16-le for an explicitly Unicode-producing program).
+    This changes decoding only, not the guest console/code page."""
     try:
-        result = _agent(machine).exec(command)
+        override = normalize_encoding(output_encoding, output=True) if output_encoding is not None else None
+        agent = _agent(machine)
+        result = agent.exec(command)
+    except ValueError as e:
+        return f"[protocol/input error] {e}"
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:
         return f"[protocol error] {e}"
     except OSError as e:
         return f"[connection error] {e}"
-    text = result.output.decode("utf-8", "replace")
+    try:
+        text = decode_text(result.output, override or agent.exec_encoding, "EXEC output")
+    except ValueError as e:
+        return f"[output decoding error] {e}\n[command already executed; exit code: {result.exit_code}]"
     return f"{text}\n[exit code: {result.exit_code}]"
 
 
@@ -288,6 +301,7 @@ def legacy_click(machine: str, x: int, y: int, button: int = 1) -> str:
 def legacy_key(machine: str, key: str) -> str:
     """Press a single key or key combo on the named legacy machine, e.g.
     'enter', 'esc', 'tab', 'ctrl-alt-del', 'alt-tab', 'a', 'shift-a'.
+    Key names/characters must be ASCII; native keyboard layout limits apply.
     A synthetic ctrl-alt-del will not unlock a locked/secure-desktop
     screen - that's intentional OS behavior, not a bug here."""
     try:
@@ -303,10 +317,11 @@ def legacy_key(machine: str, key: str) -> str:
 
 @srv.tool()
 def legacy_type(machine: str, text: str) -> str:
-    """Type a string of plain text (no newlines - use legacy_key('enter')
+    """Type a string of ASCII text (no newlines - use legacy_key('enter')
     for that) on the named legacy machine, one keystroke per character.
-    Characters that don't map to a key on the agent's keyboard layout are
-    silently skipped. For special keys/combos use legacy_key."""
+    Non-ASCII is rejected before sending; use clipboard text where supported
+    or transfer a file. Native keyboard layout/injection limits still apply.
+    For special keys/combos use legacy_key."""
     try:
         _agent(machine).type_text(text)
     except (MachineConfigError, AgentAuthError) as e:
@@ -860,7 +875,15 @@ def legacy_capabilities(machine: str) -> str:
     Does not probe mutating commands. Profiles describe this source tree;
     older/custom builds may differ. Unknown platforms get no inferred support."""
     try:
-        return json.dumps(describe_capabilities(_agent(machine).sysinfo()), indent=2)
+        agent = _agent(machine)
+        report = describe_capabilities(agent.sysinfo())
+        report["text_encodings"] = {
+            "text_encoding": agent.text_encoding,
+            "exec_command_encoding": agent.exec_command_encoding,
+            "file_encoding": agent.file_encoding,
+            "exec_encoding": agent.exec_encoding,
+        }
+        return json.dumps(report, indent=2)
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:

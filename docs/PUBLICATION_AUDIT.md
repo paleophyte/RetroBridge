@@ -185,12 +185,13 @@ does not implement reboot. These are not interchangeable “power off” tools.
   no total runtime cap. An authenticated client making continued progress
   can also retain the server; fairness and minimum transfer rates remain
   separate work.
-- **Text encoding is not portable Unicode.** The bridge uses UTF-8 while
-  target APIs consume ANSI/OEM/Mac encodings. Non-ASCII filenames, titles,
-  output, and input can be corrupted. ASCII-only checks do not verify
-  localized systems. The client-framing fix now rejects non-ASCII tokens
-  instead of silently dropping bytes; the earlier inventory fix disabled
-  ConfigParser interpolation so percent characters remain literal.
+- **Text conversion fixed; localized-system limits remain (2026-09-20).**
+  The bridge now uses explicit per-machine codecs for general text, filenames,
+  EXEC input, and EXEC output, defaulting to strict ASCII. It rejects
+  unrepresentable input and reports undecodable output without replacement.
+  TYPE/KEY remain ASCII only; DBCS, automatic locale negotiation, and localized
+  native startup/update paths remain unverified. A wrong single-byte codec
+  can still decode without error. See [text encodings](TEXT_ENCODINGS.md).
 - **MCP coverage expanded (2026-09-20).** All listed gaps now have wrappers:
   Win16 WINMSG/POSTMSG/LBGETTEXT and WINLIST's parent argument; NetWare
   SCREENS/AUTOEXEC/DEBUG/UPDATE; OS/2 WINCLOSE; Mac DBLCLICK/MOUSEPOS and
@@ -1397,3 +1398,41 @@ either live NetWare server. OS/2 successful window closure and enabling debug
 were not repeated live; forwarding/error/query paths and host routing tests
 cover those wrappers. Native agent behavior, non-ASCII conversion, execution
 occupancy, and stronger cross-platform identity/negotiation remain separate work.
+
+## Follow-up: explicit text encodings (2026-09-20)
+
+The shared client and MCP bridge now use validated, explicit codecs instead
+of implicit UTF-8 and replacement decoding. General text, GET/PUT filenames,
+EXEC input, and EXEC output can have different settings. ASCII is the safe
+default. Invalid/unrepresentable command text is rejected before connection;
+binary contents are unchanged. EXEC output decoding failures retain the exit
+status and explicitly say that the command already ran. A per-call output
+decoder handles programs deliberately producing another encoding. TYPE/KEY
+reject non-ASCII before native handlers can drop or partially inject it.
+See [text encodings](TEXT_ENCODINGS.md) for migration and remaining limits.
+
+All 70 host tests passed, including exact wire bytes across code pages,
+independent filename/command/output codecs, encoded byte limits, codec/config
+validation, strict private errors, line-delimited records containing Unicode
+line-separator characters, and untouched binary transfers. Fresh MCP SDK
+2.0.0 and 2.2.0 sessions exposed all 38 tools, accepted the output-encoding
+schema, returned selected codecs, and successfully decoded accented EXEC
+output on Windows NT/9x, Win16, DOS and OS/2. A Windows XP command explicitly
+producing UTF-16LE passed through the per-call decoder.
+
+Live native probes reported ANSI 1252/OEM 437 on six Win32 guests. Their
+accented filenames, EXEC output, and temporary registry names/values passed
+round-trip checks. FreeDOS reported active page 858; two newer OS/2 guests
+reported 437. All three passed accented filename/binary and EXEC checks.
+Win16 required ANSI 1252 for window text/WinExec input, but OEM 437 for the
+Watcom GET/PUT paths. Its corrected filename round trip, shell deletion,
+accented WINLIST title, and native LBGETTEXT fixture passed. A Roman-script
+System 7 guest passed a Mac Roman filename and 256-byte binary round trip;
+Finder displayed the accent correctly.
+
+The private inventory was backed up and updated for these 11 confirmed
+guests without changing credentials. OS/2 1.3 returned no usable active-page
+identifier; it and two NetWare guests retain ASCII pending locale verification.
+These tests do not certify every locale, application-output encoding, native
+startup/update path, or keyboard layout. DBCS and automatic locale negotiation
+remain unsupported. No native production binary changes were required.

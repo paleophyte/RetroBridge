@@ -140,6 +140,7 @@ class BridgeCoverageTests(unittest.TestCase):
         for info in ({}, {"os_family": "future"}, {"os_family": "os2", "agent": "custom"}):
             self.assertEqual(describe(info)["profile"], "unknown")
         agent = Mock(); agent.sysinfo.return_value = dict(self.info("mac68k"), token="sensitive-value")
+        agent.text_encoding = agent.exec_encoding = agent.exec_command_encoding = agent.file_encoding = "mac-roman"
         with patch.object(server, "_agent", return_value=agent):
             result = server.legacy_capabilities("fixture")
         self.assertNotIn("sensitive-value", result)

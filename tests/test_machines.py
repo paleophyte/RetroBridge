@@ -125,7 +125,8 @@ class InventoryTests(unittest.TestCase):
             client.assert_not_called()
             server._agent("legacy")
             client.assert_called_once_with("192.0.2.1", 2222, "example%literal-token",
-                                           max_command_bytes=510, max_response_bytes=67108864)
+                                           max_command_bytes=510, max_response_bytes=67108864,
+                                           text_encoding="ascii", exec_encoding="ascii", exec_command_encoding="ascii", file_encoding="ascii")
 
     def test_protocol_limits(self):
         m = self.load("[legacy]\nhost=192.0.2.1\nexec_token=example\n"

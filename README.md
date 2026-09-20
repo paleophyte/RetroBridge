@@ -163,10 +163,14 @@ host = 192.168.56.10
 exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
 max_command_bytes = 4094
+text_encoding = cp1252
+exec_encoding = cp437
 
 [winxp-1]
 host = 192.168.56.11
 exec_token = a-different-long-random-shared-secret
+text_encoding = cp1252
+exec_encoding = cp437
 ```
 
 The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
@@ -174,8 +178,16 @@ The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
 to `2222`).
 
 The shared client rejects CR, LF, and NUL in command arguments and tokens,
-and tabs inside registry fields. Limits count encoded UTF-8 bytes, including
+and tabs inside registry fields. Limits count bytes in the selected encoding, including
 the command name and separators but excluding the final LF:
+
+Text defaults to strict ASCII. Set `text_encoding` for the guest's general
+text and `exec_encoding` for captured shell output (the examples above assume
+English Windows ANSI 1252/OEM 437). Win16 also needs `file_encoding = cp437`
+for DOS filenames on that locale. `exec_command_encoding` can override EXEC
+input separately. `legacy_exec` accepts a per-call `output_encoding` override.
+Binary transfers remain bytes; TYPE/KEY are ASCII only. See
+[text encodings](docs/TEXT_ENCODINGS.md) for configuration and limitations.
 
 | Setting | Default | Use |
 |---|---|---|

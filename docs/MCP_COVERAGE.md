@@ -73,7 +73,10 @@ Mac `DRAG`, `DRAGSTAT`, and `DRAGRESET` remain experimental: dragging does
 not reliably terminate. Disabled Mac CLIPGET/CLIPSET/WINLIST operations do
 not acquire functionality through the bridge.
 
-Non-ASCII ANSI/OEM/Mac text conversion, single-client execution occupancy,
-and consistent native capability/startup identity fields remain separate
-work. Read the [publication audit](PUBLICATION_AUDIT.md) and per-agent READMEs
+Explicit ANSI/OEM/Mac conversion is supported through per-machine settings;
+`legacy_capabilities` reports the selected codecs, and `legacy_exec` accepts
+an optional output decoder. See [text encodings](TEXT_ENCODINGS.md). Keyboard
+input remains ASCII only; DBCS and automatic locale negotiation are unsupported.
+Single-client execution occupancy and consistent native capability/startup
+identity fields remain separate work. Read the [publication audit](PUBLICATION_AUDIT.md) and per-agent READMEs
 for live validation and other platform limits.

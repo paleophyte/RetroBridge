@@ -10,6 +10,7 @@ from __future__ import annotations
 import configparser
 from dataclasses import dataclass
 from pathlib import Path
+from text_codec import normalize_encoding
 
 
 class MachineConfigError(RuntimeError):
@@ -26,6 +27,10 @@ class MachineConfig:
     agent_enabled: bool = True
     max_command_bytes: int = 510
     max_response_bytes: int = 64 * 1024 * 1024
+    text_encoding: str = "ascii"
+    exec_encoding: str | None = None
+    exec_command_encoding: str | None = None
+    file_encoding: str | None = None
 
 
 def load_machines(path: Path) -> dict[str, MachineConfig]:
@@ -57,6 +62,7 @@ def load_machines(path: Path) -> dict[str, MachineConfig]:
         token = ""
         port = 2222
         limits = {"max_command_bytes": 510, "max_response_bytes": 64 * 1024 * 1024}
+        encodings = {"text_encoding": "ascii", "exec_encoding": "ascii", "exec_command_encoding": "ascii", "file_encoding": "ascii"}
         if agent_enabled:
             token = section.get("exec_token", "")
             if not token:
@@ -75,6 +81,12 @@ def load_machines(path: Path) -> dict[str, MachineConfig]:
                 if not 1 <= value <= maximum:
                     raise MachineConfigError(f"[{name}] in {path} has invalid '{key}' (use 1-{maximum})")
                 limits[key] = value
+            for key in encodings:
+                try:
+                    encodings[key] = normalize_encoding(
+                        section.get(key, encodings["text_encoding"]), output=key == "exec_encoding")
+                except ValueError:
+                    raise MachineConfigError(f"[{name}] in {path} has invalid '{key}'; see docs/TEXT_ENCODINGS.md") from None
         machines[name] = MachineConfig(
             name=name,
             host=host,
@@ -83,5 +95,6 @@ def load_machines(path: Path) -> dict[str, MachineConfig]:
             vm_name=section.get("vm_name"),
             agent_enabled=agent_enabled,
             **limits,
+            **encodings,
         )
     return machines

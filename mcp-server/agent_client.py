@@ -47,6 +47,7 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from text_codec import normalize_encoding, decode_text
 
 
 @dataclass
@@ -94,11 +95,16 @@ class AgentClient:
 
     max_command_bytes excludes LF; 510 is portable, 4094 is for Win32 only.
     max_response_bytes bounds each SIZE payload and cumulative EXEC output.
-    These limits do not add a total command deadline or change target encodings.
+    text_encoding applies to commands and textual replies (default ASCII).
+    EXEC and GET/PUT paths can use separate encodings; file contents stay bytes.
+    These settings do not add a total command deadline or change the target OS.
     """
     def __init__(self, host: str, port: int, token: str, timeout: float = 15.0,
                  *, max_command_bytes: int = DEFAULT_MAX_COMMAND_BYTES,
-                 max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES):
+                 max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+                 text_encoding: str = "ascii", exec_encoding: str | None = None,
+                 exec_command_encoding: str | None = None,
+                 file_encoding: str | None = None):
         self.host = host
         self.port = port
         self.token = token
@@ -109,6 +115,21 @@ class AgentClient:
             raise AgentInputError("max_response_bytes must be an integer from 1 to 2147483647")
         self.max_command_bytes = max_command_bytes
         self.max_response_bytes = max_response_bytes
+        try:
+            self.text_encoding = normalize_encoding(text_encoding)
+            self.exec_encoding = normalize_encoding(exec_encoding if exec_encoding is not None else self.text_encoding, output=True)
+            self.exec_command_encoding = normalize_encoding(exec_command_encoding if exec_command_encoding is not None else self.text_encoding)
+            self.file_encoding = normalize_encoding(file_encoding if file_encoding is not None else self.text_encoding)
+        except ValueError as e:
+            raise AgentInputError(str(e)) from None
+
+    def decode_text(self, data: bytes, *, exec_output: bool = False) -> str:
+        """Strict text conversion; EXEC's raw result bytes remain available."""
+        try:
+            return decode_text(data, self.exec_encoding if exec_output else self.text_encoding,
+                               "EXEC output" if exec_output else "agent text")
+        except ValueError as e:
+            raise AgentProtocolError(str(e)) from None
 
     @staticmethod
     def _field(value: str, name: str, *, registry: bool = False) -> str:
@@ -126,19 +147,24 @@ class AgentClient:
             if type(value) is not int or not -2147483648 <= value <= 4294967295:
                 raise AgentInputError(f"{name} must be a 32-bit integer")
 
-    def _encode_command(self, line: str) -> bytes:
+    def _encode_command(self, line: str, *, encoding: str | None = None) -> bytes:
         self._field(line, "command")
+        encoding = encoding or self.text_encoding
         try:
-            data = line.encode("utf-8")
+            data = line.encode(encoding, "strict")
+            if data.decode(encoding, "strict") != line:
+                raise AgentInputError("command cannot round-trip through configured encoding")
         except UnicodeEncodeError:
-            raise AgentInputError("command contains invalid Unicode") from None
+            raise AgentInputError(f"command cannot be represented in {encoding}; nothing sent") from None
+        if any(byte in data for byte in (b"\r", b"\n", b"\0")):
+            raise AgentInputError("encoded command contains a protocol delimiter")
         if len(data) > self.max_command_bytes:
             raise AgentInputError(f"command exceeds {self.max_command_bytes} encoded bytes (excluding LF)")
         return data + b"\n"
 
     @contextmanager
-    def _command_session(self, line: str):
-        command = self._encode_command(line)  # Validate before auth or connecting.
+    def _command_session(self, line: str, *, encoding: str | None = None):
+        command = self._encode_command(line, encoding=encoding)  # Validate before auth or connecting.
         sock = self._connect()
         try:
             sock.sendall(command)
@@ -169,8 +195,7 @@ class AgentClient:
             raise
         return sock
 
-    @staticmethod
-    def _recv_line(sock: socket.socket) -> str:
+    def _recv_line(self, sock: socket.socket) -> str:
         chunks = bytearray()
         while True:
             b = sock.recv(1)
@@ -185,7 +210,7 @@ class AgentClient:
             chunks.pop()
         if b"\0" in chunks or b"\r" in chunks:
             raise AgentProtocolError("invalid control byte in response line")
-        return chunks.decode("ascii", "replace")
+        return self.decode_text(bytes(chunks))
 
     @staticmethod
     def _recv_exact(sock: socket.socket, n: int,
@@ -213,7 +238,7 @@ class AgentClient:
         return self._integer(text, maximum=self.max_response_bytes)
 
     def exec(self, cmdline: str) -> ExecResult:
-        with self._command_session(f"EXEC {cmdline}") as sock:
+        with self._command_session(f"EXEC {cmdline}", encoding=self.exec_command_encoding) as sock:
             output = bytearray()
             exit_code = -1
             while True:
@@ -254,7 +279,7 @@ class AgentClient:
         Returns the number of bytes sent."""
         self._field(remote_path, "remote_path")
         data = Path(local_path).read_bytes()
-        with self._command_session(f"PUT {remote_path} {len(data)}") as sock:
+        with self._command_session(f"PUT {remote_path} {len(data)}", encoding=self.file_encoding) as sock:
             sock.sendall(data)
             reply = self._recv_line(sock)
             if reply != "OK":
@@ -264,7 +289,7 @@ class AgentClient:
     def get(self, remote_path: str, local_path: str | Path) -> int:
         """Download remote_path from the agent to local_path (on this
         machine). Returns the number of bytes received."""
-        with self._command_session(f"GET {remote_path}") as sock:
+        with self._command_session(f"GET {remote_path}", encoding=self.file_encoding) as sock:
             header = self._recv_line(sock)
             if header.startswith("ERR:"):
                 raise AgentProtocolError(header)
@@ -361,12 +386,17 @@ class AgentClient:
         parts: list[str] = []
         for k in keyspecs:
             self._field(k, "keyspec")
+            if not k.isascii():
+                raise AgentInputError("KEY supports ASCII key names only")
             parts.extend(k.replace(",", " ").split())
         if not parts:
             raise AgentInputError("key() requires at least one keyspec")
         self._simple_command("KEY " + " ".join(parts))
 
     def type_text(self, text: str) -> None:
+        self._field(text, "text")
+        if not text.isascii():
+            raise AgentInputError("TYPE supports ASCII only; use clipboard_set where supported or transfer a file")
         if "\n" in text or "\r" in text:
             raise AgentInputError("type_text() text must not contain newlines - use key('enter') instead")
         self._simple_command(f"TYPE {text}")
@@ -380,9 +410,10 @@ class AgentClient:
             if not header.startswith("SIZE:"):
                 raise AgentProtocolError(f"unexpected SCREENS response: {header!r}")
             size = self._size(header[5:])
-            text = self._recv_exact(sock, size, self.max_response_bytes).decode("utf-8", "replace")
+            text = self.decode_text(self._recv_exact(sock, size, self.max_response_bytes))
             out: list[tuple[int, bool, str]] = []
-            for line in text.splitlines():
+            for line in text.split("\n"):
+                line = line.removesuffix("\r")
                 parts = line.split("\t", 2)
                 if len(parts) != 3:
                     continue
@@ -401,9 +432,10 @@ class AgentClient:
             if not header.startswith("SIZE:"):
                 raise AgentProtocolError(f"unexpected PSLIST response: {header!r}")
             size = self._size(header[5:])
-            text = self._recv_exact(sock, size, self.max_response_bytes).decode("utf-8", "replace")
+            text = self.decode_text(self._recv_exact(sock, size, self.max_response_bytes))
             procs = []
-            for line in text.splitlines():
+            for line in text.split("\n"):
+                line = line.removesuffix("\r")
                 pid_str, _, name = line.partition("\t")
                 if not pid_str.strip():
                     continue
@@ -426,9 +458,10 @@ class AgentClient:
             if not header.startswith("SIZE:"):
                 raise AgentProtocolError(f"unexpected SYSINFO response: {header!r}")
             size = self._size(header[5:])
-            text = self._recv_exact(sock, size, self.max_response_bytes).decode("utf-8", "replace")
+            text = self.decode_text(self._recv_exact(sock, size, self.max_response_bytes))
             info = {}
-            for line in text.splitlines():
+            for line in text.split("\n"):
+                line = line.removesuffix("\r")
                 key, sep, value = line.partition("=")
                 if sep:
                     info[key] = value
@@ -494,9 +527,10 @@ class AgentClient:
             if not header.startswith("SIZE:"):
                 raise AgentProtocolError(f"unexpected WINLIST response: {header!r}")
             size = self._size(header[5:])
-            text = self._recv_exact(sock, size, self.max_response_bytes).decode("utf-8", "replace")
+            text = self.decode_text(self._recv_exact(sock, size, self.max_response_bytes))
             windows = []
-            for line in text.splitlines():
+            for line in text.split("\n"):
+                line = line.removesuffix("\r")
                 parts = line.split("\t", 6)
                 if len(parts) != 7:
                     continue
@@ -585,7 +619,7 @@ class AgentClient:
                 return self._integer(header[6:])
             if header.startswith("SIZE:"):
                 size = self._size(header[5:])
-                return self._recv_exact(sock, size, self.max_response_bytes).decode("utf-8", "replace")
+                return self.decode_text(self._recv_exact(sock, size, self.max_response_bytes))
             raise AgentProtocolError(f"unexpected REGGET response: {header!r}")
 
     def reg_set(self, root: str, subkey: str, value_name: str, value_type: str, data: str) -> None:

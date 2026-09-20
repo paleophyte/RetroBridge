@@ -92,6 +92,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(len(sock.sent[1]), limit + 1)
             self.reject("exec", command + "x")
         self.client = AgentClient("test.invalid", 2222, "private-test-token")
+        self.client = AgentClient("test.invalid", 2222, "private-test-token", text_encoding="utf-8")
         # 5-byte prefix + 252 two-byte characters + one ASCII byte = 510.
         command = "\u00e9" * 252 + "x"
         sock = FakeSocket(b"OK\nEXIT:0\n")

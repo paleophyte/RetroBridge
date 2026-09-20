@@ -74,5 +74,5 @@ def describe(info: dict[str, str]) -> dict:
         "identity": {key: info[key] for key in ("os_family", "agent", "agent_build", "agent_started") if key in info},
         "tools": sorted(tools),
         "limitations": NOTES[profile],
-        "text_encoding": "Bridge uses UTF-8 for payload text; legacy ANSI/OEM/Mac encodings remain a limitation.",
+        "text_encoding_policy": "Explicit per-machine codecs with strict conversion; default ASCII. TYPE/KEY remain ASCII-only; files stay raw bytes. See docs/TEXT_ENCODINGS.md.",
     }

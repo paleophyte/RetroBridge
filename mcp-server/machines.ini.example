@@ -1,6 +1,10 @@
 # One section per legacy machine. Section name is the `machine` argument
 # every legacy_* MCP tool takes. Copy this file to machines.ini (gitignored,
 # since exec_token is a secret) and fill in your real machines.
+# Text defaults to strict ASCII. These Windows examples assume English
+# ANSI 1252 / OEM 437; confirm guest locale. See docs/TEXT_ENCODINGS.md.
+# exec_encoding, exec_command_encoding, and file_encoding inherit text_encoding.
+# Win16 on that locale needs file_encoding=cp437 for GET/PUT filenames.
 
 [win2k-1]
 host = 192.168.56.10
@@ -8,6 +12,8 @@ exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
 # Only confirmed Win32 agents have the larger 4096-byte command buffer.
 max_command_bytes = 4094
+text_encoding = cp1252
+exec_encoding = cp437
 # Optional response/EXEC-output cap in bytes (default 64 MiB):
 # max_response_bytes = 67108864
 
@@ -16,6 +22,8 @@ max_command_bytes = 4094
 host = 192.168.56.11
 exec_token = a-different-long-random-shared-secret
 max_command_bytes = 4094
+text_encoding = cp1252
+exec_encoding = cp437
 
 # FreeDOS guest running agent-dos/llm_agent.exe (Watt-32 + packet driver).
 # Same protocol; Windows-only tools return ERR from the DOS agent.
@@ -23,16 +31,26 @@ max_command_bytes = 4094
 [freedos-1]
 host = 192.168.56.20
 exec_token = change-me-freedos-shared-secret
+# Confirm CHCP first; some installations use 850/858 instead of 437.
+# text_encoding = cp437
 
 # OS/2 2.11 guest running agent-os2/llm_agent.exe (TCPIPDLL / Socket/MPTS).
 [os2-1]
 host = 192.168.56.21
 exec_token = change-me-os2-shared-secret
+# Set text_encoding to the guest's confirmed active code page.
 
 # NetWare 3.12+ guest running agent-netware/LLMAGENT.NLM (CLIB BSD sockets).
 [netware-1]
 host = 192.168.56.30
 exec_token = change-me-netware-shared-secret
+# Set text_encoding only after confirming the server's locale/code page.
+
+# Classic Mac with the Roman script system (other scripts need verification).
+[mac-1]
+host = 192.168.56.31
+exec_token = REPLACE_WITH_UNIQUE_MAC_TOKEN
+text_encoding = mac_roman
 
 # Inventory-only infrastructure host (for example, a Linux QEMU host).
 # Listed by the bridge, but agent tools cannot target it; use SSH separately.
