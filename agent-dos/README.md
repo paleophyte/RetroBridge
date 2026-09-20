@@ -207,3 +207,11 @@ Against a reachable FreeDOS guest with the agent listening:
 | `LLMSTART.BAT` | Timed startup choice; defaults to Agent, returns to console on exit |
 | `LLMAGENT.INI.example` | `port=` / `token=` (guest name: `LLMAGENT.INI`) |
 | `wattcp.cfg.example` | Watt-32 IP + packet vector |
+
+## Resident execution experiment
+
+The normal agent still runs EXEC synchronously and cannot service commands
+while its DOS child runs. A separate [resident monitor probe](experimental/README.md)
+tests timer polling and fixed foreground workloads. It is not a TSR or a
+supported agent mode: child-time network progress failed and the MS-DOS
+disk probe stalled. Do not replace the production binary/startup with it.

@@ -1470,3 +1470,21 @@ service assumption remains a documented deployment limitation.
 
 See [long-running commands](LONG_RUNNING_COMMANDS.md) for current semantics,
 verification, recovery requirements, and the separate DOS experiment.
+
+### DOS resident probe outcome (2026-09-20)
+
+A separate authenticated probe exercises the parent-resident timer idea;
+the production DOS agent/startup remains unchanged. Both DOS variants sent
+heartbeats in the parent-only control, but the poller stopped calling its
+callback during child execution. FreeDOS finished CPU/disk/keyboard-poll
+workloads and restored vectors; MS-DOS 6.22 stalled in the disk phase and
+required resetting the test VM. Ordinary compiler stack checks also failed
+on the private interrupt stack during an earlier control; the ISR module
+is now compiled separately with the appropriate interrupt-code settings.
+
+The original FreeDOS and dual-boot startup files were restored by one-shot
+wrappers before the experiment. FreeDOS returned to its normal agent; the
+dual-boot guest was returned to the verified Win16 build. Experimental files
+were removed. The probe is committed as reproducible experimental work, not
+a supported TSR or a fix for DOS's blocking EXEC. See its
+[scope, results, and recovery requirements](../agent-dos/experimental/README.md).

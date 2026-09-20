@@ -331,3 +331,18 @@ output subsequently contained its own start/end markers, without the second
 command's text. The initial OS/2 sleep-count loop exceeded its intended
 60-second deadline; the system-clock version fixed that live discrepancy.
 An OS/2 1.3 test child preserved exit status 7. Test files were removed.
+
+## DOS prototype outcome
+
+The separate [resident monitor experiment](../agent-dos/experimental/README.md)
+was built and live-tested on FreeDOS and MS-DOS 6.22. An authenticated parent
+control sent two heartbeats with 36 timer callbacks, but callbacks stopped
+during child execution even when a separate observer reported InDOS zero.
+FreeDOS completed all three workloads with intact parent canaries and
+restored vectors; MS-DOS stalled in the disk phase and required a reset.
+Both machines were returned to their normal agents, with original startup
+files/configuration restored and experiment files removed.
+
+This completes the feasibility prototype, not a production TSR. DOS has no
+new advertised job capability. Investigating the child/poller interaction
+and the disk stall is required before proceeding to a usable resident agent.
