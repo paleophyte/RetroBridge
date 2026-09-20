@@ -102,10 +102,14 @@ USHORT APIENTRY16 DosQProcStatus(PVOID pBuf, USHORT cbBuf);
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <tcpustd.h>
+#include <sys/ioctl.h>
+/* SO32DLL's original IBM interface uses the 16-bit command number;
+ * Watcom's newer BSD FIONBIO includes direction/size bits it rejects. */
+#define IBM_FIONBIO 0x667eUL
 
 /*
  * OS/2 2.x MPTS (SO32DLL) uses 4.3-style sockaddr_in (no sin_len).
- * Watcom's <netinet/in.h> is 4.4-style with sin_len — using that makes
+ * Watcom's <netinet/in.h> is 4.4-style with sin_len â€” using that makes
  * bind() fail even on a quiet port after reboot.
  */
 struct os2_sockaddr_in {
@@ -147,36 +151,71 @@ static void cpu_idle(void) {
     DosSleep(20);
 }
 
+static unsigned long network_ticks(void) {
+    ULONG ticks = 0;
+    DosQuerySysInfo(QSV_MS_COUNT, QSV_MS_COUNT, &ticks, sizeof(ticks));
+    return ticks;
+}
+#define NET_DEADLINE(sec) (network_ticks() + (sec) * 1000UL)
+#define NET_EXPIRED(d) ((long)(network_ticks() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 static int send_all(const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     while (sent < len) {
-        int n = (int)send(g_client, buf + sent, (size_t)(len - sent), 0);
-        if (n <= 0) return -1;
-        sent += n;
+        int n;
+        if (net_expired(deadline)) return net_fail();
+        n = send(g_client, buf + sent, (size_t)(len - sent), 0);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else cpu_idle(); /* old IBM stacks can report zero progress */
     }
-    return 0;
+    return net_failed ? -1 : 0;
 }
 
 static int send_cstr(const char *text) {
     return send_all(text, (int)strlen(text));
 }
 
+static int recv_some(char *out, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    for (;;) {
+        int n;
+        if (net_expired(deadline)) return net_fail();
+        n = recv(g_client, out, len, 0);
+        if (n > 0) return n;
+        if (n == 0) return net_fail();
+        cpu_idle();
+    }
+}
+
 static int recv_byte(char *out) {
-    int n = (int)recv(g_client, out, 1, 0);
-    if (n == 1) return 0;
-    return -1;
+    return recv_some(out, 1) == 1 ? 0 : -1;
 }
 
 static int recv_line(char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        if (recv_byte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_byte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void dirname_of(const char *path, char *out, int outlen) {
@@ -402,7 +441,7 @@ static int run_exec(const char *cmdline) {
     /*
      * DosExecPgm/system() are unreliable after DosStartSession relaunch.
      * Independent StartSession works (see EXECDETACH) but returns pid=0 and
-     * TermQ never fires here — so wrap the command in a .CMD that writes a
+     * TermQ never fires here â€” so wrap the command in a .CMD that writes a
      * done flag when finished, then poll for that flag.
      */
     f = fopen(cmdpath, "wb");
@@ -496,22 +535,21 @@ static int handle_put(char *args) {
     remaining = size;
     while (remaining > 0) {
         int want = remaining < (long)sizeof(g_iobuf) ? (int)remaining : (int)sizeof(g_iobuf);
-        int got = 0;
-        while (got < want) {
-            char c;
-            if (recv_byte(&c) < 0) {
-                openFailed = 1;
-                remaining = 0;
-                break;
-            }
-            g_iobuf[got++] = c;
+        int got = recv_some(g_iobuf, want);
+        if (got <= 0) {
+            openFailed = 1;
+            break;
         }
         if (got > 0 && !openFailed) {
             if ((int)fwrite(g_iobuf, 1, got, f) != got) openFailed = 1;
         }
         remaining -= got;
     }
-    if (f) fclose(f);
+    if (f) {
+        /* Buffered disk errors may surface only at flush/close. */
+        if (fflush(f) != 0 || ferror(f)) openFailed = 1;
+        if (fclose(f) != 0) openFailed = 1;
+    }
     if (openFailed) {
         send_cstr("ERR:write failed\n");
         return -1;
@@ -675,7 +713,7 @@ static int handle_pslist(void) {
     return 0;
 }
 
-/* PSKILL <pid>: DosKillProcess — same trust model as EXEC. */
+/* PSKILL <pid>: DosKillProcess â€” same trust model as EXEC. */
 static void handle_pskill(const char *args) {
     PID pid;
     APIRET rc;
@@ -761,11 +799,11 @@ static void scrub_field(char *s) {
 }
 
 /*
- * WINLIST: same wire format as Windows agent —
+ * WINLIST: same wire format as Windows agent â€”
  *   "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n"
  * Coords are top-left origin (match SCREENSHOT / CLICK).
  *
- * Enumerate via WinQuerySwitchList (Window List entries) — a plain
+ * Enumerate via WinQuerySwitchList (Window List entries) â€” a plain
  * WinBeginEnumWindows walk from a VIO agent sees no titled PM frames.
  */
 static int handle_winlist(void) {
@@ -873,7 +911,7 @@ done:
     return rc_out;
 }
 
-/* ---- SCREENSHOT: PM desktop via WinGetScreenPS → 24-bit BMP ---- */
+/* ---- SCREENSHOT: PM desktop via WinGetScreenPS â†’ 24-bit BMP ---- */
 
 static int handle_screenshot(void) {
     HAB hab = NULLHANDLE;
@@ -1132,10 +1170,10 @@ static void handle_clipset(const char *text) {
 
 /*
  * CLICK <x> <y> <button>: wire coords are top-left origin (same as our BMP
- * screenshots). PM pointer coords are bottom-left — convert before use.
+ * screenshots). PM pointer coords are bottom-left â€” convert before use.
  *
- * Cross-session VIO→PM: also BM_CLICK the window under the pointer
- * (do not walk parents — that hits a dialog's default pushbutton).
+ * Cross-session VIOâ†’PM: also BM_CLICK the window under the pointer
+ * (do not walk parents â€” that hits a dialog's default pushbutton).
  */
 static void handle_click(const char *args) {
     int x = 0, y = 0, button = 1;
@@ -1168,7 +1206,7 @@ static void handle_click(const char *args) {
     cy = WinQuerySysValue(HWND_DESKTOP, SV_CYSCREEN);
     if (cy <= 0) cy = 480;
     ptlScreen.x = x;
-    /* Match screenshot top-left ↔ PM bottom-left (no off-by-one). */
+    /* Match screenshot top-left â†” PM bottom-left (no off-by-one). */
     ptlScreen.y = cy - y;
     ptl = ptlScreen;
 
@@ -1191,7 +1229,7 @@ static void handle_click(const char *args) {
     WinSetActiveWindow(HWND_DESKTOP, hwnd);
     WinFocusChange(HWND_DESKTOP, hwnd, 0);
 
-    /* Only BM_CLICK the window under the pointer — walking parents hits
+    /* Only BM_CLICK the window under the pointer â€” walking parents hits
      * the dialog's default pushbutton (e.g. Search instead of Cancel). */
     WinPostMsg(hwnd, BM_CLICK, 0, 0);
 
@@ -1241,7 +1279,7 @@ static int close_frames_by_title(const char *want) {
 
 typedef struct { const char *name; USHORT vk; } Os2KeyName;
 
-/* Named keys for KEY <keyspec> — OS/2 VK_* codes (not Win32). */
+/* Named keys for KEY <keyspec> â€” OS/2 VK_* codes (not Win32). */
 static const Os2KeyName OS2_KEY_NAMES[] = {
     {"enter", VK_ENTER}, {"return", VK_ENTER},
     {"esc", VK_ESC}, {"escape", VK_ESC},
@@ -1297,7 +1335,7 @@ static HWND focus_hwnd(void) {
 }
 
 /*
- * KEY <keyspec>: same grammar as Windows agent — "enter", "a", "shift-a",
+ * KEY <keyspec>: same grammar as Windows agent â€” "enter", "a", "shift-a",
  * "ctrl-c", "alt-f4", "esc". Injects WM_CHAR to the focus window.
  * Esc also tries dialog Cancel / close titled Search (legacy helper).
  */
@@ -1480,6 +1518,7 @@ static void handle_winclose(const char *title) {
 }
 
 static void handle_client(void) {
+    net_reset();
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
         send_cstr("FAIL\n");
@@ -1545,7 +1584,7 @@ static int server_main(void) {
     printf("llm_agent-os2: sock_init...\n");
     fflush(stdout);
     if (sock_init() != 0) {
-        printf("sock_init failed — is SO32DLL/TCP32DLL on LIBPATH and INET up?\n");
+        printf("sock_init failed â€” is SO32DLL/TCP32DLL on LIBPATH and INET up?\n");
         return 1;
     }
 
@@ -1585,6 +1624,15 @@ static int server_main(void) {
         if (g_client < 0) {
             cpu_idle();
             continue;
+        }
+        {
+            int nonblocking = 1;
+            if (os2_ioctl(g_client, IBM_FIONBIO, (char *)&nonblocking,
+                             sizeof(nonblocking)) < 0) {
+                soclose(g_client);
+                g_client = -1;
+                continue;
+            }
         }
         handle_client();
         soclose(g_client);

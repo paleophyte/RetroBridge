@@ -1,31 +1,54 @@
-# NetWare 4.x+ build (Watcom static RTL)
+# NetWare 4.x+ build (Novell CLIB)
 
-**Build status (2026-09-14): currently broken.** The publication audit
-reproduced batch-file line-ending errors; after CRLF normalization in a
-private copy, linking still failed with 15 unresolved symbols, including
-`CreateScreen`, `ThreadSwitchWithDelay`, and `DownFileServer`. The import
-list needs updating for the shared source before this build can be recommended.
-The default NetWare 3.12 build did compile. See
-[the audit](../../docs/PUBLICATION_AUDIT.md) for validation scope.
-
-This is the **format-v4 / Open Watcom `clib3s`** agent build, intended for
-NetWare 4.x and later. NetWare 3.12's loader does not reliably accept these
-binaries (you get either a garbage "missing symbol" dump or
-`Invalid load file version` if the header version field is forced).
-
-The default `..\build.bat` is the NetWare 3.12-oriented path (Novell
-`prelude.obj` + CLIB imports only).
+This builds a format-v4 NLM using Novell's prelude and explicit CLIB imports.
+It shares the agent source and runtime strategy with the 3.12 build, with
+separate outputs. The corrected build has been loaded on NetWare 4.11 and
+passed authenticated PING, SYSINFO, staged UPDATE, and full binary readback.
+See the [publication audit](../../docs/PUBLICATION_AUDIT.md) for additional
+network-deadline coverage and remaining limits.
 
 ## Build
 
-From this directory (or run `build.bat` here):
+Run `build.bat` in this directory with Open Watcom installed at `C:\watcom`.
+It produces `LLMAGENT.NLM`. Keep the repository's `common/` directory beside
+the agent directories because the source includes the shared timeout policy.
 
-```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-netware\nw4
-build.bat
-```
+Requires `..\vendor\imports\clib.imp` and `prelude.obj`; run
+`..\fetch_sdk.bat` to obtain the SDK inputs. The post-link import rewrite
+uses `mcp-server\.venv\Scripts\python.exe` when available, otherwise
+`python` on PATH. Both NetWare build paths normalize Watcom's padded imports
+to classic Novell length-prefixed names. Leave the NLM header at version 4;
+changing it to version 3 is not the import-table fix.
 
-Produces `LLMAGENT.NLM` (NLM file-format version 4, linked with
-`%WATCOM%\lib386\netware\clib3s.lib`).
+## Deployment
 
-Requires `..\vendor\imports\clib.imp` (same as the 3.12 tree).
+With TCP/IP running, put the NLM and a configured `LLMAGENT.INI` in
+`SYS:SYSTEM`, then use `LOAD LLMAGENT`. Shared helpers such as `UPDATE.NLM`,
+`STUFFKEY.NLM`, and `CLIBAUX.NLM` also belong there. Follow the
+[parent README](../README.md) for configuration and staged updates.
+
+The shared network deadlines apply to this build: 10 seconds for the complete
+authentication line, 60 seconds for the next command line, and 30 seconds
+without binary I/O progress. These do not cancel executing commands.
+
+## Earlier runtime and loader failures
+
+The earlier static-runtime build could answer PING but crash during SYSINFO
+on NetWare 4.11. Its link map resolved `sprintf` to Watcom's `clib3s.lib`
+wrapper and `vsprintf` to Novell CLIB. Their `va_list` representations differ,
+so the wrapper passed an incompatible argument list to the formatter.
+The corrected build uses Novell CLIB throughout, including formatting,
+file I/O, and startup. It neither links `clib3s.lib` nor imports `vsprintf`.
+The real CLIB `ferror` function is used instead of Watcom's FILE-layout macro.
+
+After an abend, restart the guest before loading a corrected image; do not
+hot-update a suspended agent. Verify PING, SYSINFO, and another PING.
+
+A loader error containing section names such as CODE or _TEXT, or private
+variables such as `g_running`, indicates malformed import-name fields.
+Those names are not additional NLM dependencies. Rebuild with the current
+batch file and replace the deployment media before retrying.
+
+The tests cover NetWare 4.11; other 4.x releases and CLIB/TCP/IP revisions
+still need their own runtime checks. Console input, power operations, and
+forced module unload are not covered by the network-deadline tests.

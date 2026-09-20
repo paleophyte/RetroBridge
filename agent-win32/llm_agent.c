@@ -123,8 +123,8 @@ static SERVICE_STATUS g_svcStatus;
 static volatile int g_running = 1;
 /* Tracked so svc_ctrl_handler (called on the SCM's own control-dispatch
    thread, not the thread running server_main()'s loop) can force a
-   blocked accept()/recv() to return - see the STOP handling note above
-   server_main(). Small, low-consequence race on these two between
+   blocked accept() to return and interrupt a client - see the STOP handler.
+   Small, low-consequence race on these two between
    threads (no locking) is accepted deliberately: worst case a STOP
    takes one extra connection-cycle to complete, not a hang. */
 static volatile SOCKET g_listenSock = INVALID_SOCKET;
@@ -163,18 +163,53 @@ static int is_windows_9x(void) {
     return (GetVersion() & 0x80000000) != 0;
 }
 
+#define NET_DEADLINE(sec) (GetTickCount() + (sec) * 1000UL)
+#define NET_EXPIRED(d) ((long)(GetTickCount() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 /* ---- run a command line via cmd.exe /C, stream combined stdout+stderr ---- */
+static void network_idle(void) {
+    Sleep(20);
+}
+
+/* Accepted sockets are nonblocking. Never wait inside Winsock itself. */
+static int recv_some(SOCKET s, char *buf, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    for (;;) {
+        int n;
+        if (!g_running || net_expired(deadline)) return net_fail();
+        n = recv(s, buf, len, 0);
+        if (n > 0) return n;
+        if (n == 0 || WSAGetLastError() != WSAEWOULDBLOCK) return net_fail();
+        network_idle();
+    }
+}
+
 static int send_all(SOCKET s, const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    if (len < 0) goto failed;
     while (sent < len) {
-        int n = send(s, buf + sent, len - sent, 0);
-        if (n == SOCKET_ERROR || n == 0) return -1;
-        sent += n;
+        int n;
+        if (!g_running || net_expired(deadline)) goto failed;
+        n = send(s, buf + sent, len - sent, 0);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+            network_idle();
+        } else goto failed;
     }
-    return 0;
+    return net_failed ? -1 : 0;
+failed:
+    shutdown(s, 2);
+    return net_fail();
 }
 
 static int send_cstr(SOCKET s, const char *text) {
+    /* Text framing excludes the terminating NUL. Never hand-count wire
+       lengths: an extra byte becomes part of the next persistent reply. */
     return send_all(s, text, (int)strlen(text));
 }
 
@@ -434,14 +469,14 @@ static int handle_put(SOCKET s, char *args) {
     BOOL openFailed;
 
     if (!lastSpace) {
-        send(s, "ERR:bad PUT syntax\n", 20, 0);
+        send_cstr(s, "ERR:bad PUT syntax\n");
         return -1;
     }
     size = atol(lastSpace + 1);
     *lastSpace = '\0';
 
     if (size < 0) {
-        send(s, "ERR:bad size\n", 13, 0);
+        send_cstr(s, "ERR:bad size\n");
         return -1;
     }
 
@@ -454,22 +489,26 @@ static int handle_put(SOCKET s, char *args) {
         char buf[READ_CHUNK];
         while (remaining > 0) {
             int want = remaining < (long)sizeof(buf) ? (int)remaining : (int)sizeof(buf);
-            int got = recv(s, buf, want, 0);
+            int got = recv_some(s, buf, want);
             if (got <= 0) { openFailed = TRUE; break; }
             if (!openFailed) {
-                DWORD written;
-                WriteFile(hFile, buf, (DWORD)got, &written, NULL);
+                DWORD written = 0;
+                if (!WriteFile(hFile, buf, (DWORD)got, &written, NULL) ||
+                    written != (DWORD)got) openFailed = TRUE;
             }
             remaining -= got;
         }
     }
 
-    if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        if (!FlushFileBuffers(hFile)) openFailed = TRUE;
+        if (!CloseHandle(hFile)) openFailed = TRUE;
+    }
     if (openFailed) {
-        send(s, "ERR:write failed\n", 18, 0);
+        send_cstr(s, "ERR:write failed\n");
         return -1;
     }
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -479,27 +518,43 @@ static int handle_get(SOCKET s, const char *path) {
     DWORD size;
     char hdr[32];
     char buf[READ_CHUNK];
-    DWORD got;
+    DWORD got, remaining;
 
     hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        send(s, "ERR:cannot open file\n", 22, 0);
+        send_cstr(s, "ERR:cannot open file\n");
         return -1;
     }
 
     size = GetFileSize(hFile, NULL);
     if (size == INVALID_FILE_SIZE) {
         CloseHandle(hFile);
-        send(s, "ERR:cannot stat file\n", 22, 0);
+        send_cstr(s, "ERR:cannot stat file\n");
         return -1;
     }
 
     wsprintfA(hdr, "SIZE:%lu\n", (unsigned long)size);
-    send(s, hdr, (int)strlen(hdr), 0);
+    if (send_cstr(s, hdr) < 0) {
+        CloseHandle(hFile);
+        return -1;
+    }
 
-    while (ReadFile(hFile, buf, sizeof(buf), &got, NULL) && got > 0) {
-        send(s, buf, (int)got, 0);
+    remaining = size;
+    while (remaining > 0) {
+        DWORD want = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        if (!ReadFile(hFile, buf, want, &got, NULL) || got == 0) {
+            /* SIZE is already on the wire: ERR or a later PONG would be
+               mistaken for file data. Close this session on a short read. */
+            shutdown(s, SD_BOTH);
+            CloseHandle(hFile);
+            return -1;
+        }
+        if (send_all(s, buf, (int)got) < 0) {
+            CloseHandle(hFile);
+            return -1;
+        }
+        remaining -= got;
     }
 
     CloseHandle(hFile);
@@ -513,7 +568,7 @@ static int handle_get(SOCKET s, const char *path) {
 static int handle_screenshot(SOCKET s) {
     HDC hScreenDC, hMemDC;
     HBITMAP hBitmap, hOldBitmap;
-    int width, height;
+    int width, height, result;
     BITMAPINFOHEADER bi;
     BITMAPFILEHEADER bf;
     DWORD imageSize, fileSize;
@@ -522,7 +577,7 @@ static int handle_screenshot(SOCKET s) {
 
     hScreenDC = GetDC(NULL);
     if (!hScreenDC) {
-        send(s, "ERR:GetDC failed\n", 18, 0);
+        send_cstr(s, "ERR:GetDC failed\n");
         return -1;
     }
 
@@ -551,7 +606,7 @@ static int handle_screenshot(SOCKET s) {
         DeleteObject(hBitmap);
         DeleteDC(hMemDC);
         ReleaseDC(NULL, hScreenDC);
-        send(s, "ERR:capture failed\n", 20, 0);
+        send_cstr(s, "ERR:capture failed\n");
         return -1;
     }
 
@@ -562,17 +617,17 @@ static int handle_screenshot(SOCKET s) {
     bf.bfSize = fileSize;
 
     wsprintfA(hdr, "SIZE:%lu\n", (unsigned long)fileSize);
-    send(s, hdr, (int)strlen(hdr), 0);
-    send(s, (char *)&bf, sizeof(bf), 0);
-    send(s, (char *)&bi, sizeof(bi), 0);
-    send(s, (char *)pixels, (int)imageSize, 0);
+    result = (send_cstr(s, hdr) < 0 ||
+              send_all(s, (char *)&bf, sizeof(bf)) < 0 ||
+              send_all(s, (char *)&bi, sizeof(bi)) < 0 ||
+              send_all(s, (char *)pixels, (int)imageSize) < 0) ? -1 : 0;
 
     free(pixels);
     SelectObject(hMemDC, hOldBitmap);
     DeleteObject(hBitmap);
     DeleteDC(hMemDC);
     ReleaseDC(NULL, hScreenDC);
-    return 0;
+    return result;
 }
 
 /* Minimal signed-int parser, no sscanf - see the -march note in Makefile
@@ -602,7 +657,7 @@ static int handle_click(SOCKET s, const char *args) {
     if (p) p = parse_int(p, &y);
     if (p) p = parse_int(p, &button);
     if (!p) {
-        send(s, "ERR:bad CLICK syntax\n", 22, 0);
+        send_cstr(s, "ERR:bad CLICK syntax\n");
         return -1;
     }
 
@@ -621,10 +676,10 @@ static int handle_click(SOCKET s, const char *args) {
             mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
             break;
         default:
-            send(s, "ERR:bad button (use 1/2/3)\n", 28, 0);
+            send_cstr(s, "ERR:bad button (use 1/2/3)\n");
             return -1;
     }
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -690,7 +745,7 @@ static int handle_key(SOCKET s, const char *keyspec) {
         tok = strtok(NULL, "-");
     }
     if (ntok == 0) {
-        send(s, "ERR:empty key\n", 15, 0);
+        send_cstr(s, "ERR:empty key\n");
         return -1;
     }
 
@@ -699,7 +754,7 @@ static int handle_key(SOCKET s, const char *keyspec) {
         else if (_stricmp(tokens[i], "alt") == 0) alt = 1;
         else if (_stricmp(tokens[i], "shift") == 0) shift = 1;
         else {
-            send(s, "ERR:unknown modifier\n", 22, 0);
+            send_cstr(s, "ERR:unknown modifier\n");
             return -1;
         }
     }
@@ -710,13 +765,13 @@ static int handle_key(SOCKET s, const char *keyspec) {
             if (strlen(base) == 1) {
                 SHORT r = VkKeyScanA(base[0]);
                 if (r == -1) {
-                    send(s, "ERR:unmappable character\n", 26, 0);
+                    send_cstr(s, "ERR:unmappable character\n");
                     return -1;
                 }
                 vk = (BYTE)(r & 0xFF);
                 if (r & 0x0100) needShift = 1;
             } else {
-                send(s, "ERR:unknown key name\n", 22, 0);
+                send_cstr(s, "ERR:unknown key name\n");
                 return -1;
             }
         }
@@ -733,7 +788,7 @@ static int handle_key(SOCKET s, const char *keyspec) {
     if (alt) press_vk(VK_MENU, 0);
     if (ctrl) press_vk(VK_CONTROL, 0);
 
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -754,7 +809,7 @@ static int handle_type(SOCKET s, const char *text) {
         press_vk(vk, 0);
         if (needShift) press_vk(VK_SHIFT, 0);
     }
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -846,11 +901,11 @@ static int list_processes_nt(char *out, int cap) {
 static int handle_pslist(SOCKET s) {
     const int cap = 32768;
     char *buf = (char *)malloc(cap);
-    int len;
+    int len, result;
     char hdr[32];
 
     if (!buf) {
-        send(s, "ERR:out of memory\n", 19, 0);
+        send_cstr(s, "ERR:out of memory\n");
         return -1;
     }
 
@@ -858,15 +913,14 @@ static int handle_pslist(SOCKET s) {
 
     if (len < 0) {
         free(buf);
-        send(s, "ERR:process enumeration unavailable\n", 37, 0);
+        send_cstr(s, "ERR:process enumeration unavailable\n");
         return -1;
     }
 
     wsprintfA(hdr, "SIZE:%d\n", len);
-    send(s, hdr, (int)strlen(hdr), 0);
-    send(s, buf, len, 0);
+    result = (send_cstr(s, hdr) < 0 || send_all(s, buf, len) < 0) ? -1 : 0;
     free(buf);
-    return 0;
+    return result;
 }
 
 /* ---- PSKILL <pid>: no protection against killing critical processes
@@ -877,22 +931,22 @@ static int handle_pskill(SOCKET s, const char *args) {
     HANDLE hProc;
 
     if (pid == 0) {
-        send(s, "ERR:bad PID\n", 12, 0);
+        send_cstr(s, "ERR:bad PID\n");
         return -1;
     }
 
     hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
     if (!hProc) {
-        send(s, "ERR:cannot open process\n", 25, 0);
+        send_cstr(s, "ERR:cannot open process\n");
         return -1;
     }
     if (!TerminateProcess(hProc, 1)) {
         CloseHandle(hProc);
-        send(s, "ERR:terminate failed\n", 22, 0);
+        send_cstr(s, "ERR:terminate failed\n");
         return -1;
     }
     CloseHandle(hProc);
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -971,9 +1025,7 @@ static int handle_sysinfo(SOCKET s) {
     }
 
     wsprintfA(hdr, "SIZE:%d\n", len);
-    send(s, hdr, (int)strlen(hdr), 0);
-    send(s, buf, len, 0);
-    return 0;
+    return (send_cstr(s, hdr) < 0 || send_all(s, buf, len) < 0) ? -1 : 0;
 }
 
 /* NT-family requires SeShutdownPrivilege to be explicitly enabled on the
@@ -1036,21 +1088,21 @@ static int handle_power(SOCKET s, UINT flags) {
         wsprintfA(cmd, "rundll32.exe shell32.dll,SHExitWindowsEx %lu", (unsigned long)flags);
 
         if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-            send(s, "ERR:could not launch SHExitWindowsEx helper\n", 46, 0);
+            send_cstr(s, "ERR:could not launch SHExitWindowsEx helper\n");
             return -1;
         }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        send(s, "OK\n", 3, 0);
+        send_cstr(s, "OK\n");
         return 0;
     }
 
     enable_shutdown_privilege();
     if (!ExitWindowsEx(flags, 0)) {
-        send(s, "ERR:ExitWindowsEx failed\n", 26, 0);
+        send_cstr(s, "ERR:ExitWindowsEx failed\n");
         return -1;
     }
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -1097,9 +1149,10 @@ static int handle_winlist(SOCKET s) {
     char *buf = (char *)malloc(cap);
     struct EnumWinCtx ctx;
     char hdr[32];
+    int result;
 
     if (!buf) {
-        send(s, "ERR:out of memory\n", 19, 0);
+        send_cstr(s, "ERR:out of memory\n");
         return -1;
     }
 
@@ -1109,10 +1162,9 @@ static int handle_winlist(SOCKET s) {
     EnumWindows(enum_windows_proc, (LPARAM)&ctx);
 
     wsprintfA(hdr, "SIZE:%d\n", ctx.len);
-    send(s, hdr, (int)strlen(hdr), 0);
-    send(s, buf, ctx.len, 0);
+    result = (send_cstr(s, hdr) < 0 || send_all(s, buf, ctx.len) < 0) ? -1 : 0;
     free(buf);
-    return 0;
+    return result;
 }
 
 /* ---- CLIPSET <text>: set the clipboard to plain text. More reliable
@@ -1127,7 +1179,7 @@ static int handle_clipset(SOCKET s, const char *text) {
     size_t len = strlen(text) + 1;
 
     if (!OpenClipboard(NULL)) {
-        send(s, "ERR:OpenClipboard failed\n", 26, 0);
+        send_cstr(s, "ERR:OpenClipboard failed\n");
         return -1;
     }
     EmptyClipboard();
@@ -1135,7 +1187,7 @@ static int handle_clipset(SOCKET s, const char *text) {
     hMem = GlobalAlloc(GMEM_MOVEABLE, len);
     if (!hMem) {
         CloseClipboard();
-        send(s, "ERR:out of memory\n", 19, 0);
+        send_cstr(s, "ERR:out of memory\n");
         return -1;
     }
     dst = (char *)GlobalLock(hMem);
@@ -1146,11 +1198,11 @@ static int handle_clipset(SOCKET s, const char *text) {
        GlobalFree it ourselves. */
     if (!SetClipboardData(CF_TEXT, hMem)) {
         CloseClipboard();
-        send(s, "ERR:SetClipboardData failed\n", 29, 0);
+        send_cstr(s, "ERR:SetClipboardData failed\n");
         return -1;
     }
     CloseClipboard();
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
@@ -1200,26 +1252,27 @@ static int handle_regget(SOCKET s, char *args) {
     char hdr[32];
     DWORD type, dataLen;
     char *data;
+    int result;
 
     if (split_tabs(args, fields, 3) != 3) {
-        send(s, "ERR:bad REGGET syntax\n", 23, 0);
+        send_cstr(s, "ERR:bad REGGET syntax\n");
         return -1;
     }
     root = parse_reg_root(fields[0]);
     if (!root) {
-        send(s, "ERR:bad root key\n", 18, 0);
+        send_cstr(s, "ERR:bad root key\n");
         return -1;
     }
 
     if (RegOpenKeyExA(root, fields[1], 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
-        send(s, "ERR:cannot open key\n", 21, 0);
+        send_cstr(s, "ERR:cannot open key\n");
         return -1;
     }
 
     dataLen = 0;
     if (RegQueryValueExA(hKey, fields[2], NULL, &type, NULL, &dataLen) != ERROR_SUCCESS) {
         RegCloseKey(hKey);
-        send(s, "ERR:cannot query value\n", 24, 0);
+        send_cstr(s, "ERR:cannot query value\n");
         return -1;
     }
 
@@ -1229,7 +1282,7 @@ static int handle_regget(SOCKET s, char *args) {
         RegQueryValueExA(hKey, fields[2], NULL, NULL, (BYTE *)&value, &sz);
         RegCloseKey(hKey);
         wsprintfA(hdr, "DWORD:%lu\n", (unsigned long)value);
-        send(s, hdr, (int)strlen(hdr), 0);
+        send_cstr(s, hdr);
         return 0;
     }
 
@@ -1237,13 +1290,13 @@ static int handle_regget(SOCKET s, char *args) {
         data = (char *)malloc(dataLen + 1);
         if (!data) {
             RegCloseKey(hKey);
-            send(s, "ERR:out of memory\n", 19, 0);
+            send_cstr(s, "ERR:out of memory\n");
             return -1;
         }
         if (RegQueryValueExA(hKey, fields[2], NULL, NULL, (BYTE *)data, &dataLen) != ERROR_SUCCESS) {
             free(data);
             RegCloseKey(hKey);
-            send(s, "ERR:cannot read value\n", 23, 0);
+            send_cstr(s, "ERR:cannot read value\n");
             return -1;
         }
         RegCloseKey(hKey);
@@ -1251,14 +1304,14 @@ static int handle_regget(SOCKET s, char *args) {
            string types - trim it from what we report/send. */
         if (dataLen > 0 && data[dataLen - 1] == '\0') dataLen--;
         wsprintfA(hdr, "SIZE:%lu\n", (unsigned long)dataLen);
-        send(s, hdr, (int)strlen(hdr), 0);
-        send(s, data, (int)dataLen, 0);
+        result = (send_cstr(s, hdr) < 0 ||
+                  send_all(s, data, (int)dataLen) < 0) ? -1 : 0;
         free(data);
-        return 0;
+        return result;
     }
 
     RegCloseKey(hKey);
-    send(s, "ERR:unsupported value type (only SZ/DWORD)\n", 45, 0);
+    send_cstr(s, "ERR:unsupported value type (only SZ/DWORD)\n");
     return -1;
 }
 
@@ -1269,17 +1322,17 @@ static int handle_regset(SOCKET s, char *args) {
     HKEY root, hKey;
 
     if (split_tabs(args, fields, 5) != 5) {
-        send(s, "ERR:bad REGSET syntax\n", 23, 0);
+        send_cstr(s, "ERR:bad REGSET syntax\n");
         return -1;
     }
     root = parse_reg_root(fields[0]);
     if (!root) {
-        send(s, "ERR:bad root key\n", 18, 0);
+        send_cstr(s, "ERR:bad root key\n");
         return -1;
     }
 
     if (RegCreateKeyExA(root, fields[1], 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS) {
-        send(s, "ERR:cannot open/create key\n", 28, 0);
+        send_cstr(s, "ERR:cannot open/create key\n");
         return -1;
     }
 
@@ -1287,49 +1340,59 @@ static int handle_regset(SOCKET s, char *args) {
         DWORD value = (DWORD)atol(fields[4]);
         if (RegSetValueExA(hKey, fields[2], 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) {
             RegCloseKey(hKey);
-            send(s, "ERR:RegSetValueEx failed\n", 26, 0);
+            send_cstr(s, "ERR:RegSetValueEx failed\n");
             return -1;
         }
     } else if (_stricmp(fields[3], "SZ") == 0) {
         DWORD len = (DWORD)strlen(fields[4]) + 1;
         if (RegSetValueExA(hKey, fields[2], 0, REG_SZ, (const BYTE *)fields[4], len) != ERROR_SUCCESS) {
             RegCloseKey(hKey);
-            send(s, "ERR:RegSetValueEx failed\n", 26, 0);
+            send_cstr(s, "ERR:RegSetValueEx failed\n");
             return -1;
         }
     } else {
         RegCloseKey(hKey);
-        send(s, "ERR:unsupported type (use SZ or DWORD)\n", 41, 0);
+        send_cstr(s, "ERR:unsupported type (use SZ or DWORD)\n");
         return -1;
     }
 
     RegCloseKey(hKey);
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
     return 0;
 }
 
 static int recv_line(SOCKET s, char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        int r = recv(s, &c, 1, 0);
-        if (r <= 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_some(s, &c, 1) <= 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void handle_client(SOCKET s) {
     char line[LINE_MAX_LEN];
 
+    net_reset();
     if (recv_line(s, line, sizeof(line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(line, g_token) != 0) {
-        send(s, "FAIL\n", 5, 0);
+        send_cstr(s, "FAIL\n");
         return;
     }
-    send(s, "OK\n", 3, 0);
+    send_cstr(s, "OK\n");
 
     for (;;) {
         if (recv_line(s, line, sizeof(line)) < 0) break;
@@ -1368,13 +1431,13 @@ static void handle_client(SOCKET s) {
         } else if (strncmp(line, "REGSET\t", 7) == 0) {
             handle_regset(s, line + 7);
         } else if (strcmp(line, "PING") == 0) {
-            send(s, "PONG\n", 5, 0);
+            send_cstr(s, "PONG\n");
         } else if (strcmp(line, "QUIT") == 0) {
             break;
         } else if (line[0] == '\0') {
             /* ignore blank lines */
         } else {
-            send(s, "ERR:unknown command\n", 21, 0);
+            send_cstr(s, "ERR:unknown command\n");
         }
     }
 }
@@ -1464,6 +1527,13 @@ static int server_main(void) {
             if (!g_running) break;
             continue;
         }
+        {
+            unsigned long nonblocking = 1;
+            if (ioctlsocket(client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+                closesocket(client);
+                continue;
+            }
+        }
         g_activeClientSock = client;
         handle_client(client);
         g_activeClientSock = INVALID_SOCKET;
@@ -1484,21 +1554,10 @@ static void WINAPI svc_ctrl_handler(DWORD ctrl) {
         g_svcStatus.dwWaitHint = 3000;
         SetServiceStatus(g_svcStatusHandle, &g_svcStatus);
 
-        /* The SCM calls this handler on its own control-dispatch thread,
-           separate from the thread blocked in server_main()'s accept()/
-           recv() calls - setting g_running alone does nothing until one
-           of those blocking calls happens to return on its own, which
-           might be never (no new connections, or a client that's just
-           sitting idle). closesocket() on a socket another thread is
-           blocked in is a documented, valid way to force that call to
-           return on Winsock - do it for both the listener (so accept()
-           unblocks) and whatever client connection is currently active,
-           if any (so a blocked recv() in handle_client() unblocks too).
-           Without this, "net stop" times out waiting for a STOPPED
-           status that never comes, even though the process is still
-           alive and will eventually notice g_running on its own the
-           next time something happens to its blocking calls - which,
-           left alone, could be a very long time. */
+        /* The SCM calls this on its control-dispatch thread. Close the
+           listener to interrupt blocking accept(), and the active client
+           to disconnect it promptly. Accepted-client I/O is nonblocking
+           and also checks g_running between attempts. */
         if (g_listenSock != INVALID_SOCKET) {
             closesocket(g_listenSock);
         }

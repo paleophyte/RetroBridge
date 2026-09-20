@@ -1,6 +1,6 @@
 /*
  * Minimal IBM TCP/IP (TCPIPDLL) declarations for 16-bit OS/2.
- * Entry points match exports from TCPIPDLL.DLL (sock_init, socket, …, soclose).
+ * Entry points match exports from TCPIPDLL.DLL (sock_init, socket, â€¦, soclose).
  *
  * Verified against the real OS/2 1.3 guest's TCPIPDLL.DLL export table
  * (wdump -a) - every name below matches an EXPORTED entry point there,
@@ -24,6 +24,7 @@ typedef unsigned long  u_long;
 #define INADDR_ANY   0UL
 #define SOL_SOCKET   0xffff
 #define SO_REUSEADDR 0x0004
+#define FIONBIO      0x667e
 
 struct in_addr {
     u_long s_addr;
@@ -58,6 +59,12 @@ struct sockaddr_in {
 #define ntohl(x) htonl(x)
 #endif
 
+/* TCPIPDLL's _ioctl takes a 16-bit command and a far pointer, without
+ * SO32DLL's fourth (length) argument. Verified against its entry point. */
+int  socket_ioctl(int s, int cmd, char *arg);
+/* Original IBM select: socket array, counts, timeout in milliseconds.
+ * _select's entry point takes a far pointer, three ints, and a long. */
+int  socket_select(int *sockets, int reads, int writes, int excepts, long timeout);
 int  sock_init(void);
 void sock_term(void);
 int  socket(int domain, int type, int protocol);
@@ -75,9 +82,11 @@ void cleanupsockets(void);
 
 /*
  * TCPIPDLL is MSC-style cdecl (args on stack, AX return). Watcom's default
- * aux is register-based — that made socket() appear to fail after a good
+ * aux is register-based â€” that made socket() appear to fail after a good
  * sock_init().
  */
+#pragma aux socket_ioctl   "_ioctl" parm caller [] value [ax] modify [ax bx cx dx es]
+#pragma aux socket_select  "_select" parm caller [] value [ax] modify [ax bx cx dx es]
 #pragma aux sock_init      "_sock_init"      parm caller [] value [ax] modify [ax bx cx dx es]
 #pragma aux sock_term      "_sock_term"      parm caller [] modify [ax bx cx dx es]
 #pragma aux socket         "_socket"         parm caller [] value [ax] modify [ax bx cx dx es]

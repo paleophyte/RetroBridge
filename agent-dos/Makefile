@@ -31,7 +31,7 @@ CC = wcl
 
 all: llm_agent.exe .SYMBOLIC
 
-llm_agent.exe: llm_agent.c
+llm_agent.exe: llm_agent.c ../common/session_timeout.h ../common/command_line.h
 	$(CC) -zq -ml -bt=dos -os -w4 -k8192 -i=$(WATT32INC) llm_agent.c -fe=llm_agent.exe -l=dos $(WATT32LIB)
 
 clean: .SYMBOLIC

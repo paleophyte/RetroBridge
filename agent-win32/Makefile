@@ -45,7 +45,7 @@ LDFLAGS := $(LDCOMMON) -lws2_32 -ladvapi32 -lgdi32 -luser32
 
 all: llm_agent.exe update.exe
 
-llm_agent.exe: llm_agent.c
+llm_agent.exe: llm_agent.c ../common/session_timeout.h ../common/command_line.h
 	$(CC) $(CFLAGS) llm_agent.c -o llm_agent.exe $(LDFLAGS)
 
 # update.exe (see docs/ARCHITECTURE.md "Self-update") replaces a running

@@ -1,6 +1,6 @@
 /* Resource overrides for llm_updater -- same background-only SIZE(-1)
- * rationale as llm_agent.r. llm_updater runs synchronously start to
- * finish (no wait loop) and exits almost immediately, so this mostly
+ * rationale as llm_agent.r. llm_updater yields during a teardown grace
+ * period, then prepares/exchanges/launches the replacement. This resource
  * just keeps it from ever flashing a frontmost layer during that brief
  * window. */
 

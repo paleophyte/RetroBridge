@@ -18,15 +18,11 @@
  * decode/replace/relaunch, and exits; and MOUSEPOS, which reports the
  * current cursor position and button state.
  *
- * REBOOT and SHUTDOWN go through the Shutdown Manager (trap 0xA895):
- * ShutDwnStart() and ShutDwnPower() respectively. Both reply "OK" first,
- * then release the MacTCP stream and go down. Using the Shutdown Manager
- * rather than anything harder is what keeps the HFS volume clean -- after
- * either one the guest boots straight back to the Finder with no "you have
- * restarted improperly" dialog, which matters because that dialog blocks
- * Startup Items and would stop the agent relaunching on its own. Measured:
- * the agent is answering again ~24s after REBOOT, against ~48s and a
- * required keystroke for a cold start after an unclean stop.
+ * REBOOT and SHUTDOWN send Finder's Restart and Shutdown Apple events.
+ * "OK" acknowledges delivery, not completion: applications may display
+ * save dialogs or cancel. The agent keeps serving until Finder asks it to
+ * quit; the normal Quit-event path releases MacTCP and mouse automation.
+ * Direct Shutdown Manager calls would skip application-quit negotiation.
  *
  * CLICK and DBLCLICK are implemented, and take the shared protocol's
  * optional third "button" argument. Coordinates are global screen
@@ -171,12 +167,20 @@ static void Idle(void)
  * completion, yielding to the rest of the system via Idle() between
  * checks. Use for anything that can block for an unbounded time
  * (waiting for a connection, waiting for data). */
+#define NET_DEADLINE(sec) (TickCount() + (sec) * 60UL)
+#define NET_EXPIRED(d) ((long)(TickCount() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 static OSErr TCPControlWait(TCPiopb *pb, short csCode)
 {
     OSErr err;
     Boolean aborted = false;
+    Boolean timedIO = (csCode == TCPRcv || csCode == TCPSend);
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
 
     if (gQuitRequested) return userCanceledErr;
+    if (timedIO && net_expired(deadline)) return userCanceledErr;
     pb->ioCRefNum = gMacTCPRefNum;
     pb->csCode = csCode;
     pb->ioCompletion = NULL;
@@ -185,7 +189,8 @@ static OSErr TCPControlWait(TCPiopb *pb, short csCode)
     if (err != noErr) return err;
     while (pb->ioResult == inProgress) {
         Idle();
-        if (gQuitRequested && !aborted && pb->ioResult == inProgress) {
+        if ((gQuitRequested || (timedIO && net_expired(deadline))) &&
+            !aborted && pb->ioResult == inProgress) {
             TCPiopb abortPB;
             memset(&abortPB, 0, sizeof(abortPB));
             abortPB.tcpStream = pb->tcpStream;
@@ -195,7 +200,9 @@ static OSErr TCPControlWait(TCPiopb *pb, short csCode)
              * early would leave MacTCP writing into an unwound stack. */
         }
     }
-    return gQuitRequested ? userCanceledErr : pb->ioResult;
+    if (timedIO && pb->ioResult != noErr) net_fail();
+    return (gQuitRequested || (timedIO && net_failed))
+           ? userCanceledErr : pb->ioResult;
 }
 
 static OSErr TCPStreamCreate(StreamPtr *stream)
@@ -233,12 +240,13 @@ static OSErr TCPListen(StreamPtr stream)
     return TCPControlWait(&pb, TCPPassiveOpen);
 }
 
-static OSErr TCPSendBytes(StreamPtr stream, const void *data, unsigned short len)
+static OSErr TCPSendBytes(StreamPtr stream, const void *data, unsigned short len,
+                         Boolean allowQuit)
 {
     TCPiopb pb;
     wdsEntry wds[2];
 
-    if (gQuitRequested) return userCanceledErr;
+    if (gQuitRequested && !allowQuit) return userCanceledErr;
     if (len == 0) return noErr;
 
     wds[0].length = len;
@@ -255,7 +263,10 @@ static OSErr TCPSendBytes(StreamPtr stream, const void *data, unsigned short len
     pb.csParam.send.urgentFlag = false;
     pb.csParam.send.wdsPtr = (Ptr)wds;
 
-    return TCPControlSync(&pb, TCPSend);
+    /* Finder can already have delivered Quit during a power request.
+       Its final reply retains the existing bounded synchronous path. */
+    if (allowQuit) return TCPControlSync(&pb, TCPSend);
+    return TCPControlWait(&pb, TCPSend);
 }
 
 /* Waits (cooperatively) for at least one byte; returns however many
@@ -318,33 +329,50 @@ static int RecvByte(char *out)
     return 0;
 }
 
-/* Reads up to outlen-1 bytes terminated by \n (CR is skipped, matching
- * the other agents' line convention), NUL-terminates into out. */
+/* Read one complete, bounded LF/CRLF line; malformed input fails the session. */
 static int RecvLine(char *out, int outlen)
 {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-
-    while (i < outlen - 1) {
-        if (RecvByte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (RecvByte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static int SendCStr(const char *s)
 {
     unsigned short len = (unsigned short)strlen(s);
-    return (TCPSendBytes(gStream, s, len) == noErr) ? 0 : -1;
+    return (TCPSendBytes(gStream, s, len, false) == noErr) ? 0 : -1;
+}
+
+/* AESend can dispatch Finder's Quit event before it returns. The stream
+ * remains valid until main performs cleanup, so permit this final bounded,
+ * synchronous reply even when a Quit request is already pending. */
+static int SendPowerReply(const char *s)
+{
+    return (TCPSendBytes(gStream, s, (unsigned short)strlen(s), true) == noErr)
+           ? 0 : -1;
 }
 
 static int SendAll(const char *buf, long len)
 {
     while (len > 0) {
         unsigned short chunk = (len > 32000) ? 32000 : (unsigned short)len;
-        if (TCPSendBytes(gStream, buf, chunk) != noErr) return -1;
+        if (TCPSendBytes(gStream, buf, chunk, false) != noErr) return -1;
         buf += chunk;
         len -= chunk;
     }
@@ -556,6 +584,10 @@ static int PostMouseEvent(short what, Point where)
 #define AE_TYPE_PSN        0x70736E20L   /* 'psn ' */
 #define AE_CLASS_CORE      0x61657674L   /* 'aevt' */
 #define AE_ID_QUIT         0x71756974L   /* 'quit' */
+#define AE_FINDER_SIGNATURE 0x4D414353L  /* 'MACS': Finder application */
+#define AE_CLASS_FINDER    0x464E4452L   /* 'FNDR': Finder event class */
+#define AE_ID_RESTART      0x72657374L   /* 'rest' */
+#define AE_ID_SHUTDOWN     0x73687574L   /* 'shut' */
 #define AE_AUTO_RETURN_ID  (-1)
 #define AE_ANY_TRANSACTION 0L
 #define AE_NO_REPLY        1
@@ -1531,43 +1563,89 @@ static void HandleDragStat(void)
     SendAll(buf, len);
 }
 
-/* REBOOT / SHUTDOWN -- part of the shared protocol (see
- * ../mcp-server/agent_client.py), reply "OK\n" then go down.
- *
- * Both go through the Shutdown Manager (trap 0xA895) rather than anything
- * harder: ShutDwnStart() restarts, ShutDwnPower() powers off. That matters
- * because the Shutdown Manager runs registered shutdown procedures and
- * flushes/unmounts volumes on the way out. Yanking the machine instead would
- * leave the HFS volume dirty, which on this guest means the "you have
- * restarted improperly" dialog on the next boot -- and that dialog blocks
- * Startup Items processing, so the agent would not come back on its own.
- *
- * Neither call returns, so everything that has to happen must happen first:
- * send the reply, take out any trap patch, and release the MacTCP stream the
- * same way QUITAGENT does so the port is not left bound. The short Delay is
- * there to give MacTCP a chance to actually put the reply on the wire before
- * the machine stops executing. */
+/* Ask Finder to negotiate application quit/save before restarting or
+ * shutting down (Inside Macintosh: Processes, Shutdown Manager, pp. 8-7/8).
+ * No-reply delivery avoids waiting on a save dialog. OK means submitted;
+ * it cannot promise completion, since any application may cancel later.
+ * Keep serving until Finder sends our Quit event, using the normal cleanup
+ * path. Never fall back to a direct Shutdown Manager call on failure. */
 static void HandlePower(int restart)
 {
-    long finalTicks;
+    ProcessSerialNumber finder;
+    ProcessInfoRec info;
+    AEAddressDesc target;
+    AppleEvent theEvent;
+    AppleEvent reply;
+    OSErr err;
+    char buf[128];
 
-    SendCStr("OK\n");
-
-    StopMouseAutomation();
-    Delay(30, &finalTicks);          /* ~0.5s for the reply to go out */
-    TCPStreamAbortAndRelease(gStream);
-    Delay(15, &finalTicks);
-
-    if (restart) {
-        ShutDwnStart();
-    } else {
-        ShutDwnPower();
+    finder.highLongOfPSN = 0;
+    finder.lowLongOfPSN = kNoProcess;
+    while ((err = GetNextProcess(&finder)) == noErr) {
+        memset(&info, 0, sizeof(info));
+        info.processInfoLength = sizeof(info);
+        if (GetProcessInformation(&finder, &info) == noErr &&
+            info.processSignature == (OSType)AE_FINDER_SIGNATURE)
+            break;
+    }
+    if (err != noErr) {
+        sprintf(buf, "ERR:Finder lookup failed (OSErr %d)\n", (int)err);
+        SendPowerReply(buf);
+        return;
     }
 
-    /* Not reached. If the Shutdown Manager ever did return, exiting is the
-     * least surprising thing left to do -- the caller has already been told
-     * the machine is going away. */
-    ExitToShell();
+    err = AECreateDesc((DescType)AE_TYPE_PSN, &finder,
+                       (Size)sizeof(finder), &target);
+    if (err != noErr) {
+        sprintf(buf, "ERR:Finder address failed (OSErr %d)\n", (int)err);
+        SendPowerReply(buf);
+        return;
+    }
+
+    err = AECreateAppleEvent((AEEventClass)AE_CLASS_FINDER,
+                             (AEEventID)(restart ? AE_ID_RESTART : AE_ID_SHUTDOWN),
+                             &target, AE_AUTO_RETURN_ID, AE_ANY_TRANSACTION,
+                             &theEvent);
+    if (err != noErr) {
+        AEDisposeDesc(&target);
+        sprintf(buf, "ERR:Finder power event failed (OSErr %d)\n", (int)err);
+        SendPowerReply(buf);
+        return;
+    }
+
+    StopMouseAutomation();
+    /* System 7.5.3 Finder did not reliably process another power request
+     * while backgrounded after a cancelled save dialog. Explicit activation
+     * makes subsequent requests work too; AECanSwitchLayer alone did not. */
+    err = SetFrontProcess(&finder);
+    if (err != noErr) {
+        AEDisposeDesc(&theEvent);
+        AEDisposeDesc(&target);
+        sprintf(buf, "ERR:Finder activation failed (OSErr %d)\n", (int)err);
+        SendPowerReply(buf);
+        return;
+    }
+    /* SetFrontProcess schedules activation; yield so Finder can handle it
+     * before the power event arrives. */
+    Idle();
+    if (gQuitRequested) {
+        AEDisposeDesc(&theEvent);
+        AEDisposeDesc(&target);
+        SendPowerReply("ERR:agent is quitting\n");
+        return;
+    }
+    err = AESend(&theEvent, &reply,
+                 AE_NO_REPLY | kAECanSwitchLayer | kAEAlwaysInteract,
+                 AE_NORMAL_PRIORITY, AE_DEFAULT_TIMEOUT, NULL, NULL);
+    AEDisposeDesc(&theEvent);
+    AEDisposeDesc(&target);
+    if (err != noErr) {
+        sprintf(buf, "ERR:Finder power request failed (OSErr %d)\n", (int)err);
+        SendPowerReply(buf);
+        return;
+    }
+
+    SendPowerReply("OK\n");
 }
 
 /* DRAGRESET -- panic button. Releases the mouse button and tears down any
@@ -1721,12 +1799,55 @@ static void HandleGet(char *args)
     fclose(f);
 }
 
+/* Use File Manager directly: Retro68's stdio syscall wrappers discard
+ * FSWrite/FSClose/FlushVol errors, so stdio return checks alone are insufficient. */
+static OSErr OpenUpload(const char *path, short *ref, FSSpec *spec)
+{
+    unsigned char pname[256];
+    size_t len = strlen(path);
+    OSErr err;
+    if (len == 0 || len > 255) return paramErr;
+    pname[0] = (unsigned char)len;
+    memcpy(pname + 1, path, len);
+    err = FSMakeFSSpec(0, 0, pname, spec);
+    if (err == fnfErr) err = FSpCreate(spec, 0x3F3F3F3FUL, 0x54455854UL, smSystemScript);
+    if (err != noErr) return err;
+    err = FSpOpenDF(spec, fsWrPerm, ref);
+    if (err != noErr) return err;
+    err = SetEOF(*ref, 0);
+    if (err != noErr) FSClose(*ref);
+    return err;
+}
+
+/* A NULL spec drains an upload that could not be opened. */
+static int ReceiveUpload(short ref, const FSSpec *spec, long size)
+{
+    long remaining = size;
+    int ok = (spec != NULL);
+    while (remaining > 0) {
+        long want = remaining > (long)sizeof(gIOBuf) ? (long)sizeof(gIOBuf) : remaining;
+        if (RecvExact(gIOBuf, want) < 0) { ok = 0; break; }
+        if (ok) {
+            long count = want;
+            OSErr err = FSWrite(ref, &count, gIOBuf);
+            if (err != noErr || count != want) ok = 0;
+        }
+        remaining -= want;
+    }
+    if (spec) {
+        if (FSClose(ref) != noErr) ok = 0;
+        if (FlushVol(NULL, spec->vRefNum) != noErr) ok = 0;
+    }
+    return ok;
+}
+
 /* PUT <path> <size> */
 static void HandlePut(char *args)
 {
     char path[256];
+    FSSpec spec;
     long size;
-    FILE *f;
+    short ref = 0;
 
     while (*args == ' ') args++;
     {
@@ -1744,42 +1865,28 @@ static void HandlePut(char *args)
             SendCStr("ERR:PUT needs <path> <size>\n");
             return;
         }
+        size = atol(lastSpace + 1);
+        if (size < 0) {
+            SendCStr("ERR:bad size\n");
+            return;
+        }
         n = (long)(lastSpace - args);
-        if (n > (long)sizeof(path) - 1) {
-            n = (long)sizeof(path) - 1;
+        if (n <= 0 || n >= (long)sizeof(path)) {
+            ReceiveUpload(0, NULL, size);
+            SendCStr("ERR:invalid upload path length\n");
+            return;
         }
         memcpy(path, args, (size_t)n);
         path[n] = '\0';
-        size = atol(lastSpace + 1);
     }
 
-    f = fopen(path, "wb");
-    if (!f) {
+    if (OpenUpload(path, &ref, &spec) != noErr) {
+        ReceiveUpload(0, NULL, size);
         SendCStr("ERR:cannot create file\n");
-        /* Drain the incoming bytes so the protocol stays in sync. */
-        {
-            long remaining = size;
-            while (remaining > 0) {
-                long want = (remaining > (long)sizeof(gIOBuf)) ? sizeof(gIOBuf) : remaining;
-                if (RecvExact(gIOBuf, want) < 0) break;
-                remaining -= want;
-            }
-        }
         return;
     }
 
-    {
-        long remaining = size;
-        int ok = 1;
-        while (remaining > 0) {
-            long want = (remaining > (long)sizeof(gIOBuf)) ? sizeof(gIOBuf) : remaining;
-            if (RecvExact(gIOBuf, want) < 0) { ok = 0; break; }
-            fwrite(gIOBuf, 1, (size_t)want, f);
-            remaining -= want;
-        }
-        fclose(f);
-        SendCStr(ok ? "OK\n" : "ERR:transfer failed\n");
-    }
+    SendCStr(ReceiveUpload(ref, &spec, size) ? "OK\n" : "ERR:transfer failed\n");
 }
 
 /* UPDATE <size> -- receives a MacBinary-encoded llm_agent build (same
@@ -1795,7 +1902,7 @@ static void HandlePut(char *args)
 static void HandleUpdate(char *args)
 {
     long size;
-    FILE *f;
+    short ref = 0;
     unsigned char pname[256];
     int nlen;
     FSSpec spec;
@@ -1803,35 +1910,23 @@ static void HandleUpdate(char *args)
 
     while (*args == ' ') args++;
     size = atol(args);
-
-    f = fopen("STAGED_AGENT.bin", "wb");
-    if (!f) {
-        SendCStr("ERR:cannot create staging file\n");
-        {
-            long remaining = size;
-            while (remaining > 0) {
-                long want = (remaining > (long)sizeof(gIOBuf)) ? sizeof(gIOBuf) : remaining;
-                if (RecvExact(gIOBuf, want) < 0) break;
-                remaining -= want;
-            }
-        }
+    if (size <= 0) {
+        SendCStr("ERR:bad update size\n");
         return;
     }
 
-    {
-        long remaining = size;
-        int ok = 1;
-        while (remaining > 0) {
-            long want = (remaining > (long)sizeof(gIOBuf)) ? sizeof(gIOBuf) : remaining;
-            if (RecvExact(gIOBuf, want) < 0) { ok = 0; break; }
-            fwrite(gIOBuf, 1, (size_t)want, f);
-            remaining -= want;
-        }
-        fclose(f);
-        if (!ok) {
+    if (OpenUpload("STAGED_AGENT.bin", &ref, &spec) != noErr) {
+        ReceiveUpload(0, NULL, size);
+        SendCStr("ERR:cannot create staging file\n");
+        return;
+    }
+
+    if (!ReceiveUpload(ref, &spec, size)) {
+        if (FSpDelete(&spec) != noErr)
+            SendCStr("ERR:transfer failed; staging cleanup failed\n");
+        else
             SendCStr("ERR:transfer failed\n");
-            return;
-        }
+        return;
     }
 
     /* Confirm llm_updater actually exists before committing to the
@@ -1846,8 +1941,6 @@ static void HandleUpdate(char *args)
         return;
     }
 
-    SendCStr("OK\n");
-
     {
         LaunchParamBlockRec pb;
         memset(&pb, 0, sizeof(pb));
@@ -1855,8 +1948,14 @@ static void HandleUpdate(char *args)
         pb.launchEPBLength = extendedBlockLen;
         pb.launchAppSpec = &spec;
         pb.launchControlFlags = launchContinue;
-        LaunchApplication(&pb);
+        err = LaunchApplication(&pb);
     }
+
+    if (err != noErr) {
+        SendCStr("ERR:cannot launch llm_updater; agent still running\n");
+        return;
+    }
+    SendCStr("OK\n");
 
     /* Let main release the stream and mouse hooks before the updater
      * relaunches us. No driver callback may outlive this process. */
@@ -2067,6 +2166,7 @@ static int LoadToken(void)
 
 static void HandleClient(void)
 {
+    net_reset();
     if (RecvLine(gLine, sizeof(gLine)) < 0) return;
 
     if (gToken[0] == '\0' || strcmp(gLine, gToken) != 0) {
@@ -2213,7 +2313,7 @@ int main(void)
 
         err = TCPListen(gStream);
         if (err == noErr) HandleClient();
-        if (err != noErr || gQuitRequested)
+        if (err != noErr || gQuitRequested || net_failed)
             TCPStreamAbortAndRelease(gStream);
         else
             TCPStreamCloseAndRelease(gStream);

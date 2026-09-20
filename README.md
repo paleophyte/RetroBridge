@@ -8,6 +8,11 @@ Built after `freeSSHd` turned out to break other software (couldn't install
 MSSQL alongside it) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
 why this isn't "just use a different SSH server."
 
+Agents disconnect stalled clients after 10 seconds for authentication,
+60 seconds for a command line, or 30 seconds without transfer progress.
+These are network deadlines, not command runtime limits. See
+[agent network deadlines](docs/NETWORK_TIMEOUTS.md).
+
 Platform support varies: classic Mac OS has no shell, DOS/NetWare expose
 text screenshots, and several desktop tools are platform-specific. See the
 [capability matrix and publication audit](docs/PUBLICATION_AUDIT.md) for
@@ -148,6 +153,7 @@ and fill in one `[section]` per machine:
 host = 192.168.56.10
 exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
+max_command_bytes = 4094
 
 [winxp-1]
 host = 192.168.56.11
@@ -158,9 +164,46 @@ The section name (`win2k-1`, `winxp-1`, ...) is what you pass as the
 `machine` argument to every tool below. `exec_port` is optional (defaults
 to `2222`).
 
-Every section must describe an agent and include `host` and `exec_token`;
-an unrelated SSH-only section makes the current loader reject the entire
-file. Configuration is cached until the bridge restarts. Use unique ASCII
+The shared client rejects CR, LF, and NUL in command arguments and tokens,
+and tabs inside registry fields. Limits count encoded UTF-8 bytes, including
+the command name and separators but excluding the final LF:
+
+| Setting | Default | Use |
+|---|---|---|
+| `max_command_bytes` | `510` | Safe for the 512-byte agent line buffers. Set `4094` only for a confirmed Win32 agent with a 4096-byte buffer. |
+| `max_response_bytes` | `67108864` (64 MiB) | Maximum SIZE payload or cumulative EXEC output. Raise explicitly for larger downloads, up to `2147483647`. |
+
+Both settings are optional per-machine INI keys and keyword arguments to
+`AgentClient`. Commands over the configured limit fail before connecting;
+they are not truncated or split. Shell and individual command limits may
+be smaller, especially COMMAND.COM's command tail on Windows 9x/DOS.
+Response lines are capped at 65536 bytes, allowing Win16's full listbox-text
+reply. Invalid framing, oversized payloads, or incomplete replies close the connection.
+The payload limit does not rewrite or inspect binary file contents.
+
+Updated target agents also enforce the 510/4094-byte line limits directly,
+including for raw TCP clients. Lines must end in LF or CRLF; overflow,
+embedded NUL, and misplaced CR close the session without executing the
+partial line or queued commands. Binary upload contents remain unchanged.
+See [agent command framing](docs/COMMAND_FRAMING.md).
+
+Sections default to enabled agents and require `host` and `exec_token`.
+To keep an SSH host or other infrastructure in the same inventory, mark
+it explicitly as inventory-only; no dummy token or port is needed:
+
+```ini
+[ubuntu-host]
+host = 192.168.56.40
+agent_enabled = false
+```
+
+Inventory-only entries still require `host` and appear in
+`legacy_list_machines`, but agent tools reject them before connecting.
+Their agent credentials, port, and limit settings are ignored. Other metadata may
+remain in the file; this bridge does not provide SSH access. A malformed
+enabled agent still rejects the inventory, so missing credentials are not
+silently treated as disabled agents. Configuration is cached until the
+bridge restarts. Use unique ASCII
 tokens (up to 127 characters for compatibility with all ports), never the
 example token. Examples, smoke scripts, and floppy builders use
 `REPLACE_WITH_UNIQUE_TOKEN`; substitute a private per-machine value before

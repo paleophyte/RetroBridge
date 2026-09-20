@@ -21,7 +21,7 @@ so [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through th
 | `WINLIST [hwnd]` | Enumerate top-level windows, or a window's children if `hwnd` given -- read-only, always safe |
 | `WINMSG <hwnd> <msg> <wparam> <lparam>` | Raw `SendMessage()` -- **never for anything that might open a dialog, see warning below** |
 | `POSTMSG <hwnd> <msg> <wparam> <lparam>` | Raw `PostMessage()` -- use this instead of `WINMSG` for button presses / listbox activation |
-| `LBGETTEXT <hwnd> <index>` | Read a listbox item's text by index (read-only) |
+| `LBGETTEXT <hwnd> <index>` | Read full text from a standard string-backed listbox; size checked before copying |
 | `PSLIST` | `TaskFirst`/`TaskNext` + `ModuleFindHandle` (ToolHelp) -- a real Task List view, `<hTask>\t<exe basename>` per line |
 | `PSKILL <hTask>` | `TerminateApp(hTask, NO_UAE_BOX)` (ToolHelp) -- same call Task List's "End Task" uses; refuses to kill this agent's own task |
 | `UPDATE` | Self-update without a full system REBOOT -- **read the warning below before touching this** |
@@ -256,16 +256,32 @@ listbox's item count, selecting an item (`LB_SETCURSEL`, which does
 `WM_COMMAND`/`LBN_SELCHANGE` if the parent needs to react, or
 `LBN_DBLCLK` to activate it).
 
-### Owner-drawn listboxes: `LBGETTEXT` can come back empty
+### Listbox text and owner-drawn controls
+
+`LBGETTEXT` accepts a standard `LISTBOX` window and a nonnegative item index.
+It queries `LB_GETTEXTLEN`, allocates a separate Win16 global-memory block
+including the terminating NUL, and rechecks the length after allocation
+before requesting the text. The response remains `OK:<text>`, followed by
+CRLF. Strings are returned in full rather than truncated to the old
+159-byte limit. Text lengths above 32,767 bytes, allocation/lock failures,
+invalid handles or indices, non-listbox controls, and embedded NUL/CR/LF
+characters return `ERR:`. The limit does not guarantee that a particular
+Win16 listbox can store an item that large.
+
+The standard Win16 control reads run consecutively without pumping messages
+or yielding. Custom/subclassed controls that change their contents during
+these messages are outside this command's contract: `LB_GETTEXT` itself has
+no destination-size parameter. The read does not select or alter an item.
 
 Some Win16 UI (Control Panel's own applet grid, and WFW's Startup
 Settings "Startup Options" icon row) stores its items in an
-owner-drawn listbox with no real text -- `LB_GETTEXT` returns garbage
-or empty strings for every index, since the control never held a
-string to begin with (the owner paints icons itself in response to
+owner-drawn listbox with no real text. Without `LBS_HASSTRINGS`,
+`LB_GETTEXT` writes a DWORD of item data rather than a string, so the agent
+now rejects these controls explicitly. Owner-drawn listboxes that set
+`LBS_HASSTRINGS` remain supported. The owner paints icons in response to
 `WM_DRAWITEM`, keyed off an opaque per-item data value that's not ours
-to interpret). Real, human-readable text (real `Button`-class
-checkboxes, static labels, edit controls) reads back fine.
+to interpret. Other controls' captions remain available through `WINLIST`;
+`LBGETTEXT` is not a general window-text reader.
 
 To find "which index is X" in an owner-drawn list without documentation
 to fall back on, use whatever discoverable side effect exists (Control
@@ -276,6 +292,17 @@ to read the updated description back). Where there's no such tell
 (WFW's 3-item Startup/Password/Event Log row had none), fall back to
 the visual left-to-right/top-to-bottom order from a `SCREENSHOT`,
 matching how dialog resources are conventionally authored.
+
+Regression coverage: `python tests/test_lbgettext.py` compiles the production
+handler against host-side Win16 API stubs (requires GCC, or set `CC`). It
+checks text sizes through 32,767 bytes, allocation guard bytes, control types,
+invalid input, allocation/lock failures, changed lengths, and send failures.
+`tests/listbox_fixture.c` supplies native Win16 controls for live testing.
+Live WFW 3.11 checks passed for empty strings, 1/159/160/161/4,096-byte items,
+owner-drawn controls with and without strings, error responses, and continued
+protocol access.
+The native control refused the 32,767-byte fixture insertion with
+`LB_ERRSPACE`; that upper boundary was tested only in the host harness.
 
 ### This agent pins the host CPU while idle -- known, not yet fixed
 
@@ -442,9 +469,10 @@ of whatever was actually free in that WFW session at the time).
 1. Copy to the guest (same directory), e.g. `C:\LLMWIN`:
    - `LLMAGENT.EXE`
    - `LLMAGENT.INI` (from `LLMAGENT.INI.example` -- set a real `token=`;
-     this is a **separate** file/token from the DOS agent's
-     `C:\LLMAGENT\LLMAGENT.INI` even though they can share a port number,
-     since the two agents never run at the same time on a dual-boot box)
+     this is a **separate file** from the DOS agent's
+     `C:\LLMAGENT\LLMAGENT.INI`. For one inventory entry used in both
+     mutually exclusive boot modes, keep its token synchronized to both
+     files; otherwise use separate profiles for their credentials/addresses.)
 
 2. Make sure WFW's own networking is actually up first -- boot into the
    `WFW` `CONFIG.SYS` menu entry (see `../agent-dos/README.md`'s boot

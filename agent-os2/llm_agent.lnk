@@ -18,3 +18,5 @@ import soclose     'SO32DLL'.SOCLOSE
 import setsockopt  'SO32DLL'.SETSOCKOPT
 import sock_errno  'SO32DLL'.SOCK_ERRNO
 import DOSQPROCSTATUS DOSCALLS.154
+
+import os2_ioctl SO32DLL.IOCTL

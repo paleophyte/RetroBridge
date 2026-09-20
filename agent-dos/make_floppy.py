@@ -25,8 +25,7 @@ pkt.vector = 0x60
 
 AUTOEXEC = """@ECHO OFF
 LH PCNTPK INT=0x60
-SET WATTCP.CFG=C:\\LLMAGENT
-C:\\LLMAGENT\\LLMAGENT.EXE
+CALL C:\\LLMAGENT\\LLMSTART.BAT
 """
 
 README = """LLMAGENT for FreeDOS / MS-DOS 6.22 (8.3 names)
@@ -37,24 +36,30 @@ Files on this disk:
   LLMAGENT.INI  - port= / token=
   WATTCP.CFG    - Watt-32 (my_ip=dhcp)
   PCNTPK.COM    - Crynwr packet driver, AMD PCnet/LANCE (VMware vlance NIC)
-  AUTOEXEC.BAT  - sample autostart (packet driver, then agent)
+  LLMSTART.BAT  - five-second Agent / Console prompt; default Agent
+  AUTOEXEC.BAT  - sample startup (packet driver, then LLMSTART.BAT)
   README.TXT    - this file
 
 1. Copy to hard disk:
      MKDIR C:\\LLMAGENT
      COPY A:\\*.* C:\\LLMAGENT\\
-2. Append AUTOEXEC.BAT's lines to C:\\AUTOEXEC.BAT (or copy it over,
-   if this is a fresh install with nothing else in it):
+2. Add the following to your existing startup file after network setup
+   (AUTOEXEC.BAT, or FDAUTO.BAT if selected by FDCONFIG.SYS).
+   Load PCNTPK only if networking has not already loaded a packet driver:
      LH PCNTPK INT=0x60
-     SET WATTCP.CFG=C:\\LLMAGENT
-     C:\\LLMAGENT\\LLMAGENT.EXE
+     CALL C:\\LLMAGENT\\LLMSTART.BAT
    MS-DOS 6.22 needs UMBs set up for LH to work; add to CONFIG.SYS:
      DEVICE=C:\\DOS\\HIMEM.SYS
      DEVICE=C:\\DOS\\EMM386.EXE NOEMS
      DOS=HIGH,UMB
    (FreeDOS installs usually already have these.) Without them, drop
    LH and load PCNTPK low.
-3. Reboot, or run AUTOEXEC.BAT's three lines by hand.
+3. Configure a unique token and working IP settings before rebooting.
+   LLMSTART defaults to Agent after five seconds; press C for Console.
+   Local Ctrl+C stops an idle agent and returns to the shell.
+   Run CALL C:\\LLMAGENT\\LLMSTART.BAT to start it again.
+   CHOICE must be installed and on PATH (FreeDOS or MS-DOS 6.x syntax).
+   To install elsewhere, pass an 8.3 directory as LLMSTART's argument.
 
 Bridge machines.ini:
   [freedos-1]
@@ -78,6 +83,7 @@ def main() -> None:
         raise SystemExit(f"missing {exe} — build with build.bat first")
     if not pktdrv.is_file():
         raise SystemExit(f"missing {pktdrv} — copy PCNTPK.COM next to this script")
+    startup = (root / "LLMSTART.BAT").read_text(encoding="ascii")
 
     if out.exists():
         out.unlink()
@@ -104,7 +110,8 @@ def main() -> None:
         fs.writebytes("PCNTPK.COM", pktdrv.read_bytes())
         fs.writetext("LLMAGENT.INI", INI, encoding="ascii", errors="strict")
         fs.writetext("WATTCP.CFG", WATTCP, encoding="ascii", errors="strict")
-        fs.writetext("AUTOEXEC.BAT", AUTOEXEC, encoding="ascii", errors="strict")
+        fs.writebytes("AUTOEXEC.BAT", AUTOEXEC.replace("\n", "\r\n").encode("ascii"))
+        fs.writebytes("LLMSTART.BAT", startup.replace("\n", "\r\n").encode("ascii"))
         fs.writetext("README.TXT", README, encoding="ascii", errors="strict")
         print("Files on floppy:", fs.listdir("/"))
     finally:

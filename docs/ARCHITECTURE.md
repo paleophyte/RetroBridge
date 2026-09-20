@@ -7,6 +7,15 @@
 
 ## Why not SSH
 
+The target agents enforce authentication, command-line, and network-progress
+deadlines. See [agent network deadlines](NETWORK_TIMEOUTS.md) for the limits,
+platform details, and the distinction between a stalled socket and a running
+command.
+
+Authentication and command lines also enforce byte limits and LF/CRLF
+framing on the target. See [command framing](COMMAND_FRAMING.md) for raw
+client requirements and rejection behavior.
+
 The original ask was "a modern-ish SSH server for Windows 2000." Nothing
 current exists (see the project's origin conversation) — the newest
 Cygwin/OpenSSH build that actually runs on Win2000 is OpenSSH 6.2p1 from
@@ -1035,6 +1044,15 @@ server -> client (REGSET): OK\n | ERR:<msg>\n
 server -> client (PING): PONG\n
 ```
 
+Win32 text replies exclude their C-string terminating NUL. Text and binary
+payloads retry short socket writes. A send failure shuts down the session;
+after a SIZE header, a GET read error or premature EOF also closes the
+connection rather than inserting an error line into the promised payload.
+Treat connection closure before the declared byte count as a failed
+transfer. Reconnect for another command; do not treat a partial payload as
+a completed file. A complete SIZE:0 response is valid and keeps the session
+usable. These rules do not add a deadline for a connected slow reader.
+
 `EXEC` runs `cmd.exe /C <cmdline>` (or `command.com /C <cmdline>` on 9x)
 and streams combined stdout+stderr. There's no persisted shell state
 across calls — each `EXEC` is a fresh interpreter invocation, so `cd`
@@ -1078,6 +1096,21 @@ handled as signed 32-bit values (`GetFileSize`, no high-DWORD result
 combined in), so there's a practical ceiling around 2GB — well past
 anything from this OS era's installer/driver media, but not meant for
 large modern payloads.
+
+`OK` for `PUT` means the agent received the declared payload and observed
+no write or finalization error. All ports check write counts; stdio ports
+also check `fflush`, `ferror`, and `fclose`, while Win32 checks
+`WriteFile`, `FlushFileBuffers`, and `CloseHandle`. The Mac uses checked
+File Manager write/close/volume-flush calls directly, because Retro68's
+stdio syscall wrappers discard some native errors. Local open/write errors
+still consume the declared payload before returning `ERR`, preserving the
+next command's framing. An interrupted connection cannot be drained.
+These checks report errors exposed by the runtime/OS; they are not a
+guarantee against power loss. `PUT` overwrites directly and is not atomic:
+a failed transfer can leave a truncated or partial destination. Upload
+important replacements to a separate path and verify them with `GET`
+before invoking the platform's replacement mechanism. Reproduce the
+host-side failure checks with `python tests/test_uploads.py` (requires GCC).
 
 `CLICK <x> <y> <button>` moves the cursor and clicks (`button`: 1/2/3 =
 left/middle/right). `KEY <keyspec>` presses one key or `mod-mod-key`

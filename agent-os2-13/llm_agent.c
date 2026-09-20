@@ -55,7 +55,7 @@
 
 #define DEFAULT_PORT     2222
 #define LINE_MAX_LEN     512
-#define READ_CHUNK       1024
+#define READ_CHUNK       4096
 #define PID_FILE         "AGENT.PID"
 #define BOOT_LOG         "AGTBOOT.LOG"
 #define BOOT_LOG_MAX     32000L
@@ -78,36 +78,76 @@ static void cpu_idle(void) {
     DosSleep(20);
 }
 
+static int network_wait(int writing) {
+    /* Wake as soon as the socket is ready, with a bounded wait so the
+       application deadline is checked even if the peer sends nothing.
+       DosSleep rounds up to scheduler ticks and stalls small TCP windows. */
+    int fd = g_client;
+    return socket_select(&fd, writing ? 0 : 1, writing ? 1 : 0, 0, 20L);
+}
+
+static PGINFOSEG g_info;
+static unsigned long network_ticks(void) { return g_info->msecs; }
+#define NET_DEADLINE(sec) (network_ticks() + (sec) * 1000UL)
+#define NET_EXPIRED(d) ((long)(network_ticks() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 static int send_all(const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     while (sent < len) {
-        int n = send(g_client, (char *)(buf + sent), len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
+        int n;
+        if (net_expired(deadline)) return net_fail();
+        n = send(g_client, (char *)(buf + sent), len - sent, 0);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else if (network_wait(1) < 0) return net_fail();
     }
-    return 0;
+    return net_failed ? -1 : 0;
 }
 
 static int send_cstr(const char *text) {
     return send_all(text, (int)strlen(text));
 }
 
+static int recv_some(char *out, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    for (;;) {
+        int n;
+        if (net_expired(deadline)) return net_fail();
+        n = recv(g_client, out, len, 0);
+        if (n > 0) return n;
+        if (n == 0) return net_fail();
+        if (network_wait(0) < 0) return net_fail();
+    }
+}
+
 static int recv_byte(char *out) {
-    int n = recv(g_client, out, 1, 0);
-    if (n == 1) return 0;
-    return -1;
+    return recv_some(out, 1) == 1 ? 0 : -1;
 }
 
 static int recv_line(char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        if (recv_byte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_byte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void dirname_of(const char *path, char *out, int outlen) {
@@ -414,22 +454,21 @@ static int handle_put(char *args) {
     remaining = size;
     while (remaining > 0) {
         int want = remaining < (long)sizeof(g_iobuf) ? (int)remaining : (int)sizeof(g_iobuf);
-        int got = 0;
-        while (got < want) {
-            char c;
-            if (recv_byte(&c) < 0) {
-                openFailed = 1;
-                remaining = 0;
-                break;
-            }
-            g_iobuf[got++] = c;
+        int got = recv_some(g_iobuf, want);
+        if (got <= 0) {
+            openFailed = 1;
+            break;
         }
         if (got > 0 && !openFailed) {
             if ((int)fwrite(g_iobuf, 1, got, f) != got) openFailed = 1;
         }
         remaining -= got;
     }
-    if (f) fclose(f);
+    if (f) {
+        /* Buffered disk errors may surface only at flush/close. */
+        if (fflush(f) != 0 || ferror(f)) openFailed = 1;
+        if (fclose(f) != 0) openFailed = 1;
+    }
     if (openFailed) {
         send_cstr("ERR:write failed\n");
         return -1;
@@ -1279,6 +1318,7 @@ static void handle_shutdown(void) {
 }
 
 static void handle_client(void) {
+    net_reset();
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
         send_cstr("FAIL\n");
@@ -1436,6 +1476,14 @@ static int server_main(void) {
             cpu_idle();
             continue;
         }
+        {
+            int nonblocking = 1;
+            if (socket_ioctl(g_client, FIONBIO, (char *)&nonblocking) < 0) {
+                soclose(g_client);
+                g_client = -1;
+                continue;
+            }
+        }
         handle_client();
         soclose(g_client);
         g_client = -1;
@@ -1444,6 +1492,11 @@ static int server_main(void) {
 }
 
 int main(int argc, char **argv) {
+    {
+        SEL global_sel, local_sel;
+        if (DosGetInfoSeg(&global_sel, &local_sel) != 0) return 1;
+        g_info = MAKEPGINFOSEG(global_sel);
+    }
     load_config(argc > 0 ? argv[0] : NULL);
     ensure_shell_env();
     if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "/?") == 0)) {

@@ -1,22 +1,9 @@
 /* llm_updater for classic Mac OS (System 7.x).
  *
- * Companion to llm_agent -- see llm_agent.c's UPDATE command. llm_agent
- * launches this app and then exits, right before this app's own main()
- * actually gets any CPU time: System 7 is cooperatively scheduled, so
- * nothing else runs until llm_agent yields, and it yields precisely by
- * exiting. By the time we're executing, llm_agent's file and TCP port
- * are already free.
- *
- * Classic Mac files are two forks (data + resource), and the transfer
- * pipeline for a new llm_agent build is a flat MacBinary-encoded blob
- * (the same encoding `hcopy -m` produces, and what llm_agent's UPDATE
- * handler stages to STAGED_AGENT.bin next to itself before launching
- * us) -- so getting from "new build, staged as a flat file" to "a
- * proper dual-fork app ready to launch" means decoding MacBinary
- * ourselves. That decoding used to be done by hand, by dragging the
- * .bin onto StuffIt Expander; this replaces that manual step so a full
- * update -- new code running, old code gone -- needs no GUI
- * interaction at all.
+ * Companion to llm_agent. After a cooperative teardown grace period,
+ * decode and read back a separate two-fork application, then exchange it
+ * with the installed file. Retain the previous application and exchange
+ * it back if launch fails. Never delete the installed application.
  *
  * MacBinary header layout below is taken directly from hfsutils'
  * copyin.c/copyout.c (the exact encoder/decoder pair `hcopy -m` uses),
@@ -85,265 +72,285 @@ static void CToPascal(const char *src, unsigned char *dst)
     memcpy(dst + 1, src, len);
 }
 
-/* Offsets per hfsutils copyin.c/copyout.c: name length at [1], name
- * bytes from [2], type at [65], creator at [69], data-fork size (big-
- * endian long) at [83], resource-fork size (big-endian long) at [87].
- * We don't check the CRC at [124] -- this pipeline controls both the
- * encoder (hcopy -m on the host) and this decoder, delivered over a
- * TCP connection we've already round-trip-verified byte-for-byte
- * (PUT/GET readback), so the extra check isn't buying us protection
- * against a real failure mode here. */
+/* This decoder accepts the classic 128-byte MacBinary layout used by
+ * Retro68/hcopy, with no secondary header. Check all lengths before creating
+ * a file; the header's filename is never used as a destination. */
 static int ParseMacBinaryHeader(const unsigned char *hdr, MacBinInfo *info)
 {
-    int nameLen;
-    char buf[96];
-
-    if (hdr[0] != 0) {
-        sprintf(buf, "parse: bad version byte hdr[0]=%d", hdr[0]);
-        Log(buf);
+    unsigned long dataPadded, rsrcPadded;
+    if (hdr[0] != 0 || hdr[1] < 1 || hdr[1] > 63 ||
+        hdr[74] != 0 || hdr[82] != 0 || hdr[120] != 0 || hdr[121] != 0 ||
+        memcmp(hdr + 65, "APPL", 4) != 0) {
+        Log("parse: unsupported MacBinary application header");
         return 0;
     }
-    nameLen = hdr[1];
-    if (nameLen < 1 || nameLen > 63) {
-        sprintf(buf, "parse: bad name length %d", nameLen);
-        Log(buf);
-        return 0;
-    }
-
-    memcpy(&info->type, &hdr[65], 4);
-    memcpy(&info->creator, &hdr[69], 4);
-
+    memcpy(&info->type, hdr + 65, 4);
+    memcpy(&info->creator, hdr + 69, 4);
     info->dataSize = ((unsigned long)hdr[83] << 24) | ((unsigned long)hdr[84] << 16) |
-                      ((unsigned long)hdr[85] << 8)  |  (unsigned long)hdr[86];
+                    ((unsigned long)hdr[85] << 8) | hdr[86];
     info->rsrcSize = ((unsigned long)hdr[87] << 24) | ((unsigned long)hdr[88] << 16) |
-                      ((unsigned long)hdr[89] << 8)  |  (unsigned long)hdr[90];
+                    ((unsigned long)hdr[89] << 8) | hdr[90];
+    if (info->dataSize > 0x7FFFFF00UL || info->rsrcSize > 0x7FFFFF00UL ||
+        info->rsrcSize < 256) return 0;
+    dataPadded = (info->dataSize + 127UL) & ~127UL;
+    rsrcPadded = (info->rsrcSize + 127UL) & ~127UL;
+    return dataPadded <= 0x7FFFFFFFUL - MACBIN_HDR_SZ - rsrcPadded;
+}
 
-    sprintf(buf, "parse: type=%.4s creator=%.4s dsize=%lu rsize=%lu",
-            (char *)&info->type, (char *)&info->creator, info->dataSize, info->rsrcSize);
-    Log(buf);
+static OSErr NamedSpec(const char *name, FSSpec *spec)
+{
+    unsigned char pname[256];
+    CToPascal(name, pname);
+    return FSMakeFSSpec(0, 0, pname, spec);
+}
+
+/* Never reuse or delete a recovery copy from an earlier attempt. Before
+ * exchange this is a candidate; afterward it contains the previous agent. */
+static int ReserveCandidate(FSSpec *spec, MacBinInfo *info)
+{
+    int i;
+    char name[32], message[80];
+    OSErr err;
+    for (i = 1; i <= 99; i++) {
+        sprintf(name, "llm_agent.saved.%03d", i);
+        err = NamedSpec(name, spec);
+        if (err == noErr) continue;
+        if (err != fnfErr) { LogErr("reserve: lookup failed", err); return 0; }
+        sprintf(message, "reserve: candidate/recovery file %s", name);
+        Log(message);
+        err = FSpCreate(spec, info->creator, info->type, smSystemScript);
+        LogErr("reserve: FSpCreate", err);
+        return err == noErr;
+    }
+    Log("reserve: all 99 recovery slots exist; remove obsolete copies manually");
+    return 0;
+}
+
+static int ReadExact(short ref, void *buf, long want)
+{
+    long count = want;
+    OSErr err = FSRead(ref, &count, buf);
+    if (err != noErr || count != want) { LogErr("read: short/failed FSRead", err); return 0; }
     return 1;
 }
 
-/* Copies `size` bytes from src into a data-fork FILE* (dstFile != NULL)
- * or a resource-fork ref num (dstFile == NULL), then advances src past
- * the MacBinary padding up to the next 128-byte boundary. */
-static int CopyForkFromMacBinary(FILE *src, unsigned long size,
-                                  FILE *dstFile, short dstRefNum)
+/* Use File Manager calls for both forks, including checked close and a
+ * volume flush. The stdio remove shim does not work on the tested runtime. */
+static int CopyFork(short src, unsigned long size, FSSpec *spec, int resource)
 {
     static unsigned char buf[COPY_CHUNK];
     unsigned long remaining = size;
-    unsigned long padded = (size + 127UL) & ~127UL;
-    unsigned long padRemaining;
-
-    while (remaining > 0) {
-        unsigned long want = (remaining > COPY_CHUNK) ? COPY_CHUNK : remaining;
-        if (fread(buf, 1, want, src) != want) {
-            Log("copyfork: fread (data) short");
-            return 0;
-        }
-        if (dstFile != NULL) {
-            if (fwrite(buf, 1, want, dstFile) != want) {
-                Log("copyfork: fwrite short");
-                return 0;
-            }
-        } else {
-            long count = (long)want;
-            OSErr err = FSWrite(dstRefNum, &count, buf);
-            if (err != noErr || (unsigned long)count != want) {
-                LogErr("copyfork: FSWrite failed", err);
-                return 0;
-            }
-        }
-        remaining -= want;
+    short ref;
+    int ok = 1;
+    OSErr err = resource ? FSpOpenRF(spec, fsWrPerm, &ref) : FSpOpenDF(spec, fsWrPerm, &ref);
+    if (err != noErr) { LogErr("copy: open fork", err); return 0; }
+    while (remaining && ok) {
+        long count = remaining > COPY_CHUNK ? COPY_CHUNK : (long)remaining;
+        long want = count;
+        if (!ReadExact(src, buf, want)) { ok = 0; break; }
+        err = FSWrite(ref, &count, buf);
+        if (err != noErr || count != want) { LogErr("copy: short/failed FSWrite", err); ok = 0; }
+        remaining -= (unsigned long)want;
     }
-
-    padRemaining = padded - size;
-    while (padRemaining > 0) {
-        unsigned long want = (padRemaining > COPY_CHUNK) ? COPY_CHUNK : padRemaining;
-        if (fread(buf, 1, want, src) != want) {
-            Log("copyfork: fread (pad) short");
-            return 0;
-        }
-        padRemaining -= want;
-    }
-
-    return 1;
+    err = FSClose(ref);
+    if (err != noErr) { LogErr("copy: FSClose", err); ok = 0; }
+    if (ok && SetFPos(src, fsFromMark, (long)((128UL - (size & 127UL)) & 127UL)) != noErr) ok = 0;
+    return ok;
 }
 
-static int DecodeStagedUpdate(void)
+static unsigned long ReadBE32(const unsigned char *p)
 {
-    FILE *src;
+    return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) |
+           ((unsigned long)p[2] << 8) | p[3];
+}
+
+static int ResourceHeaderValid(const unsigned char *p, unsigned long size)
+{
+    unsigned long data = ReadBE32(p), map = ReadBE32(p + 4);
+    unsigned long dataLen = ReadBE32(p + 8), mapLen = ReadBE32(p + 12);
+    if (data < 256 || map < 256 || data > size || map > size ||
+        dataLen > size - data || mapLen > size - map || mapLen < 28) return 0;
+    return data + dataLen <= map || map + mapLen <= data;
+}
+
+/* HFS writes catalog recovery information into the resource header's
+ * system-reserved bytes [16,128) when flushing/closing the file. Compare
+ * all other bytes, including the application-reserved area and resource map.
+ * Only allow this exception after validating a standard resource header. */
+static long ForkDifference(const unsigned char *a, const unsigned char *b,
+                           long n, unsigned long offset, int resource)
+{
+    long i;
+    for (i = 0; i < n; i++) {
+        unsigned long pos = offset + (unsigned long)i;
+        if (resource && pos >= 16 && pos < 128) continue;
+        if (a[i] != b[i]) return i;
+    }
+    return -1;
+}
+
+/* Read both forks back before touching the installed application. */
+static int VerifyFork(short src, unsigned long size, FSSpec *spec, int resource)
+{
+    static unsigned char expected[COPY_CHUNK], actual[COPY_CHUNK];
+    unsigned long remaining = size;
+    short ref;
+    long length = 0;
+    int ok;
+    OSErr err = resource ? FSpOpenRF(spec, fsRdPerm, &ref) : FSpOpenDF(spec, fsRdPerm, &ref);
+    if (err != noErr) { LogErr("verify: open fork", err); return 0; }
+    err = GetEOF(ref, &length);
+    ok = err == noErr && length == (long)size;
+    if (!ok) {
+        char msg[128];
+        sprintf(msg, "verify: fork=%d length=%ld expected=%lu err=%d", resource, length, size, (int)err);
+        Log(msg);
+    }
+    while (remaining && ok) {
+        long count = remaining > COPY_CHUNK ? COPY_CHUNK : (long)remaining;
+        long want = count;
+        if (!ReadExact(src, expected, want)) { ok = 0; break; }
+        if (resource && remaining == size && !ResourceHeaderValid(expected, size)) {
+            Log("verify: invalid resource header"); ok = 0; break;
+        }
+        err = FSRead(ref, &count, actual);
+        if (err != noErr || count != want || ForkDifference(expected, actual, want, size - remaining, resource) >= 0) {
+            char msg[128];
+            sprintf(msg, "verify: fork=%d offset=%lu count=%ld expected=%ld err=%d mismatch=%d",
+                    resource, size - remaining, count, want, (int)err,
+                    err == noErr && count == want ? ForkDifference(expected, actual, want, size - remaining, resource) >= 0 : -1);
+            Log(msg);
+            if (err == noErr && count == want) {
+                long i;
+                for (i = 0; i < want; i++) if (ForkDifference(expected + i, actual + i, 1, size - remaining + (unsigned long)i, resource) >= 0) {
+                    sprintf(msg, "verify: first difference at fork byte %lu", size - remaining + (unsigned long)i);
+                    Log(msg);
+                    break;
+                }
+            }
+            ok = 0;
+        }
+        remaining -= (unsigned long)want;
+    }
+    err = FSClose(ref);
+    if (err != noErr) { LogErr("verify: FSClose", err); ok = 0; }
+    if (ok && SetFPos(src, fsFromMark, (long)((128UL - (size & 127UL)) & 127UL)) != noErr) ok = 0;
+    return ok;
+}
+
+static int PrepareCandidate(FSSpec *spec)
+{
+    short src;
+    FSSpec staged;
     unsigned char hdr[MACBIN_HDR_SZ];
     MacBinInfo info;
-    FSSpec spec;
-    unsigned char pname[256];
+    long length;
+    unsigned long expected;
+    int ok = 0, created = 0;
     OSErr err;
-    short rfRefNum;
-    FILE *dataFile;
-    int ok = 1;
-
-    Log("decode: opening staged file");
-    src = fopen(STAGED_PATH, "rb");
-    if (!src) {
-        Log("decode: fopen(STAGED_PATH) failed -- file missing or wrong directory");
-        return 0;
+    if (NamedSpec(STAGED_PATH, &staged) != noErr || FSpOpenDF(&staged, fsRdPerm, &src) != noErr) {
+        Log("prepare: cannot open staging file"); return 0;
     }
-
-    if (fread(hdr, 1, MACBIN_HDR_SZ, src) != MACBIN_HDR_SZ) {
-        Log("decode: short read on 128-byte header");
-        fclose(src);
-        return 0;
-    }
-    if (!ParseMacBinaryHeader(hdr, &info)) {
-        fclose(src);
-        return 0;
-    }
-
-    /* Replace any existing file at the target name via the File
-     * Manager directly, not POSIX remove() -- a file decoded by
-     * StuffIt Expander can come out with the Finder "locked" flag set,
-     * which remove() can't delete through (confirmed via UPDATER.LOG:
-     * remove() returned -1, then FSpCreate failed with dupFNErr since
-     * the old file was still there). Clear any lock first, then
-     * FSpDelete. Ignore fnfErr -- the target may not exist yet on a
-     * first-ever update.
-     *
-     * The old llm_agent's own QUITAGENT handler stops accepting new
-     * network connections essentially immediately (confirmed
-     * separately), but that's apparently not the same moment its file
-     * is fully released -- confirmed via UPDATER.LOG: FSpDelete came
-     * back fBsyErr (-47, "file busy") on a run where QUITAGENT had
-     * already been sent and acknowledged moments earlier.
-     *
-     * agent-win16's RESTART.EXE hit the exact same shape of problem
-     * (old instance mid-teardown when the helper tries to touch its
-     * file) and found that *actively polling* the old process's state
-     * in a retry loop was itself the cause of intermittent crashes --
-     * a different fault each time, always right around when the poll
-     * loop queried old-task state while that task's own exit path was
-     * mid-teardown. Its fix was a single flat, hands-off wait with zero
-     * interaction with the old task's state, then one clean attempt.
-     * Same fix here: don't retry FSpDelete in a loop (that's still
-     * repeatedly touching the file the old process may still be
-     * tearing down); wait once, quietly, then try exactly once.
-     *
-     * That wait can't be a raw Delay() though (confirmed live: froze
-     * mouse clicks system-wide for the whole 10 seconds) -- Delay()
-     * alone doesn't hand the CPU to other applications any more than
-     * llm_agent's old SystemTask()-only loop did. Loop on
-     * WaitNextEvent instead, discarding whatever it returns, exactly
-     * like llm_agent's own Idle(). */
-    {
-        unsigned long startTicks = TickCount();
-        Log("decode: waiting for old process to finish tearing down");
-        while (TickCount() - startTicks < 600) { /* 10s at 60 ticks/sec */
-            EventRecord event;
-            WaitNextEvent(everyEvent, &event, 6, NULL);
-        }
-    }
-
-    CToPascal(TARGET_NAME, pname);
-    err = FSMakeFSSpec(0, 0, pname, &spec);
-    LogErr("decode: FSMakeFSSpec (pre-delete)", err);
-    if (err == noErr) {
-        FSpRstFLock(&spec);
-        err = FSpDelete(&spec);
-        LogErr("decode: FSpDelete", err);
-        if (err != noErr) {
-            fclose(src);
-            return 0;
-        }
-    } else if (err != fnfErr) {
-        fclose(src);
-        return 0;
-    } else {
-        Log("decode: target does not exist yet (first update)");
-    }
-
-    err = FSpCreate(&spec, info.creator, info.type, smSystemScript);
-    LogErr("decode: FSpCreate", err);
-    if (err != noErr) {
-        fclose(src);
-        return 0;
-    }
-
-    dataFile = fopen(TARGET_NAME, "wb");
-    if (!dataFile) {
-        Log("decode: fopen(TARGET_NAME, wb) failed");
-        fclose(src);
-        return 0;
-    }
-    ok = CopyForkFromMacBinary(src, info.dataSize, dataFile, 0);
-    fclose(dataFile);
-    if (!ok) {
-        Log("decode: data fork copy failed");
-        fclose(src);
-        return 0;
-    }
-    Log("decode: data fork written");
-
-    err = FSpOpenRF(&spec, fsWrPerm, &rfRefNum);
-    LogErr("decode: FSpOpenRF", err);
-    if (err != noErr) {
-        fclose(src);
-        return 0;
-    }
-    ok = CopyForkFromMacBinary(src, info.rsrcSize, NULL, rfRefNum);
-    FSClose(rfRefNum);
-    fclose(src);
-
-    if (!ok) {
-        Log("decode: resource fork copy failed");
-        return 0;
-    }
-    Log("decode: resource fork written -- success");
-    return 1;
+    if (!ReadExact(src, hdr, sizeof(hdr)) || !ParseMacBinaryHeader(hdr, &info)) goto done;
+    expected = MACBIN_HDR_SZ + ((info.dataSize + 127UL) & ~127UL) + ((info.rsrcSize + 127UL) & ~127UL);
+    if (GetEOF(src, &length) != noErr) goto done;
+    if (length < 0 || (unsigned long)length != expected) { Log("prepare: staged length mismatch"); goto done; }
+    if (SetFPos(src, fsFromStart, MACBIN_HDR_SZ) != noErr) goto done;
+    if (!ReserveCandidate(spec, &info)) goto done;
+    created = 1;
+    if (!CopyFork(src, info.dataSize, spec, 0) || !CopyFork(src, info.rsrcSize, spec, 1)) { Log("prepare: fork copy failed"); goto done; }
+    err = FlushVol(NULL, spec->vRefNum);
+    if (err != noErr) { LogErr("prepare: FlushVol", err); goto done; }
+    if (SetFPos(src, fsFromStart, MACBIN_HDR_SZ) != noErr ||
+        !VerifyFork(src, info.dataSize, spec, 0) || !VerifyFork(src, info.rsrcSize, spec, 1)) { Log("prepare: fork readback failed"); goto done; }
+    ok = 1;
+done:
+    err = FSClose(src);
+    if (err != noErr) { LogErr("prepare: close staging file", err); ok = 0; }
+    if (!ok && created) LogErr("prepare: remove incomplete candidate", FSpDelete(spec));
+    if (ok) Log("prepare: both forks closed, flushed and verified");
+    return ok;
 }
 
-static void LaunchTargetAndQuit(void)
+static OSErr Launch(FSSpec *spec)
 {
-    FSSpec spec;
-    unsigned char pname[256];
     LaunchParamBlockRec pb;
     OSErr err;
-
-    CToPascal(TARGET_NAME, pname);
-    err = FSMakeFSSpec(0, 0, pname, &spec);
-    LogErr("launch: FSMakeFSSpec", err);
-    if (err != noErr) return;
-
     memset(&pb, 0, sizeof(pb));
-    /* launchBlockID/launchEPBLength MUST be set to these exact values
-     * (Inside Macintosh: Processes) so the Process Manager recognizes
-     * this as a valid extended launch parameter block. Leaving them
-     * zeroed (the earlier bug here) hard-locked the whole machine --
-     * confirmed via UPDATER.LOG, which stopped mid-sequence right
-     * before this call with no error ever logged. */
     pb.launchBlockID = extendedBlock;
     pb.launchEPBLength = extendedBlockLen;
-    pb.launchAppSpec = &spec;
+    pb.launchAppSpec = spec;
     pb.launchControlFlags = launchContinue;
-    Log("launch: about to call LaunchApplication");
     err = LaunchApplication(&pb);
     LogErr("launch: LaunchApplication", err);
+    return err;
+}
+
+/* Exchange keeps the installed file's ID (and Startup Items aliases) valid.
+ * It swaps both forks in the catalog; there is no delete-before-create gap.
+ * If exchange is unsupported, retain both files and leave the target alone.
+ * See Inside Macintosh: Files, File Manager, FSpExchangeFiles. */
+static int InstallUpdate(void)
+{
+    FSSpec target, saved, stage;
+    OSErr err;
+    if (NamedSpec(TARGET_NAME, &target) != noErr) {
+        Log("update: installed target missing; refusing replacement");
+        return 0;
+    }
+    if (!PrepareCandidate(&saved)) {
+        Log("update: preparation failed; installed application preserved");
+        Launch(&target);
+        return 0;
+    }
+    err = FSpExchangeFiles(&target, &saved);
+    LogErr("install: exchange", err);
+    if (err != noErr) {
+        Log("update: exchange failed; retaining both files for recovery");
+        Launch(&target);
+        return 0;
+    }
+    err = FlushVol(NULL, target.vRefNum);
+    if (err != noErr) LogErr("install: FlushVol", err);
+    if (err == noErr) err = Launch(&target);
+    if (err != noErr) {
+        OSErr restored = FSpExchangeFiles(&target, &saved);
+        LogErr("rollback: exchange", restored);
+        LogErr("rollback: FlushVol", FlushVol(NULL, target.vRefNum));
+        if (restored == noErr) {
+            Log("update: previous application restored; retrying its launch");
+            Launch(&target);
+        } else {
+            Log("update: ROLLBACK FAILED; previous application retained in saved file; trying it directly");
+            Launch(&saved);
+        }
+        return 0;
+    }
+    /* Only remove the staging blob after a successful launch. Keep the
+     * previous application in its numbered saved file for manual recovery. */
+    err = NamedSpec(STAGED_PATH, &stage);
+    if (err == noErr) err = FSpDelete(&stage);
+    LogErr("cleanup: staged file", err);
+    Log("update: replacement launched; previous application retained");
+    return 1;
 }
 
 int main(void)
 {
+    unsigned long startTicks;
     InitGraf(&qd.thePort);
-
     Log("=== llm_updater starting ===");
-
-    if (DecodeStagedUpdate()) {
-        int r = remove(STAGED_PATH);
-        char buf[64];
-        sprintf(buf, "cleanup: remove(%s) returned %d", STAGED_PATH, r);
-        Log(buf);
-        LaunchTargetAndQuit();
-        Log("=== llm_updater finished: success ===");
-    } else {
-        Log("=== llm_updater finished: DECODE FAILED, target not touched ===");
+    /* Retain the proven cooperative teardown grace period. Do not poll or
+     * manipulate the old agent's process or files during its cleanup. */
+    startTicks = TickCount();
+    while (TickCount() - startTicks < 600) {
+        EventRecord event;
+        WaitNextEvent(everyEvent, &event, 6, NULL);
     }
-
+    if (!InstallUpdate()) {
+        Log("=== llm_updater finished: UPDATE FAILED (see recovery results above) ===");
+        return 1;
+    }
+    Log("=== llm_updater finished: launch accepted ===");
     return 0;
 }

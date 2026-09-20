@@ -2,3 +2,9 @@
 # Windows checkout gives them CRLF endings, and copying one to the host then
 # fails with "bad interpreter: /bin/bash^M".
 *.sh text eol=lf
+
+# DOS startup scripts must retain CRLF even when packaged from Unix.
+agent-dos/LLMSTART.BAT text eol=crlf
+
+# cmd.exe must be able to run the NetWare 4 build from any checkout.
+agent-netware/nw4/*.bat text eol=crlf

@@ -10,18 +10,18 @@
  * Unsupported: EXECDETACH, CLICK, WINLIST, CLIPSET, REG*, PSLIST,
  *              PSKILL, REBOOT
  *
- * EXEC: CLIB system() — typically a console command; no stdout capture
+ * EXEC: CLIB system() â€” typically a console command; no stdout capture
  * (LEN:0 + EXIT:rc). Prefer PUT of an .NCF/.NLM and EXEC that by name.
- * SCREENSHOT: Install via StuffKey DUMP only (no CopyFromScreenMemory —
+ * SCREENSHOT: Install via StuffKey DUMP only (no CopyFromScreenMemory â€”
  *             that hangs/abends on NWSNUT). DUMP has no color attrs so
  *             menu highlight is not visible. Else System Console copy.
  * KEY/TYPE: ungetch via ScanScreens handle + SetCurrentScreen (no
- *           CreateScreen bind of System Console/Install — that GPFs on UNLOAD).
+ *           CreateScreen bind of System Console/Install â€” that GPFs on UNLOAD).
  * SCREENS: list ScanScreens names (SIZE: text) for menu discovery.
- * SHUTDOWN: OK then DownFileServer(1) (force down — lab use).
+ * SHUTDOWN: OK then DownFileServer(1) (force down â€” lab use).
  * UPDATE: OK then LOAD UPDATE (expects SYS:SYSTEM\LLMAGENT.NEW + UPDATE.NLM).
  * AUTOEXEC: ensure SYS:SYSTEM\AUTOEXEC.NCF has LOAD CLIBAUX + LOAD LLMAGENT.
- * DEBUG: DEBUG / DEBUG 0 / DEBUG 1 — runtime verbose flag; when on, also
+ * DEBUG: DEBUG / DEBUG 0 / DEBUG 1 â€” runtime verbose flag; when on, also
  *        appends to SYS:SYSTEM\LLMAGENT.LOG (truncated on DEBUG 1).
  * Config: prefer SYS:SYSTEM\LLMAGENT.INI (A: is fallback only).
  */
@@ -30,6 +30,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+
+/* Watcom's macro inspects its private FILE layout. The 3.12 build uses
+ * Novell CLIB FILEs instead, so use the runtime function at the ABI boundary.
+ * The nw4 build resolves the function in its own Watcom runtime. */
+#undef ferror
 
 #include "nwsock.h"
 #include "font8.h"
@@ -43,14 +48,14 @@
 #define LOG_PATH         "SYS:SYSTEM\\LLMAGENT.LOG"
 #define STUFFKEY_NLM     "SYS:SYSTEM\\STUFFKEY.NLM"
 #define CLIBAUX_NLM      "SYS:SYSTEM\\CLIBAUX.NLM"
-/* Script + tiny NCF wrapper — system() on 3.12 truncates ~32 chars. */
+/* Script + tiny NCF wrapper â€” system() on 3.12 truncates ~32 chars. */
 #define STUFFKEY_SCRIPT  "SYS:SYSTEM\\L.SK"
 #define STUFFKEY_NCF     "SYS:SYSTEM\\SK.NCF"
 #define STUFFKEY_RUN     "SK"
 #define SKDUMP_LOG       "SYS:SYSTEM\\MD.TXT"
 #define AUTOEXEC_NCF     "SYS:SYSTEM\\AUTOEXEC.NCF"
 #define AUTOEXEC_MAX     8192
-/* CreateScreen flags (nwconio.h) — must not steal the operator console. */
+/* CreateScreen flags (nwconio.h) â€” must not steal the operator console. */
 #define NW_DONT_AUTO_ACTIVATE  0x01
 #define NW_DONT_SWITCH_SCREEN  0x02
 #define NW_AUTO_DESTROY_SCREEN 0x20 /* no "Press any key to close screen" */
@@ -90,14 +95,14 @@ static void on_unload(void) {
         g_listen = -1;
     }
     /*
-     * Do not DestroyScreen here — NetWare 3.12 has abended in the console
+     * Do not DestroyScreen here â€” NetWare 3.12 has abended in the console
      * command process when UNLOAD runs AtUnload that tears down screens.
      * The loader frees NLM-owned screens when the module exits.
      */
     g_our_screen = -1;
 }
 
-/* Never block UNLOAD with a prompt — automated UPDATE / lab ops need silence.
+/* Never block UNLOAD with a prompt â€” automated UPDATE / lab ops need silence.
  * (Returning nonzero yields "Unload module anyway?" and can strand UPDATE.)
  */
 int llm_agent_check(void) {
@@ -122,42 +127,66 @@ static void debug_puts(const char *msg) {
     }
 }
 
+#define NET_DEADLINE(sec) ((unsigned long)GetCurrentTicks() + (sec) * 18UL)
+#define NET_EXPIRED(d) ((long)((unsigned long)GetCurrentTicks() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 static int send_all(const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     while (sent < len) {
-        int n = send(g_client, (char *)(buf + sent), len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
-        ThreadSwitch();
+        int n;
+        if (net_expired(deadline) || !g_running) return net_fail();
+        n = send(g_client, (char *)(buf + sent), len - sent, 0);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else cpu_idle(); /* zero and negative results make no progress */
     }
-    return 0;
+    return net_failed ? -1 : 0;
 }
 
 static int send_cstr(const char *text) {
     return send_all(text, (int)strlen(text));
 }
 
-static int recv_byte(char *out) {
+static int recv_some(char *out, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     for (;;) {
-        int n = recv(g_client, out, 1, 0);
-        if (n == 1) return 0;
-        if (n == 0) return -1; /* peer closed */
-        /* nonblocking: no data yet */
-        if (!g_running) return -1;
-        ThreadSwitchWithDelay();
+        int n;
+        if (net_expired(deadline) || !g_running) return net_fail();
+        n = recv(g_client, out, len, 0);
+        if (n > 0) return n;
+        if (n == 0) return net_fail();
+        cpu_idle();
     }
 }
 
+static int recv_byte(char *out) {
+    return recv_some(out, 1) == 1 ? 0 : -1;
+}
+
 static int recv_line(char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        if (recv_byte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_byte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void load_config(void) {
@@ -183,7 +212,7 @@ static void load_config(void) {
         }
     }
     if (!f) {
-        /* g_debug still 0 — quiet unless already on somehow */
+        /* g_debug still 0 â€” quiet unless already on somehow */
         return;
     }
     while (fgets(line, sizeof(line), f)) {
@@ -258,15 +287,10 @@ static int handle_put(char *args) {
     remaining = size;
     while (remaining > 0) {
         int want = remaining < (long)sizeof(g_iobuf) ? (int)remaining : (int)sizeof(g_iobuf);
-        int got = 0;
-        while (got < want) {
-            char c;
-            if (recv_byte(&c) < 0) {
-                openFailed = 1;
-                remaining = 0;
-                break;
-            }
-            g_iobuf[got++] = c;
+        int got = recv_some(g_iobuf, want);
+        if (got <= 0) {
+            openFailed = 1;
+            break;
         }
         if (got > 0 && !openFailed) {
             if ((int)fwrite(g_iobuf, 1, got, f) != got) openFailed = 1;
@@ -274,7 +298,11 @@ static int handle_put(char *args) {
         remaining -= got;
         ThreadSwitch();
     }
-    if (f) fclose(f);
+    if (f) {
+        /* Buffered disk errors may surface only at flush/close. */
+        if (fflush(f) != 0 || ferror(f)) openFailed = 1;
+        if (fclose(f) != 0) openFailed = 1;
+    }
     if (openFailed) {
         send_cstr("ERR:write failed\n");
         return -1;
@@ -409,7 +437,7 @@ static int count_printable(const unsigned char *cells, int ncells) {
 
 /*
  * Private CLIB screen for ScanScreens/CopyFromScreenMemory context.
- * Shows up in Ctrl+Esc as "LLMAGENT" — do not use it interactively; the
+ * Shows up in Ctrl+Esc as "LLMAGENT" â€” do not use it interactively; the
  * agent never reads keys there. On 3.12, SetCurrentScreen(LLMAGENT) can
  * still make it the operator-visible screen (despite DONT_SWITCH flags).
  */
@@ -473,7 +501,7 @@ static int try_copy_screen(int id, unsigned char *cells, WORD *rowsP, WORD *cols
 
 /*
  * CopyFromScreenMemory hangs/abends on Install/NWSNUT on this 3.12 box.
- * StuffKey <DUMP> already works — parse that into a text cell buffer.
+ * StuffKey <DUMP> already works â€” parse that into a text cell buffer.
  */
 static int parse_skdump_to_cells(unsigned char *cells, WORD *rowsP, WORD *colsP) {
     FILE *f;
@@ -538,7 +566,7 @@ static int parse_skdump_to_cells(unsigned char *cells, WORD *rowsP, WORD *colsP)
 
 static int ensure_clibaux(void);
 
-/* Write SK.NCF and run it — avoids system() 32-char truncation of LOAD lines. */
+/* Write SK.NCF and run it â€” avoids system() 32-char truncation of LOAD lines. */
 static int run_stuffkey_ncf(const char *flags) {
     FILE *f;
     int i;
@@ -596,7 +624,7 @@ static int capture_console_text(unsigned char *cells, WORD *rowsP, WORD *colsP) 
 
     install_name[0] = '\0';
     /*
-     * Prefer not to CreateScreen("LLMAGENT") — it shows in Ctrl+Esc and
+     * Prefer not to CreateScreen("LLMAGENT") â€” it shows in Ctrl+Esc and
      * console UNLOAD has abended tearing it down. ScanScreens usually works
      * without our own screen; fall back to ensure_screen_context only if needed.
      */
@@ -617,7 +645,7 @@ static int capture_console_text(unsigned char *cells, WORD *rowsP, WORD *colsP) 
         WORD r, c;
         int score;
         /*
-         * Never CopyFromScreenMemory on Install/NWSNUT — hangs or abends on
+         * Never CopyFromScreenMemory on Install/NWSNUT â€” hangs or abends on
          * this 3.12 box (full rect and row-by-row both unsafe).
          * StuffKey DUMP is chars-only (no reverse-video highlight).
          */
@@ -650,7 +678,7 @@ static int capture_console_text(unsigned char *cells, WORD *rowsP, WORD *colsP) 
             continue;
         if (strstr(name, "LLMAGENT") != NULL)
             continue;
-/* Install: StuffKey DUMP only — never CopyFromScreenMemory. */
+/* Install: StuffKey DUMP only â€” never CopyFromScreenMemory. */
         if (strstr(name, "Install") != NULL || strstr(name, "INSTALL") != NULL)
             continue;
 
@@ -849,7 +877,7 @@ static int name_eq_ci(const char *a, const char *b) {
 
 /*
  * Prefer a non-debugger operator screen (INSTALL after LOAD INSTALL).
- * Else bind System Console. Only DisplayScreen for non-console screens —
+ * Else bind System Console. Only DisplayScreen for non-console screens â€”
  * Novell scrhand.c stuffs System Console with SetCurrentScreen alone.
  *
  * NOTE: On this CLIB, SetCurrentScreen's return is not a reliable errno
@@ -886,7 +914,7 @@ static int resolve_input_screen(char *nameOut, int nameOutLen) {
     displayed_name[0] = '\0';
     any_name[0] = '\0';
     if (nameOut && nameOutLen > 0) nameOut[0] = '\0';
-    /* StuffKey only needs the name — avoid CreateScreen("LLMAGENT"). */
+    /* StuffKey only needs the name â€” avoid CreateScreen("LLMAGENT"). */
 
     while ((id = ScanScreens(id, name, &attr)) != 0) {
         if (screen_name_ignored(name)) continue;
@@ -942,7 +970,7 @@ static int begin_input_stuff(int *savedP) {
     *savedP = GetCurrentScreen();
     /*
      * CLIB ungetch only feeds getch/getche screens. INSTALL uses NWSNUT
-     * (C-Worthy) and ignores it — DisplayScreen does not fix that and has
+     * (C-Worthy) and ignores it â€” DisplayScreen does not fix that and has
      * correlated with UNLOAD GPFs. Keep SetCurrentScreen + ungetch for
      * System Console stuffing; INSTALL needs StuffKey (separate helper).
      */
@@ -1092,7 +1120,7 @@ static int run_stuffkey(const char *screen, const char *body) {
         send_cstr("ERR:missing SYS:SYSTEM\\CLIBAUX.NLM (required by StuffKey on 3.12)\n");
         return -1;
     }
-    /* Binary write — text mode turns \n into \r\r\n and breaks the parser. */
+    /* Binary write â€” text mode turns \n into \r\r\n and breaks the parser. */
     f = fopen(STUFFKEY_SCRIPT, "wb");
     if (!f) {
         send_cstr("ERR:cannot write L.SK\n");
@@ -1132,7 +1160,7 @@ static char *strip_key_modifiers(char *tok) {
 
 /*
  * KEY up
- * KEY up up down enter     — one StuffKey run (comma or whitespace separators)
+ * KEY up up down enter     â€” one StuffKey run (comma or whitespace separators)
  *
  * Batching matters: one LOAD STUFFKEY per arrow key abends 3.12 with zombies.
  */
@@ -1165,7 +1193,7 @@ static int handle_key(const char *keyspec) {
     if (screen[0] == '\0')
         strncpy(screen, "System Console", sizeof(screen) - 1);
 
-    /* Prefer StuffKey whenever present — required for INSTALL/NWSNUT. */
+    /* Prefer StuffKey whenever present â€” required for INSTALL/NWSNUT. */
     if (stuffkey_present()) {
         body[0] = '\0';
         bn = 0;
@@ -1307,7 +1335,7 @@ static int handle_screens(void) {
     LONG attr = 0;
     char hdr[32];
 
-    /* No CreateScreen — listing must not invent an LLMAGENT Ctrl+Esc entry. */
+    /* No CreateScreen â€” listing must not invent an LLMAGENT Ctrl+Esc entry. */
     while ((id = ScanScreens(id, name, &attr)) != 0) {
         int n;
         int disp = CheckIfScreenDisplayed(id, 0) ? 1 : 0;
@@ -1325,7 +1353,7 @@ static int handle_screens(void) {
 }
 
 static int handle_shutdown(void) {
-    ConsolePrintf("LLMAGENT: SHUTDOWN — DownFileServer(1)\r\n");
+    ConsolePrintf("LLMAGENT: SHUTDOWN â€” DownFileServer(1)\r\n");
     if (send_cstr("OK\n") < 0) return -1;
     g_running = 0;
     DownFileServer(1);
@@ -1346,7 +1374,7 @@ static int handle_update(void) {
         return -1;
     }
     fclose(f);
-    debug_puts("LLMAGENT: UPDATE — LOAD UPDATE then self-exit\r\n");
+    debug_puts("LLMAGENT: UPDATE â€” LOAD UPDATE then self-exit\r\n");
     if (send_cstr("OK\n") < 0) return -1;
     /*
      * Console "UNLOAD LLMAGENT" has repeatedly GPF'd on 3.12 (Console
@@ -1364,7 +1392,7 @@ static int handle_update(void) {
         g_listen = -1;
     }
     /*
-     * Do NOT DestroyScreen here — GPF/abend on 3.12 during UPDATE.
+     * Do NOT DestroyScreen here â€” GPF/abend on 3.12 during UPDATE.
      * Screen was created with AUTO_DESTROY_SCREEN so exit() should not
      * block on "Press any key to close screen".
      */
@@ -1375,7 +1403,7 @@ static int handle_update(void) {
 }
 
 /*
- * AUTOEXEC — ensure SYS:SYSTEM\AUTOEXEC.NCF loads LLMAGENT after TCP is up.
+ * AUTOEXEC â€” ensure SYS:SYSTEM\AUTOEXEC.NCF loads LLMAGENT after TCP is up.
  * Idempotent. Also loads CLIBAUX (StuffKey dependency on 3.12).
  */
 static int buf_has_token_ci(const char *buf, int n, const char *token) {
@@ -1460,7 +1488,7 @@ static int handle_autoexec(void) {
 }
 
 /*
- * DEBUG / DEBUG 0 / DEBUG 1 — runtime verbose toggle.
+ * DEBUG / DEBUG 0 / DEBUG 1 â€” runtime verbose toggle.
  * DEBUG 1 truncates SYS:SYSTEM\LLMAGENT.LOG so a following GET is a clean session.
  */
 static int handle_debug(const char *args) {
@@ -1493,6 +1521,7 @@ static int handle_debug(const char *args) {
 }
 
 static void handle_client(void) {
+    net_reset();
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
         send_cstr("FAIL\n");
@@ -1565,7 +1594,7 @@ static int server_main(void) {
     ConsolePrintf("LLMAGENT: opening TCP listen socket...\r\n");
     ls = socket(AF_INET, SOCK_STREAM, 0);
     if (ls < 0) {
-        ConsolePrintf("LLMAGENT: socket() failed (rc=%d) — is TCP/IP up?\r\n", ls);
+        ConsolePrintf("LLMAGENT: socket() failed (rc=%d) â€” is TCP/IP up?\r\n", ls);
         return 1;
     }
     g_listen = ls;
@@ -1612,7 +1641,11 @@ static int server_main(void) {
         }
         {
             int nb = 1;
-            ioctl(g_client, FIONBIO, &nb);
+            if (ioctl(g_client, FIONBIO, &nb) < 0) {
+                close(g_client);
+                g_client = -1;
+                continue;
+            }
         }
         debug_puts("LLMAGENT: client connected\r\n");
         handle_client();

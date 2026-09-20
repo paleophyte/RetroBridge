@@ -5,19 +5,22 @@ option exit=_Stop
 option map=llm_agent.map
 option stack=65536
 option version=1.0.0
+option copyright 'llm_agent for NetWare 4.11'
+option screenname 'None'
 option check=llm_agent_check
-libpath c:\watcom\lib386
-libpath c:\watcom\lib386\netware
-library clib3s
 file llm_agent.obj
+file ..\vendor\imports\prelude.obj
 module clib
-import _StartNLM, _TerminateNLM, _SetupArgv, __Must_Have_Three_One_Or_Greater
-import Alloc, Free, AllocateResourceTag, atexit, ExitThread, stackavail
-import BeginThread, CloseLocalSemaphore, GetThreadID, OpenLocalSemaphore
-import SignalLocalSemaphore, ThreadSwitch, WaitOnLocalSemaphore
-import __STK, __get_errno_ptr, _exit, getche, isatty, lseek, read, write, sopen, tell
-import ConsolePrintf, system
+import _StartNLM, _TerminateNLM, _SetupArgv
+import ConsolePrintf, ThreadSwitch, ThreadSwitchWithDelay, ioctl, system, AtUnload
 import socket, bind, listen, accept, send, recv, close, setsockopt
+import memset, memcpy, strcmp, strlen, strncmp, strncpy, strpbrk, strrchr, strstr
+import atoi, atol, sprintf, fprintf
+import GetCurrentTicks, ferror
+import fopen, fclose, fflush, fgets, fread, fwrite, fseek, ftell, fputs
 import GetServerInformation, GetVolumeInfoWithNumber
-import vsprintf
+import CreateScreen, CopyFromScreenMemory
+import GetCurrentScreen, GetSizeOfScreen, GetScreenInfo
+import SetCurrentScreen, ScanScreens, CheckIfScreenDisplayed, ungetch
+import DownFileServer, exit, delay
 name LLMAGENT

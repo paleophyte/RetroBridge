@@ -6,14 +6,20 @@
 host = 192.168.56.10
 exec_port = 2222
 exec_token = REPLACE_WITH_UNIQUE_TOKEN
+# Only confirmed Win32 agents have the larger 4096-byte command buffer.
+max_command_bytes = 4094
+# Optional response/EXEC-output cap in bytes (default 64 MiB):
+# max_response_bytes = 67108864
 
 # exec_port is optional - defaults to 2222.
 [winxp-1]
 host = 192.168.56.11
 exec_token = a-different-long-random-shared-secret
+max_command_bytes = 4094
 
 # FreeDOS guest running agent-dos/llm_agent.exe (Watt-32 + packet driver).
 # Same protocol; Windows-only tools return ERR from the DOS agent.
+# DOS/Win16/OS2/Mac/NetWare keep max_command_bytes at the default 510.
 [freedos-1]
 host = 192.168.56.20
 exec_token = change-me-freedos-shared-secret
@@ -27,3 +33,10 @@ exec_token = change-me-os2-shared-secret
 [netware-1]
 host = 192.168.56.30
 exec_token = change-me-netware-shared-secret
+
+# Inventory-only infrastructure host (for example, a Linux QEMU host).
+# Listed by the bridge, but agent tools cannot target it; use SSH separately.
+# agent_enabled defaults to true. Set false explicitly; no dummy token needed.
+[ubuntu-host]
+host = 192.168.56.40
+agent_enabled = false

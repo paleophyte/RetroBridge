@@ -16,11 +16,12 @@ import ConsolePrintf, ThreadSwitch, ThreadSwitchWithDelay, ioctl, system, AtUnlo
 import socket, bind, listen, accept, send, recv, close, setsockopt
 import memset, memcpy, strcmp, strlen, strncmp, strncpy, strpbrk, strrchr, strstr
 import atoi, atol, sprintf, fprintf
-import fopen, fclose, fgets, fread, fwrite, fseek, ftell, fputs
+import fopen, fclose, fflush, fgets, fread, fwrite, fseek, ftell, fputs, ferror
 import GetServerInformation, GetVolumeInfoWithNumber
 import CreateScreen, CopyFromScreenMemory
 import GetCurrentScreen, GetSizeOfScreen, GetScreenInfo
 import SetCurrentScreen, ScanScreens, CheckIfScreenDisplayed, ungetch
+import GetCurrentTicks
 import DownFileServer
 import exit, delay
 name LLMAGENT

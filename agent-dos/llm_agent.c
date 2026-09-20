@@ -37,7 +37,7 @@ static char g_exedir[128] = ".";
 /* Watt-32 sockets must not live on a tiny stack frame. */
 static tcp_Socket g_sock;
 
-/* Large I/O buffers in BSS — default DOS stack is ~2KB and Watt-32 +
+/* Large I/O buffers in BSS â€” default DOS stack is ~2KB and Watt-32 +
    system() will overflow if these sit on the call stack. */
 static char g_line[LINE_MAX_LEN];
 static char g_cmd[LINE_MAX_LEN + 64];
@@ -51,7 +51,7 @@ static void tcp_pump(void) {
 }
 
 /* Busy tcp_tick loops pin the host CPU in a VM. STI+HLT yields until the
-   next IRQ (timer/NIC). DOSIDLE alone will not help — we never call DOS idle.
+   next IRQ (timer/NIC). DOSIDLE alone will not help â€” we never call DOS idle.
    Also poll the keyboard: DOS BREAK is only checked on INT 21h, so ^C is
    otherwise ignored while we sit in this loop. */
 static void cpu_idle(void) {
@@ -75,48 +75,70 @@ static int sock_alive(void) {
     return tcp_tick((sock_type *)&g_sock) != 0;
 }
 
+#define NET_DEADLINE(sec) set_timeout((sec) * 1000UL)
+#define NET_EXPIRED(d) chk_timeout(d)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
 static int send_all(const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     while (sent < len) {
         int n;
-        if (!sock_alive()) return -1;
-        n = sock_write((sock_type *)&g_sock, (const BYTE *)(buf + sent), len - sent);
-        if (n <= 0) {
-            if (!sock_dataready((sock_type *)&g_sock) && !sock_established((sock_type *)&g_sock))
-                return -1;
+        if (net_expired(deadline) || !sock_alive()) return net_fail();
+        sock_flushnext((sock_type *)&g_sock);
+        n = sock_fastwrite((sock_type *)&g_sock, (const BYTE *)buf + sent, len - sent);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else {
+            if (!sock_established((sock_type *)&g_sock)) return net_fail();
             cpu_idle();
-            continue;
         }
-        sent += n;
     }
-    return 0;
+    return net_failed ? -1 : 0;
 }
 
 static int send_cstr(const char *text) {
     return send_all(text, (int)strlen(text));
 }
 
-static int recv_byte(char *out) {
+static int recv_some(char *out, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
     for (;;) {
-        if (!sock_alive()) return -1;
+        if (net_expired(deadline) || !sock_alive()) return net_fail();
         if (sock_dataready((sock_type *)&g_sock)) {
-            if (sock_read((sock_type *)&g_sock, (BYTE *)out, 1) == 1)
-                return 0;
+            int n = sock_fastread((sock_type *)&g_sock, (BYTE *)out, len);
+            if (n > 0) return n;
         }
         cpu_idle();
     }
 }
 
+static int recv_byte(char *out) {
+    return recv_some(out, 1) == 1 ? 0 : -1;
+}
+
 static int recv_line(char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        if (recv_byte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_byte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void dirname_of(const char *path, char *out, int outlen) {
@@ -235,15 +257,10 @@ static int handle_put(char *args) {
     remaining = size;
     while (remaining > 0) {
         int want = remaining < (long)sizeof(g_iobuf) ? (int)remaining : (int)sizeof(g_iobuf);
-        int got = 0;
-        while (got < want) {
-            char c;
-            if (recv_byte(&c) < 0) {
-                openFailed = 1;
-                remaining = 0;
-                break;
-            }
-            g_iobuf[got++] = c;
+        int got = recv_some(g_iobuf, want);
+        if (got <= 0) {
+            openFailed = 1;
+            break;
         }
         if (got > 0 && !openFailed) {
             if ((int)fwrite(g_iobuf, 1, got, f) != got) openFailed = 1;
@@ -251,7 +268,11 @@ static int handle_put(char *args) {
         remaining -= got;
         tcp_pump();
     }
-    if (f) fclose(f);
+    if (f) {
+        /* Buffered disk errors may surface only at flush/close. */
+        if (fflush(f) != 0 || ferror(f)) openFailed = 1;
+        if (fclose(f) != 0) openFailed = 1;
+    }
     if (openFailed) {
         send_cstr("ERR:write failed\n");
         return -1;
@@ -713,6 +734,7 @@ static int handle_screenshot(void) {
 /* ---- session ---- */
 
 static void handle_client(void) {
+    net_reset();
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
         send_cstr("FAIL\n");
@@ -779,9 +801,25 @@ static int server_main(void) {
     char ipbuf[16];
 
     printf("llm_agent-dos: Watt-32 init...\n");
+    /* Classic WatTCP exposes a void function; Watt-32 exposes a macro
+       returning a status. Do not claim to listen after failed DHCP. */
+#ifdef sock_init
+    {
+        int rc = sock_init();
+        if (rc != 0) {
+            printf("llm_agent-dos: network initialization failed (code %d)\n", rc);
+            sock_exit();
+            return 1;
+        }
+    }
+#else
     sock_init();
-    /* Classic WatTCP sock_init() is void and exits on fatal failure.
-       Watt-32's sock_init macro returns int; a zero return means ready. */
+#endif
+    if (!my_ip_addr) {
+        printf("llm_agent-dos: no IP address; check WATTCP.CFG and the packet driver\n");
+        sock_exit();
+        return 1;
+    }
     printf("llm_agent-dos: IP address %s\n", _inet_ntoa(ipbuf, my_ip_addr));
     printf("llm_agent-dos: listening on port %u\n", (unsigned)g_port);
     printf("token configured: %s\n", g_token[0] ? "yes" : "NO - set token= in LLMAGENT.INI");
@@ -797,7 +835,8 @@ static int server_main(void) {
             continue;
         }
         handle_client();
-        sock_close((sock_type *)&g_sock);
+        if (net_failed) sock_abort((sock_type *)&g_sock);
+        else sock_close((sock_type *)&g_sock);
         /* drain close */
         {
             int i;

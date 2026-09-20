@@ -76,7 +76,7 @@ UPDATE                         (agent command — or console: LOAD UPDATE)
 Prefer agent `UPDATE` (self-exit) over console `UNLOAD LLMAGENT` — the latter
 has abended on this 3.12 lab box.
 
-`UPDATE.NLM` pauses, unloads/replaces, then `LOAD LLMAGENT`. Expect a brief
+`UPDATE.NLM` waits for the agent to exit, replaces it, then runs `LOAD LLMAGENT`. Expect a brief
 disconnect; reconnect and `PING`.
 
 Trust model unchanged: cleartext token, lab/host-only network only.
@@ -106,15 +106,17 @@ resolving hundreds of symbols).
 ## If LOAD shows CODE / _TEXT / your own symbols as "missing"
 
 Open Watcom writes each NLM import as a 255-byte (`0xFF`) padded
-field. NetWare 3.12 expects classic Novell length-prefixed imports, so the
+field. NetWare 3.12 and 4.11 expect classic Novell length-prefixed imports, so the
 loader desyncs and prints garbage symbol names. `build.bat` /
-`build_proof.bat` run `fix_nlm_imports.py` after link to rewrite the table.
+`build_proof.bat` and `nw4\build.bat` run `fix_nlm_imports.py` after link to rewrite the table.
 
 (A current `LOADER.EXE` from 312PTD is still recommended, but it is not
 sufficient by itself — this import rewrite is what fixes the HELLO failure.)
 
-**NetWare 4.x+ (Watcom static RTL):** see [`nw4/README.md`](nw4/README.md)
+**NetWare 4.x+ (Novell CLIB):** see [`nw4/README.md`](nw4/README.md)
 and `nw4\build.bat` — kept separate so the 3.12 path stays clean.
+The 4.x build uses Novell CLIB throughout and normalizes the import table.
+Live loading, PING, SYSINFO, staged UPDATE, and binary readback passed on 4.11.
 
 ## Deploy on NetWare 3.12
 

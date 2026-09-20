@@ -62,6 +62,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dos.h>
+#include <errno.h>
 
 #define _EXPORT __export
 
@@ -128,14 +129,53 @@ static HHOOK g_hook = NULL;
 
 /* ---- tiny helpers ---- */
 
+#define NET_DEADLINE(sec) (GetTickCount() + (sec) * 1000UL)
+#define NET_EXPIRED(d) ((long)(GetTickCount() - (d)) >= 0)
+#include "../common/session_timeout.h"
+#include "../common/command_line.h"
+
+static void network_idle(void) {
+    MSG msg;
+    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) { g_shutdown = 1; break; }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    Yield();
+}
+
+/* Accepted sockets are nonblocking. Never wait inside Winsock itself. */
+static int recv_some(char *buf, int len) {
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    for (;;) {
+        int n;
+        if (g_shutdown || net_expired(deadline)) return net_fail();
+        n = recv(g_client, buf, len, 0);
+        if (n > 0) return n;
+        if (n == 0 || WSAGetLastError() != WSAEWOULDBLOCK) return net_fail();
+        network_idle();
+    }
+}
+
 static int send_all(const char *buf, int len) {
     int sent = 0;
+    unsigned long deadline = NET_DEADLINE(NET_IO_SECONDS);
+    if (len < 0) goto failed;
     while (sent < len) {
-        int n = send(g_client, buf + sent, len - sent, 0);
-        if (n == SOCKET_ERROR || n <= 0) return -1;
-        sent += n;
+        int n;
+        if (g_shutdown || net_expired(deadline)) goto failed;
+        n = send(g_client, buf + sent, len - sent, 0);
+        if (n > 0) {
+            sent += n;
+            deadline = NET_DEADLINE(NET_IO_SECONDS);
+        } else if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+            network_idle();
+        } else goto failed;
     }
-    return 0;
+    return net_failed ? -1 : 0;
+failed:
+    shutdown(g_client, 2);
+    return net_fail();
 }
 
 static int send_cstr(const char *text) {
@@ -143,20 +183,30 @@ static int send_cstr(const char *text) {
 }
 
 static int recv_byte(char *out) {
-    int n = recv(g_client, out, 1, 0);
+    int n = recv_some(out, 1);
     return (n == 1) ? 0 : -1;
 }
 
 static int recv_line(char *out, int outlen) {
-    int i = 0;
+    int length = 0, saw_cr = 0, result;
     char c;
-    while (i < outlen - 1) {
-        if (recv_byte(&c) < 0) return -1;
-        if (c == '\n') break;
-        if (c != '\r') out[i++] = c;
+    if (outlen < 2) return net_fail();
+    out[0] = '\0';
+    if (net_failed) return -1;
+    net_begin_line();
+    for (;;) {
+        if (recv_byte(&c) < 0) break;
+        result = command_line_byte(out, outlen, &length, &saw_cr,
+                                   (unsigned char)c);
+        if (result < 0) break;
+        if (result > 0) {
+            net_end_line();
+            return length;
+        }
     }
-    out[i] = '\0';
-    return i;
+    /* Never expose a partial command or consume a failed session's suffix. */
+    out[0] = '\0';
+    return net_fail();
 }
 
 static void dirname_of(const char *path, char *out, int outlen) {
@@ -377,12 +427,16 @@ static int handle_put(char *args) {
     remaining = size;
     while (remaining > 0) {
         int want = remaining < (long)sizeof(g_iobuf) ? (int)remaining : (int)sizeof(g_iobuf);
-        int got = recv(g_client, g_iobuf, want, 0);
+        int got = recv_some(g_iobuf, want);
         if (got <= 0) { failed = 1; break; }
-        if (f && (int)fwrite(g_iobuf, 1, got, f) != got) failed = 1;
+        if (!failed && (int)fwrite(g_iobuf, 1, got, f) != got) failed = 1;
         remaining -= got;
     }
-    if (f) fclose(f);
+    if (f) {
+        /* Buffered disk errors may surface only at flush/close. */
+        if (fflush(f) != 0 || ferror(f)) failed = 1;
+        if (fclose(f) != 0) failed = 1;
+    }
     if (failed) {
         send_cstr("ERR:write failed\r\n");
         return -1;
@@ -739,40 +793,115 @@ static int handle_postmsg(const char *args) {
     return 0;
 }
 
-/* ---- LBGETTEXT <hwnd> <index> -- LB_GETTEXT passthrough. WINMSG can't
-   carry this (LB_GETTEXT's lParam is a buffer pointer, not a plain
-   integer), so it gets its own tiny command: read-only, used to find
-   which listbox index a Control-Panel-style owner-drawn icon list's
-   item corresponds to (e.g. "Network") before selecting it by index
-   via WINMSG's LB_SETCURSEL, with no string-pointer message needed for
-   the actual selection. ---- */
+/* ---- LBGETTEXT <hwnd> <index> -- text from a standard LISTBOX.
+   LB_GETTEXT has no buffer-size argument: size the destination BEFORE
+   sending it. Owner-drawn controls without LBS_HASSTRINGS return a DWORD
+   of item data instead of text and must not use this command. ---- */
+
+#define LB_TEXT_MAX 32767L
 
 static int handle_lbgettext(const char *args) {
     long hwndVal, idx;
-    static char buf[160];
-    LRESULT len;
+    char *end;
+    char cls[32];
+    HWND hwnd;
+    LONG style;
+    LRESULT capacity, len;
+    HGLOBAL memory;
+    LPSTR buf;
+    unsigned offset, chunk;
+    int rc = -1;
 
-    if (sscanf(args, "%ld %ld", &hwndVal, &idx) != 2) {
+    errno = 0;
+    hwndVal = strtol(args, &end, 10);
+    if (end == args || errno == ERANGE || hwndVal < 1 || hwndVal > 65535L ||
+        (*end != ' ' && *end != '\t')) {
         send_cstr("ERR:bad LBGETTEXT syntax\r\n");
         return -1;
     }
-    if (!IsWindow((HWND)hwndVal)) {
+    args = end;
+    errno = 0;
+    idx = strtol(args, &end, 10);
+    if (end == args || errno == ERANGE || idx < 0 || idx > 32767L) {
+        send_cstr("ERR:bad LBGETTEXT index\r\n");
+        return -1;
+    }
+    while (*end == ' ' || *end == '\t') end++;
+    if (*end) {
+        send_cstr("ERR:bad LBGETTEXT syntax\r\n");
+        return -1;
+    }
+    hwnd = (HWND)(unsigned)hwndVal;
+    if (!IsWindow(hwnd)) {
         send_cstr("ERR:no such window\r\n");
         return -1;
     }
-
-    len = SendMessage((HWND)hwndVal, LB_GETTEXT, (WPARAM)idx, (LPARAM)(LPSTR)buf);
-    if (len == LB_ERR) {
-        send_cstr("ERR:LB_ERR (bad index?)\r\n");
+    if (!GetClassName(hwnd, cls, sizeof(cls)) || lstrcmpi(cls, "LISTBOX") != 0) {
+        send_cstr("ERR:window is not a standard LISTBOX\r\n");
         return -1;
     }
-    if (len < 0) len = 0;
-    if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+    style = GetWindowLong(hwnd, GWL_STYLE);
+    if ((style & (LBS_OWNERDRAWFIXED | LBS_OWNERDRAWVARIABLE)) &&
+        !(style & LBS_HASSTRINGS)) {
+        send_cstr("ERR:owner-drawn listbox has no strings\r\n");
+        return -1;
+    }
 
-    send_cstr("OK:");
-    if (len > 0) send_all(buf, (int)len);
-    send_cstr("\r\n");
-    return 0;
+    capacity = SendMessage(hwnd, LB_GETTEXTLEN, (WPARAM)idx, 0L);
+    if (capacity < 0 || capacity > LB_TEXT_MAX) {
+        send_cstr("ERR:invalid index or unsupported listbox text length\r\n");
+        return -1;
+    }
+
+    /* Separate global block: malloc would consume the agent's small DGROUP.
+       The extra byte is required even for an empty listbox string. */
+    memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (DWORD)capacity + 1UL);
+    if (!memory) {
+        send_cstr("ERR:cannot allocate listbox text buffer\r\n");
+        return -1;
+    }
+    buf = (LPSTR)GlobalLock(memory);
+    if (!buf) {
+        GlobalFree(memory);
+        send_cstr("ERR:cannot lock listbox text buffer\r\n");
+        return -1;
+    }
+
+    /* Allocation may run memory-management callbacks. Recheck the size
+       afterward; do not yield or pump messages between these two standard
+       LISTBOX reads on cooperative Win16. Custom window procedures that
+       change the item during a read are outside this command's contract. */
+    len = SendMessage(hwnd, LB_GETTEXTLEN, (WPARAM)idx, 0L);
+    if (len < 0 || len > capacity) {
+        send_cstr("ERR:listbox item changed before read\r\n");
+        goto done;
+    }
+    len = SendMessage(hwnd, LB_GETTEXT, (WPARAM)idx, (LPARAM)buf);
+    if (len < 0 || len > capacity || buf[(unsigned)len] != '\0') {
+        send_cstr("ERR:invalid listbox text result\r\n");
+        goto done;
+    }
+    /* Preserve the OK:<text> line protocol without emitting embedded
+       terminators that would desynchronize the next command's reply. */
+    for (offset = 0; offset < (unsigned)len; offset++) {
+        if (buf[offset] == '\r' || buf[offset] == '\n' || buf[offset] == '\0') {
+            send_cstr("ERR:listbox text contains a line terminator\r\n");
+            goto done;
+        }
+    }
+    if (send_cstr("OK:") < 0) goto done;
+    for (offset = 0; offset < (unsigned)len; offset += chunk) {
+        chunk = (unsigned)len - offset;
+        if (chunk > sizeof(g_iobuf)) chunk = sizeof(g_iobuf);
+        /* send_all takes a near pointer in this memory model. */
+        _fmemcpy(g_iobuf, buf + offset, chunk);
+        if (send_all(g_iobuf, (int)chunk) < 0) goto done;
+    }
+    rc = send_cstr("\r\n");
+done:
+    GlobalUnlock(memory);
+    GlobalFree(memory);
+    return rc;
 }
 
 /* ---- WH_JOURNALPLAYBACK hook proc. Windows calls this instead of
@@ -1180,14 +1309,13 @@ static int handle_shutdown(void) {
    handling, a context Windows actually expects a window to destroy
    itself from -- ours isn't that.
 
-   Also does NOT manually closesocket() g_client/g_listen the way
-   WM_DESTROY does, despite how closely that seems to mirror it -- a
+   Also does NOT manually closesocket() g_client/g_listen -- a
    first version of this did exactly that and froze the ENTIRE desktop
    solid (not just this agent), needing a VM reboot to recover.
-   WM_DESTROY's force-close exists to unblock a call that's genuinely
-   *blocked* elsewhere (accept()/recv() during an async WM_DESTROY
-   delivered mid-block). handle_update() isn't in that situation -- it
-   runs synchronously, already past accept() and deep inside
+   The old WM_DESTROY force-close existed to interrupt blocking Winsock.
+   Accepted sockets are now nonblocking, and both shutdown paths let the
+   server loop own socket cleanup. handle_update() runs synchronously,
+   already past accept() and deep inside
    handle_client()'s own command loop, and server_main()'s existing
    fall-through cleanup closes both sockets exactly once anyway
    (closesocket(g_client) unconditionally right after handle_client()
@@ -1314,6 +1442,7 @@ static void handle_pskill(const char *args) {
 /* ---- session ---- */
 
 static void handle_client(void) {
+    net_reset();
     if (recv_line(g_line, sizeof(g_line)) < 0) return;
     if (g_token[0] == '\0' || strcmp(g_line, g_token) != 0) {
         send_cstr("FAIL\r\n");
@@ -1399,8 +1528,7 @@ long _EXPORT FAR PASCAL WndProc(HWND hwnd, unsigned msg, UINT wParam, LONG lPara
         if (wParam == IDC_EXIT_BTN) {
             /* Route through the exact same shutdown path as the system
                menu's Close -- DestroyWindow() triggers WM_DESTROY below,
-               which is the one place g_shutdown gets set and both
-               sockets get force-closed. No separate logic to keep in
+               which sets g_shutdown for the server loop. No separate logic to keep in
                sync. */
             DestroyWindow(hwnd);
             return 0L;
@@ -1419,11 +1547,10 @@ long _EXPORT FAR PASCAL WndProc(HWND hwnd, unsigned msg, UINT wParam, LONG lPara
         }
         return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_DESTROY:
-        /* Force any blocked recv() to fail and wake server_main()'s
-           WaitMessage()-based listener so the process exits cleanly. */
+        /* Nonblocking network loops observe this flag after pumping messages.
+           The server loop closes each socket once; doing so here as well
+           can corrupt shared Win16 Winsock state through a double close. */
         g_shutdown = 1;
-        if (g_client != INVALID_SOCKET) closesocket(g_client);
-        if (g_listen != INVALID_SOCKET) closesocket(g_listen);
         PostQuitMessage(0);
         return 0L;
     default:
@@ -1544,13 +1671,17 @@ static int server_main(void) {
             if (g_accept_ready) {
                 g_accept_ready = 0;
                 for (;;) {
-                    unsigned long blocking = 0;
+                    unsigned long nonblocking = 1;
 
                     g_client = accept(g_listen, NULL, NULL);
                     if (g_client == INVALID_SOCKET) break;
 
-                    WSAAsyncSelect(g_client, g_hwnd, 0, 0);
-                    ioctlsocket(g_client, FIONBIO, &blocking);
+                    if (WSAAsyncSelect(g_client, g_hwnd, 0, 0) == SOCKET_ERROR ||
+                        ioctlsocket(g_client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+                        closesocket(g_client);
+                        g_client = INVALID_SOCKET;
+                        continue;
+                    }
                     handle_client();
                     closesocket(g_client);
                     g_client = INVALID_SOCKET;

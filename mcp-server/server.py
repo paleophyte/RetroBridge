@@ -93,23 +93,31 @@ srv = MCPServer(
         "from the 80x25 text screen, not a GUI framebuffer. Note: a "
         "synthetic ctrl-alt-del will not unlock a locked/secure-desktop "
         "Windows screen - that's an OS security measure, not a bug. "
-        "legacy_reboot/legacy_shutdown require confirm=True - they take "
-        "the target down immediately and interrupt anything in progress "
-        "on it, so only pass that once you actually intend it."
+        "legacy_reboot/legacy_shutdown require confirm=True and may "
+        "immediately interrupt work. Mac requests go through Finder and "
+        "can prompt to save or be cancelled; an acknowledgment does not "
+        "prove completion."
     ),
 )
 
 
 def _agent(machine: str) -> AgentClient:
     m = _machine(machine)
-    return AgentClient(m.host, m.exec_port, m.exec_token)
+    if not m.agent_enabled:
+        raise MachineConfigError(
+            f"machine {machine!r} is inventory-only (agent_enabled=false); "
+            "agent tools require llm_agent. Use a separate SSH client for SSH hosts."
+        )
+    return AgentClient(m.host, m.exec_port, m.exec_token,
+                       max_command_bytes=m.max_command_bytes,
+                       max_response_bytes=m.max_response_bytes)
 
 
 @srv.tool()
 def legacy_list_machines() -> str:
-    """List the legacy machines configured in machines.ini, with their
-    host and port (not tokens). Call this first if you don't already know
-    which `machine` name to pass to the other tools."""
+    """List machines configured in machines.ini, without credentials.
+    Inventory-only entries (agent_enabled=false) are listed explicitly;
+    they cannot be used with agent tools. Call this first to find a target."""
     try:
         machines = _machines()
     except MachineConfigError as e:
@@ -119,7 +127,10 @@ def legacy_list_machines() -> str:
     lines = []
     for m in machines.values():
         suffix = f" vm_name={m.vm_name}" if m.vm_name else ""
-        lines.append(f"{m.name}: host={m.host} exec_port={m.exec_port}{suffix}")
+        if m.agent_enabled:
+            lines.append(f"{m.name}: host={m.host} exec_port={m.exec_port}{suffix}")
+        else:
+            lines.append(f"{m.name}: host={m.host} agent_enabled=false (inventory-only){suffix}")
     return "\n".join(lines)
 
 
@@ -169,6 +180,8 @@ def legacy_ping(machine: str) -> str:
         ok = _agent(machine).ping()
     except (MachineConfigError, AgentAuthError) as e:
         return f"unreachable/auth failed: {e}"
+    except AgentProtocolError as e:
+        return f"[protocol/input error] {e}"
     except OSError as e:
         return f"unreachable: {e}"
     return "ok" if ok else "unexpected response"
@@ -362,7 +375,9 @@ def legacy_wait_for_agent(machine: str, timeout_seconds: int = 180, interval_sec
             if _agent(machine).ping():
                 return f"agent reachable on {machine} after {attempts} attempt(s)"
             last_error = "unexpected ping response"
-        except (MachineConfigError, AgentAuthError, OSError) as e:
+        except MachineConfigError as e:
+            return f"[config error] {e}"
+        except (AgentAuthError, OSError) as e:
             last_error = str(e)
         time.sleep(interval)
     return f"timed out waiting for agent on {machine}; last error: {last_error}"
@@ -405,7 +420,9 @@ def legacy_wait_for_desktop(machine: str, timeout_seconds: int = 180, interval_s
             if interesting:
                 return f"desktop appears ready on {machine}: visible window {interesting[0]!r} after {attempts} attempt(s)"
             last = f"{len(procs)} processes, {len(windows)} visible windows"
-        except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+        except MachineConfigError as e:
+            return f"[config error] {e}"
+        except (AgentAuthError, AgentProtocolError, OSError) as e:
             last = str(e)
         time.sleep(interval)
     return f"timed out waiting for desktop on {machine}; last observation: {last}"
@@ -413,9 +430,10 @@ def legacy_wait_for_desktop(machine: str, timeout_seconds: int = 180, interval_s
 
 @srv.tool()
 def legacy_reboot(machine: str, confirm: bool = False) -> str:
-    """Reboot the named legacy machine. Takes it down immediately and
-    interrupts anything in progress - pass confirm=True only once you
-    actually intend that."""
+    """Request a reboot of the named legacy machine; requires confirm=True.
+    May immediately interrupt work. On Mac this asks Finder, which can
+    prompt to save or be cancelled; success acknowledges delivery, not a
+    completed reboot. Verify machine state before assuming it restarted."""
     if not confirm:
         return "not executed: pass confirm=True to actually reboot the machine"
     try:
@@ -431,9 +449,10 @@ def legacy_reboot(machine: str, confirm: bool = False) -> str:
 
 @srv.tool()
 def legacy_shutdown(machine: str, confirm: bool = False) -> str:
-    """Power off the named legacy machine. Takes it down immediately and
-    interrupts anything in progress - pass confirm=True only once you
-    actually intend that."""
+    """Request shutdown of the named legacy machine; requires confirm=True.
+    May immediately interrupt work; actual power-off depends on the platform.
+    On Mac, Finder can prompt to save or cancel. Success acknowledges
+    delivery, not completed shutdown; verify machine state separately."""
     if not confirm:
         return "not executed: pass confirm=True to actually shut down the machine"
     try:

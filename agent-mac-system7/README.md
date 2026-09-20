@@ -14,7 +14,7 @@ expose it through the repo's `legacy_*` MCP tools with no protocol fork.
 | `CLICK` `DBLCLICK` | working, optional third `button` argument; only button 1 exists |
 | `KEY` `TYPE` | working; US layout only |
 | `PSKILL` | working, but it *asks* a process to quit rather than killing it |
-| `REBOOT` `SHUTDOWN` | working via direct Shutdown Manager calls; bypass other applications' save/quit handling |
+| `REBOOT` `SHUTDOWN` | cooperative Finder requests; applications may prompt to save or cancel; `OK` means delivered |
 | `UPDATE` `QUITAGENT` `QUIT` | working |
 | `MOUSEPOS` | working (Mac-only extension) |
 | `CLIPSET` `CLIPGET` | **disabled** -- the scrap is per-process, writes never reach other applications |
@@ -29,8 +29,8 @@ incoming Apple events and honors Finder's Quit Application request. It
 cancels pending MacTCP listen/receive operations, releases the stream, and
 removes mouse/VBL hooks before exiting. Special > Restart was verified on
 System 7.5.3 both while listening and with an authenticated idle client;
-the agent returned through Startup Items in about 18 seconds. The agent's
-own power commands still bypass Finder's application-quit negotiation.
+the agent returned through Startup Items in about 18 seconds. The protocol
+power commands now use Finder's application-quit negotiation as well.
 
 Two recurring themes are worth knowing before extending this:
 
@@ -74,8 +74,9 @@ The MCP bridge exposes only part of this surface: `DBLCLICK`, `MOUSEPOS`,
 and the Mac-specific `UPDATE <size>` transfer need a custom protocol client.
 Generic `AgentClient.update()` sends a bare `UPDATE` and does not work here.
 See the [publication audit](../docs/PUBLICATION_AUDIT.md) for additional
-update and file-transfer failure cases. Update currently has no rollback
-after the updater deletes the old application.
+update and file-transfer limits. Update prepares a separate application and
+retains the previous version for rollback; both the agent and companion
+updater must be upgraded to get the complete behavior described below.
 
 The agent runs with **no console and no windows at all** (see
 `llm_agent.r`) — not minimized, not backgrounded-with-a-window, just no
@@ -89,8 +90,8 @@ of decoding a new build by hand.
 `llm_updater` is a small companion app with one job: turn a staged
 MacBinary-encoded build into a running `llm_agent`, with no GUI
 interaction. It must be deployed once, by hand, the same way `llm_agent`
-itself is (see Deploy below) — after that, `UPDATE` never needs it
-touched again.
+itself is (see Deploy below). `UPDATE` replaces only the agent; companion
+updater fixes require deploying a new `llm_updater` separately.
 
 ### Why a separate app, and why MacBinary decoding is built into it
 
@@ -146,14 +147,56 @@ client -> server: <size> raw bytes (MacBinary-encoded new llm_agent,
 server -> client: "OK\n" | "ERR:<msg>\n"
 ```
 
-On `OK`, the agent has already staged the bytes as `STAGED_AGENT.bin`,
-confirmed `llm_updater` exists next to it, launched it via
-`LaunchApplication`, released its own MacTCP stream, and called
-`ExitToShell()` — all before the reply is sent back. Not yet wired into
-`agent_client.py`'s generic `update()`/`legacy_self_update` bridge tool;
+`OK` confirms that all declared bytes were staged as `STAGED_AGENT.bin`,
+the File Manager write/close/volume-flush checks passed, and the Process
+Manager accepted launching `llm_updater`. The agent then requests normal
+cleanup/exit. A missing helper or failed helper launch returns `ERR` and
+keeps the agent running. The reply does not confirm successful replacement;
+reconnect and check `SYSINFO` and `UPDATER.LOG` after an update.
+Not yet wired into `agent_client.py`'s generic `update()`/`legacy_self_update` bridge tool;
 driving it today means opening the socket directly (see
 `mcp-server/agent_client.py`'s wire-protocol docstring for the frame
 shapes GET/PUT already use, which UPDATE's staging step follows).
+
+Both `PUT` and `UPDATE` reject failed writes, flushes, and closes, and drain
+the declared payload after local file errors so the next command remains
+framed. These operations use File Manager calls directly because Retro68's
+stdio wrappers discard some native errors. A failed update transfer keeps
+the agent running and never launches the updater; it uses `FSpDelete` to
+remove the failed stage and reports cleanup failure explicitly. The updater
+also uses `FSpDelete` for staging cleanup after a successful launch.
+Ordinary `PUT` is not atomic and can leave
+a partial destination after an error. Negative sizes are rejected, updates
+must be nonempty, and `PUT` rejects paths longer than 255 bytes instead of
+silently truncating them. Host-side fault tests for both handlers are in
+`../tests/test_uploads.py`.
+
+After its cooperative ten-second teardown wait, the updater validates the
+MacBinary header and exact padded file length, writes both forks to a
+separate file, closes and flushes them, and reads them back for comparison. HFS rewrites the resource header's
+system-reserved bytes 16–127; verification excludes only that region after
+validating the resource layout, and compares all application bytes.
+It then uses `FSpExchangeFiles` to exchange both forks with `llm_agent`,
+preserving the installed file's ID for Startup Items aliases, as described
+in [Apple's File Manager reference](https://developer.apple.com/library/archive/documentation/mac/pdf/Files/File_Manager.pdf). It never
+deletes the installed application. Preparation failure relaunches the
+untouched agent; a failed replacement launch or post-exchange flush triggers
+an exchange back and a launch of the previous application. An unsupported
+exchange operation fails without a destructive replacement fallback.
+
+Recovery copies use the first unused `llm_agent.saved.001` through `.099`.
+Existing copies are never overwritten automatically; remove obsolete ones
+manually when space or slots run low. After a successful exchange the saved
+file contains the previous application. Following a failed attempt it may
+instead contain an incomplete or rejected candidate; consult `UPDATER.LOG`
+before choosing a recovery copy. If rollback itself fails, both files are
+retained and the updater attempts to launch the previous application from
+the saved path. Manual repair is then required before relying on startup.
+
+A successful `LaunchApplication` is not a health check: a build can launch
+and subsequently crash or fail to listen. The updater also cannot guarantee
+recovery from power loss or disk corruption. Keep an independent backup.
+Run `python tests/test_update.py` here for host-side failure injection.
 
 ## Build (Retro68 cross-toolchain, Linux host)
 
@@ -461,21 +504,37 @@ client waiting for its next command; both restarted successfully and
 relaunched the agent. Special > Shut Down uses the same handler but was
 not separately tested after this fix.
 
-`REBOOT` and `SHUTDOWN` are implemented and working, matching the shared
-protocol in `../mcp-server/agent_client.py` (both reply `OK`).
+`REBOOT` and `SHUTDOWN` send the Finder event class `FNDR` with event IDs
+`rest` and `shut`, respectively. The agent finds Finder by its application
+signature `MACS` and addresses its process serial number.
+This follows the cooperative power-request path described in Apple's
+[Shutdown Manager documentation](https://developer.apple.com/library/archive/documentation/mac/pdf/Processes/Shutdown.pdf).
+Finder lets applications save or cancel before it invokes the Shutdown
+Manager to flush/unmount volumes and perform the power operation.
 
-These protocol commands bypass Finder's save/quit negotiation with other
-applications; an `OK` does not establish that those applications saved
-their work. They call the Shutdown Manager (trap `0xA895`) -- `ShutDwnStart()` and
-`ShutDwnPower()`. That choice matters: the Shutdown Manager runs registered
-shutdown procedures and flushes/unmounts volumes, so the guest comes back
-clean. Verified by rebooting *without* sending the usual dismiss keystroke --
-the agent was answering again 24s later with no "restarted improperly"
-dialog. A hard stop leaves that dialog up, and it blocks Startup Items
-processing, so the agent would not relaunch by itself.
+`OK` means the Apple event was delivered, **not that the machine has restarted
+or shut down**. A save dialog, cancellation, or unresponsive application can
+prevent completion. The asynchronous request allows applications to display
+UI and does not wait for a reply. Finder lookup, descriptor creation,
+activation, or delivery failures return `ERR:` with the OS error; there is
+no forced-power fallback. Finder is brought to the foreground before
+delivery so requests also work after a cancelled save dialog.
 
-`SHUTDOWN` is a true power-off: the QEMU process exits with the guest, so
-recovering needs `launch_vm.sh` on the host, not just a guest boot.
+The agent releases mouse automation before delivery but keeps serving until
+Finder asks it to quit. It then uses the normal Quit-event cleanup path.
+Depending on quit order, Finder may already have closed the agent before
+another application cancels; relaunch it locally if needed. Callers should
+verify the resulting machine state rather than repeatedly sending requests
+while a save dialog is pending.
+
+On the QEMU q800 test guest, a completed shutdown powers off the virtual
+machine and exits QEMU. Recovering needs `launch_vm.sh` on the host. Other
+Mac models may instead display a safe-to-power-off screen.
+
+Host-side fault-injection tests cover both commands, every event-creation/
+delivery failure, descriptor cleanup, and a Quit event during delivery:
+`python3 tests/test_power.py` (requires a host C compiler, selectable with
+`CC`). These tests do not emulate Finder or replace live guest checks.
 
 ## QEMU bridge connectivity when Docker is installed
 
