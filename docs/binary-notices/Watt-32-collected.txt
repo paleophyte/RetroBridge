@@ -1,0 +1,427 @@
+Watt-32 notices collected from the reviewed linked source files.
+This is not a blanket license for files without a grant; see BINARY_RELEASE.md.
+
+This product includes software developed by Gisle Vanem
+Bergen, Norway.
+
+
+--- src/copyrigh.h: copyright, disclaimer and restrictions ---
+/*!\file copyrigh.h
+ *\verbatim
+ *
+ *   This copyright applies only to files that include copyright.h.
+ *   Other files have their licence stated in the top.
+ *
+ *   WATTCP - TCP/IP library routines
+ *
+ *   Copyright (c) 1990, 1991, 1992, 1993 Erick Engelke
+ *
+ *   Portions Copyright (c) 1993  The Regents of the University of California
+ *   Portions Copyright (c) 1993  Digital Equipment Corporation.
+ *   Portions Copyright (c) 1993  Quentin Smart
+ *   Portions Copyright (c) 1991  University of Waterloo
+ *   Portions Copyright (c) 1990  National Center for Supercomputer Applications
+ *   Portions Copyright (c) 1990  Clarkson University
+ *   Portions Copyright (c) 1983, 1986, Imagen Corporation
+ *
+ *      This software is distributed in the hope that it will be useful,
+ *      but without any warranty; without even the implied warranty of
+ *      merchantability or fitness for a particular purpose.
+ *
+ *   RESTRICTIONS
+ *   ------------
+ *   You may freely use this library to produce programs which you may give
+ *   away or sell in source format, or as compiled executables, or both.
+ *
+ *   You may not sell this library or a portion thereof or distribute modified
+ *   versions the library code in either source or OBJect or LIBrary format
+ *   without written permission from the author.  The author still maintains
+ *   copyright privileges and will assert the privileges of ownership for
+ *   purposes of royalties such distributions.
+ *
+ *   Portions of this code were written or enhanced by others and offerred
+ *   to me for distribution in WATTCP under my copyright.  To my knowledge,
+ *   all copyrights exercised are listed at the top of this file.  If this
+ *   is incorrect, please contact me so I can rectify the situation.
+ *
+ *
+ */
+
+
+--- src/bsdname.c ---
+/* Copyright (C) 1997 DJ Delorie, see COPYING.DJ for details */
+
+
+--- src/bsdname.c ---
+/* Copyright (C) 1995 DJ Delorie, see COPYING.DJ for details */
+
+
+--- src/gettod.c ---
+/*  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *
+ *  10.aug 1996 - Created
+ *
+ */
+
+
+--- src/ip4_frag.c ---
+/*
+ *  Packet de-fragmentation code for WATTCP
+ *  Written by and COPYRIGHT (c)1993 to Quentin Smart
+ *                               smart@actrix.gen.nz
+ *  all rights reserved.
+ *
+ *    This software is distributed in the hope that it will be useful,
+ *    but without any warranty; without even the implied warranty of
+ *    merchantability or fitness for a particular purpose.
+ *
+ *    You may freely distribute this source code, but if distributed for
+ *    financial gain then only executables derived from the source may be
+ *    sold.
+ *
+ *  Murf = Murf@perftech.com
+ *  other fragfix = mdurkin@tsoft.net
+ *
+ *  Based on RFC815
+ *
+ *  Code used to use pktbuf[] as reassembly buffer. It now allocates
+ *  a "bucket" dynamically at startup. There are 'MAX_IP_FRAGS' buckets
+ *  to handle at the same time.
+ *
+ *  G.Vanem 1998 <gvanem@yahoo.no>
+ */
+
+
+--- src/ip4_out.c ---
+/*  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *  Version
+ *
+ *  1.0 : Apr 18, 1999 : G. Vanem - created
+ *  1.1 : Jan 29, 2000 : G. Vanem - added functions for
+ *                       handling list of IP-fragments.
+ */
+
+
+--- src/loopback.c ---
+/*!\file loopback.c
+ *  A simple loopback device.
+ *
+ *  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *----------------------------------------------------------------------------
+ *
+ *  A simple loopback device.
+ *  At the moment it handles ICMP Echo-request and UDP sink/discard packets.
+ *  It pased up the rest.
+ *
+ *  Add protocol handlers to `loopback_handler' pointer as required.
+ *
+ *  The modified (src/dst IP swapped) ip packet is enqueued to the IP
+ *  receive queue after loopback_device() returns.
+ *
+ *  The return value is:
+ *    -1  if IP-packet should not be enqueued to IP input queue
+ *    >0  length of (modified) IP-packet
+ *
+ *  Gisle Vanem  10 Dec. 1997
+ */
+
+
+--- src/misc.c ---
+/*
+ * ffs() isn't needed yet, but could be used in select_s()
+ *
+ * Copyright (C) 1991, 1992 Free Software Foundation, Inc.
+ * Contributed by Torbjorn Granlund (tege@sics.se).
+ *
+ * The GNU C Library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public License as
+ * published by the Free Software Foundation; either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * The GNU C Library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with the GNU C Library; see the file COPYING.LIB.  If
+ * not, write to the Free Software Foundation, Inc., 675 Mass Ave,
+ * Cambridge, MA 02139, USA.
+ */
+
+
+--- src/misc_str.c ---
+/*
+ * A reentrant strtok() function taken from libcurl:
+ *
+ * Copyright (C) 1998 - 2007, Daniel Stenberg, <daniel@haxx.se>, et al.
+  */
+
+
+--- src/netaddr.c ---
+/*!\file netaddr.c
+ *
+ *  Provide some more BSD address functions.
+ *  Gisle Vanem, Oct 12, 1995
+ *
+ *  inet_network() is Copyright (c) 1983, 1993
+ *  The Regents of the University of California.  All rights reserved.
+ *
+ *  ascii2address() and addr2ascii() are Copyright 1996
+ *  Massachusetts Institute of Technology
+ *
+ *  \version v0.0
+ *    \date Jan 11, 1991 \author E. Engelke
+ *
+ *  \version v0.2
+ *    \date Apr 10, 1995 \author G. Vanem, function priv_addr()
+ *
+ *  \version v0.3
+ *    \date Nov 12, 2003 \author G. Vanem, some functions moved from now
+ *                       obsolete udp_nds.c.
+ */
+
+
+--- src/neterr.c ---
+/*!\file neterr.c
+ *
+ *  sys_errlist[] with BSD-socket support.
+ *
+ *  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *
+ *  05.jan 1998 (GV)  - Created
+ *
+ *  This module tries to add network related errno/strerror/perror
+ *  for all supported Watt-32 targets.
+ */
+
+
+--- src/pcdhcp.c ---
+/*  Copyright (c) 1997-2007 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+
+--- src/pcqueue.c ---
+/*!\file pcqueue.c
+ *
+ *  Simple ring-buffer queue handler for reception of packets
+ *  from network driver.
+ *
+ *  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *  Created Jan-1998
+ */
+
+
+--- src/udp_rev.c ---
+/*
+ *  Reverse IPv4/IPv6 lookup functions
+ *
+ *  Copyright (c) 1997-2002 Gisle Vanem <gvanem@yahoo.no>
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. All advertising materials mentioning features or use of this software
+ *     must display the following acknowledgement:
+ *       This product includes software developed by Gisle Vanem
+ *       Bergen, Norway.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY ME (Gisle Vanem) AND CONTRIBUTORS ``AS IS''
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED.  IN NO EVENT SHALL I OR CONTRIBUTORS BE LIABLE FOR ANY
+ *  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ *  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ *  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *  \version 0.2
+ */
+
+--- inc/copying.bsd: companion BSD notice collection ---
+Copyright (c) 1987 Regents of the University of California.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. All advertising materials mentioning features or use of this software
+   must display the following acknowledgement:
+     This product includes software developed by the University of
+     California, Berkeley and its contributors.
+4. Neither the name of the University nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.

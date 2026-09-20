@@ -23,10 +23,11 @@ and tested successfully; it is no longer awaiting a test guest.
   metadata, and repeat full-history secret and clean-clone checks at the exact
   revision selected for publication. Earlier cleanup passed; subsequent
   implementation commits received staged secret scans.
-- **Before distributing binaries:** record actual linked dependency/toolchain
-  revisions, resolve applicable distribution conditions, and collect notices
-  described in [THIRD_PARTY.md](../THIRD_PARTY.md). This is separate from the
-  completed MIT source licensing and vendor-history removal.
+- **Before distributing binaries:** the [binary release review](BINARY_RELEASE.md)
+  now records toolchain revisions, runtime inputs, hashes and collected notices.
+  Open tasks are Watcom source/embedded notices, Watt-32 file-license coverage,
+  Mac newlib/SDK terms, and the Novell publisher terms decision. Refresh evidence
+  for the selected release artifacts. These are separate from source publication.
 - **Update follow-ups:** Mac and NetWare now support verified replacement
   and NetWare has retained-backup rollback for exited/failed candidates.
   Loaded, unready candidates still require operator recovery; see the follow-ups.
@@ -1617,3 +1618,33 @@ backup. These workflows passed through fresh MCP SDK 2.0.0 (3.12) and 2.2.0
 (4.11) sessions. Temporary probes were removed; private evidence/backups and
 intentional guest recovery archives remain. Physical disk errors, power loss,
 and forcibly recovering an unresponsive loaded candidate were not induced live.
+
+### Binary provenance and notice review (2026-09-20)
+
+Added BINARY_RELEASE.md, binary-provenance.json and a separate collection of
+nine third-party notice files. The inventory records the reviewed source
+commit, observed compiler/package revisions, hashes of linked inputs, archive
+members, SDK inputs and Python test environments. The root MIT license remains
+for original project code; vendor/runtime terms are not replaced by it.
+
+Seven native build configurations passed with diagnostic linker maps, covering
+nineteen production executables/helpers. Two existing Mac application objects
+were relinked successfully with maps; nine application source/build files
+matched the checkout. This is bounded linkage evidence, not a clean Mac rebuild
+or a reproducibility claim. No build was deployed or published by this review.
+
+The maps confirmed Novell prelude plus dynamic CLIB on NetWare, Watcom runtimes
+on DOS/Win16/OS2, MinGW CRT/GCC helpers on Win32, and Retro68/newlib/Multiversal
+on Mac. Newlib was missing from the earlier dependency table and is now listed.
+The current Watt-32 library has a local configuration change. The report
+distinguishes guest DLL/import inputs from code incorporated into executables.
+
+MinGW's binary notice collection is prepared. Watcom needs a matching runtime
+source reference and an embedded/documented availability notice before release;
+Watt-32 has advertising notices and unresolved coverage for some linked files.
+Mac needs fork-specific newlib notice reconciliation and SDK terms. The Novell
+SDK documentation supports a conditional Developer Product distribution path;
+the publisher's applicability/terms decision remains explicit. These findings
+do not block publishing the cleaned original source. Notice hashes and inventory
+structure were checked; final release packaging, full-history scanning and
+artifact-specific installation tests remain separate release steps.

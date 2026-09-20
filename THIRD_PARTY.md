@@ -61,6 +61,7 @@ switch. OS/2 DLLs remain user-supplied through the platform README instructions.
 | Open Watcom | External compiler, headers, and runtime for DOS, Win16, OS/2, and NetWare. | Review the installed `license.txt` and runtime terms for the actual build. The compiler's license does not mean every output is licensed identically. No compiler/runtime package is vendored here. |
 | MinGW/GCC | External Win32 compiler, headers, import libraries, and possible runtime objects. | Review the chosen toolchain's component notices and runtime exceptions for binary releases; do not apply MIT to the whole toolchain. |
 | [Retro68](https://github.com/autc04/Retro68) and Multiversal | External classic-Mac toolchain and Toolbox declarations. | Multiple component licenses; Retro68 includes [COPYING.RUNTIME](https://github.com/autc04/Retro68/blob/master/COPYING.RUNTIME), whose exception applies only to covered files and eligible builds. This does not license Apple SDK files. Preserve notices applicable to linked runtime code. |
+| newlib | Retro68's Mac toolchain statically links newlib `libc.a`; the reviewed installation reports 4.6.0. | Multiple file-specific licenses, separate from the GCC runtime exception. A release-wide notice collection and the actual linked member lists are recorded in the binary review below; fork-specific reconciliation remains required. |
 | Python `mcp`, Pillow, and transitive packages | Installed externally through `mcp-server/requirements.txt`. | Retain the exact installed distributions' licenses if packaging them. They are not copied into this source repository. |
 | OS media, ROMs, drivers, utilities | User-supplied guest environment, including optional packet drivers, StuffIt, and QuicKeys used during investigation. | Not supplied or relicensed by this project. Floppy/VM creation scripts do not grant rights to their input files. |
 
@@ -94,6 +95,14 @@ in its own C/assembly source; this review does not certify legal clearance
 of reverse engineering in every jurisdiction.
 
 ## Before publishing compiled releases
+
+The [binary release review](docs/BINARY_RELEASE.md) records the observed
+toolchain revisions, linked runtime inputs, per-platform release tasks, and
+[collected notices](docs/binary-notices/README.md). The accompanying
+[machine-readable inventory](docs/binary-provenance.json) fingerprints the
+diagnostic builds and dependencies reviewed on 2026-09-20. This replaces the
+open-ended inventory task with specific remaining requirements; it does not
+declare every binary cleared for release.
 
 Source publication and binary redistribution are separate reviews. Record
 the exact toolchain and dependency revisions, inspect the actual linked
