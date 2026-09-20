@@ -134,6 +134,7 @@ agent-netware/vendor/stuffkey/
 agent-mac-system7/build/
 agent-mac-system7/LLMAGENT.INI
 agent-mac-system7/UPDATER.LOG
+agent-mac-system7/AGENT.LOG
 # ROM image, OS/utility install media, and disk images used to set up
 # the guest -- large, some copyrighted (Apple ROM/OS), not source.
 agent-mac-system7/*.ROM

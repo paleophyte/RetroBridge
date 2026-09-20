@@ -54,8 +54,8 @@ Guest needs MacTCP configured and working (Control Panel shows an IP).
 | Command | Behavior |
 |---|---|
 | auth / `PING` / `QUIT` | Same as other agents |
-| `SYSINFO` | `os_family=mac68k`, `os_version` (Gestalt, hex BCD-ish), `machine_gestalt`, `free_mem_kb`, `agent` |
-| `GET` / `PUT` | File transfer (data fork; plain `fopen`/`fread`/`fwrite`) |
+| `SYSINFO` | `os_family=mac68k`, `os_version` (Gestalt, hex BCD-ish), `machine_gestalt`, `free_mem_kb`, `agent`, `agent_build`, `agent_port`, `config_location=application-folder` |
+| `GET` / `PUT` | Data-fork file transfer; relative paths start in the application folder; `PUT` checks native File Manager writes |
 | `SCREENSHOT` | Main display via `CopyBits` into an offscreen `GWorld` → 24-bit BMP (1/2/4/8-bit indexed, 16-bit RGB555, or 32-bit source) |
 | `QUITAGENT` | Terminates the agent process itself (see below) |
 | `PSLIST` | Live Process Manager process list (`GetNextProcess`/`GetProcessInformation`) |
@@ -84,6 +84,55 @@ UI whatsoever. There is no Finder menu, no dock, no window to close it
 from. `QUITAGENT` or a Quit Application Apple event stops it, and
 `UPDATE`/`llm_updater` is the only way to replace it short
 of decoding a new build by hand.
+
+## Installation and configuration
+
+Keep `llm_agent`, `llm_updater`, and `LLMAGENT.INI` together in a writable
+folder on an HFS volume. The volume and folder can have any name. Use a
+Finder **alias** to `llm_agent` in the System Folder's Startup Items for
+automatic launch. Copying the application there creates a separate
+installation that needs its own INI and companion updater.
+
+The agent and updater ask the native Process Manager for their actual
+application file and use its volume reference and parent directory ID.
+They also select that directory for relative stdio reads. Configuration,
+staging, recovery copies, helper lookup, and logs therefore stay beside the
+application, independent of the launch directory. No hardcoded `MacOS`
+volume name or global Preferences file is used. These APIs are described in
+Apple's [Process Manager](https://developer.apple.com/library/archive/documentation/mac/pdf/Processes/Process_Manager.pdf)
+and [File Manager](https://developer.apple.com/library/archive/documentation/mac/pdf/Files/File_Manager.pdf)
+references. Quit the agent before moving its folder or editing configuration.
+
+Start with `LLMAGENT.INI.example`, replace the token, and optionally set the
+listening port:
+
+```ini
+token=REPLACE_WITH_UNIQUE_TOKEN
+port=2222
+```
+
+The example token is deliberately rejected. Use a unique token of 1–255
+printable ASCII characters without spaces or tabs. `port` is optional and
+defaults to 2222; allowed values are decimal integers from 1 through 65535.
+Existing token-only files continue to work. Restart the agent to apply
+changes, and match the bridge inventory's `exec_port` to the chosen port.
+
+The file must be ASCII, at most 4,096 bytes, with lines at most 511 bytes.
+Classic Mac CR, Unix LF, and Windows CRLF endings are accepted. Blank lines
+and lines beginning with `#` or `;` after whitespace are ignored. Spaces and
+tabs around keys and values are trimmed. Only lowercase `token` and `port`
+keys are accepted, once each; sections and inline comments are unsupported.
+Malformed, missing, unreadable, or incomplete configuration makes the agent
+exit before listening. It attempts to append a reason to `AGENT.LOG` beside
+itself without recording token values. Logging is best effort if that
+directory cannot be found or written.
+
+Relative `GET`/`PUT` paths refer to the application folder; full HFS paths
+such as `Other Volume:Folder:File` remain supported. Self-update requires
+the application filename `llm_agent` and a real `llm_updater` beside it.
+A renamed agent can serve other commands but rejects `UPDATE`, draining
+its payload without modifying a sibling application. Upgrade **both**
+binaries to obtain the location handling described here.
 
 ## Screenshot limits
 
@@ -249,7 +298,7 @@ the guest once, by hand:
    ISO9660/Joliet CD-ROM image (`genisoimage -J -r`) instead.
 2. Decode each `.bin` with StuffIt Expander (drag onto it).
 3. Copy `LLMAGENT.INI.example` to `LLMAGENT.INI` next to `llm_agent`,
-   set a real `token=`.
+   set a real `token=` and, if needed, `port=` as described above.
 4. Double-click `llm_agent` to launch it.
 
 From then on, updates go through `UPDATE` — see above — with `llm_agent`

@@ -39,10 +39,9 @@
  * QUICKEYS_CLICK_INVESTIGATION.md for the evidence; HandleClick() below
  * carries the implementation notes.
  *
- * KEY/TYPE are still not implemented. Keyboard event injection was proven
- * to work in the same investigation, but no command was built on it --
- * see README.md for the working technique and exact evidence if picking
- * this back up.
+ * KEY/TYPE use keyboard event injection with a US keyboard layout.
+ * Configuration and companion files are located beside the actual running
+ * application using the Process Manager, independent of its launch folder.
  *
  * This app runs with no console, no windows, and (see llm_agent.r) no
  * foreground UI at all -- there is no Finder menu or window to close it
@@ -96,16 +95,19 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define AGENT_PORT      2222
+#include "app_files.h"
+#include "config.h"
+
 #define RCV_BUFFER_SIZE 16384
 #define LINE_MAX_LEN    512
 #define READ_CHUNK      8192
-#define TOKEN_MAX_LEN   256
+#define TOKEN_MAX_LEN   MAC_TOKEN_MAX
 
 static short   gMacTCPRefNum;
 static StreamPtr gStream;
 static char    gRcvBuffer[RCV_BUFFER_SIZE];
 static char    gToken[TOKEN_MAX_LEN];
+static unsigned short gAgentPort = MAC_DEFAULT_PORT;
 static char    gLine[LINE_MAX_LEN];
 static char    gIOBuf[READ_CHUNK];
 static Boolean gQuitRequested;
@@ -221,7 +223,7 @@ static OSErr TCPStreamCreate(StreamPtr *stream)
     return err;
 }
 
-/* Waits (cooperatively) for an incoming connection on AGENT_PORT. */
+/* Waits (cooperatively) for an incoming connection on the configured port. */
 static OSErr TCPListen(StreamPtr stream)
 {
     TCPiopb pb;
@@ -235,7 +237,7 @@ static OSErr TCPListen(StreamPtr stream)
     pb.csParam.open.remoteHost = 0;
     pb.csParam.open.remotePort = 0;
     pb.csParam.open.localHost = 0;
-    pb.csParam.open.localPort = AGENT_PORT;
+    pb.csParam.open.localPort = gAgentPort;
 
     return TCPControlWait(&pb, TCPPassiveOpen);
 }
@@ -1724,6 +1726,8 @@ static void HandleSysinfo(void)
      * effect. Without it a successful-looking update is indistinguishable from
      * the old binary still running. */
     len += sprintf(buf + len, "agent_build=%s %s\r\n", __DATE__, __TIME__);
+    len += sprintf(buf + len, "agent_port=%u\r\n", (unsigned)gAgentPort);
+    len += sprintf(buf + len, "config_location=application-folder\r\n");
 
     err = Gestalt(gestaltSystemVersion, &sysVersion);
     if (err == noErr) {
@@ -1809,7 +1813,7 @@ static OSErr OpenUpload(const char *path, short *ref, FSSpec *spec)
     if (len == 0 || len > 255) return paramErr;
     pname[0] = (unsigned char)len;
     memcpy(pname + 1, path, len);
-    err = FSMakeFSSpec(0, 0, pname, spec);
+    err = FSMakeFSSpec(gApplicationSpec.vRefNum, gApplicationSpec.parID, pname, spec);
     if (err == fnfErr) err = FSpCreate(spec, 0x3F3F3F3FUL, 0x54455854UL, smSystemScript);
     if (err != noErr) return err;
     err = FSpOpenDF(spec, fsWrPerm, ref);
@@ -1903,8 +1907,6 @@ static void HandleUpdate(char *args)
 {
     long size;
     short ref = 0;
-    unsigned char pname[256];
-    int nlen;
     FSSpec spec;
     OSErr err;
 
@@ -1912,6 +1914,12 @@ static void HandleUpdate(char *args)
     size = atol(args);
     if (size <= 0) {
         SendCStr("ERR:bad update size\n");
+        return;
+    }
+
+    if (!MacApplicationHasName("llm_agent")) {
+        ReceiveUpload(0, NULL, size);
+        SendCStr("ERR:update requires application named llm_agent\n");
         return;
     }
 
@@ -1932,10 +1940,7 @@ static void HandleUpdate(char *args)
     /* Confirm llm_updater actually exists before committing to the
      * handoff -- better to report ERR now (agent keeps running) than
      * to quit and leave nothing to relaunch us. */
-    nlen = (int)strlen("llm_updater");
-    pname[0] = (unsigned char)nlen;
-    memcpy(pname + 1, "llm_updater", nlen);
-    err = FSMakeFSSpec(0, 0, pname, &spec);
+    err = MacApplicationFile("llm_updater", &spec);
     if (err != noErr) {
         SendCStr("ERR:llm_updater not found next to this agent\n");
         return;
@@ -2149,33 +2154,31 @@ static void HandleScreenshot(void)
 /* Session handling                                                   */
 /* ------------------------------------------------------------------ */
 
-static int LoadToken(void)
+static const char *LoadConfig(void)
 {
-    /* Relative lookup works when launched from its own folder; fall back
-     * to the absolute path when launched via a Startup Items alias/copy,
-     * whose default directory is Startup Items itself, not LLMAGENT. */
-    FILE *f = fopen("LLMAGENT.INI", "r");
-    char line[TOKEN_MAX_LEN];
-
-    if (!f) f = fopen("MacOS:Desktop Folder:LLMAGENT:LLMAGENT.INI", "r");
-
-    gToken[0] = '\0';
-    if (!f) return 0;
-
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "token=", 6) == 0) {
-            char *p = line + 6;
-            char *nl = strchr(p, '\n');
-            if (nl) *nl = '\0';
-            nl = strchr(p, '\r');
-            if (nl) *nl = '\0';
-            strncpy(gToken, p, sizeof(gToken) - 1);
-            gToken[sizeof(gToken) - 1] = '\0';
-            break;
-        }
+    static char data[MAC_CONFIG_MAX];
+    MacAgentConfig config;
+    FSSpec spec;
+    short ref;
+    long size, count;
+    const char *error;
+    OSErr err, closed;
+    if (MacApplicationFile("LLMAGENT.INI", &spec) != noErr ||
+        FSpOpenDF(&spec, fsRdPerm, &ref) != noErr) return "cannot open LLMAGENT.INI beside application";
+    err = GetEOF(ref, &size);
+    if (err != noErr || size <= 0 || size > MAC_CONFIG_MAX) {
+        FSClose(ref);
+        return "cannot read INI size, or INI is empty/too large";
     }
-    fclose(f);
-    return gToken[0] != '\0';
+    count = size;
+    err = FSRead(ref, &count, data);
+    closed = FSClose(ref);
+    if (err != noErr || count != size || closed != noErr) return "cannot read complete INI";
+    error = MacParseConfig(data, size, &config);
+    if (error) return error;
+    memcpy(gToken, config.token, sizeof(gToken));
+    gAgentPort = config.port;
+    return NULL;
 }
 
 static void HandleClient(void)
@@ -2302,6 +2305,19 @@ int main(void)
      * more careful, incremental investigation. */
     InitGraf(&qd.thePort);
 
+    if (MacLocateApplication() != noErr) return 1;
+    if (MacSelectApplicationDirectory() != noErr) {
+        MacAppendLog("AGENT.LOG", "startup: cannot select application folder");
+        return 1;
+    }
+    {
+        const char *error = LoadConfig();
+        if (error) {
+            MacAppendLog("AGENT.LOG", error);
+            return 1;
+        }
+    }
+
     err = AEInstallEventHandler((AEEventClass)AE_CLASS_CORE,
                                 (AEEventID)AE_ID_QUIT,
                                 NewAEEventHandlerUPP(HandleQuitEvent),
@@ -2312,8 +2328,6 @@ int main(void)
     if (err != noErr) {
         return 1;
     }
-
-    LoadToken();
 
     while (!gQuitRequested) {
         err = TCPStreamCreate(&gStream);

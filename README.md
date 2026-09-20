@@ -217,7 +217,8 @@ tokens (up to 127 characters for compatibility with all ports), never the
 example token. Examples, smoke scripts, and floppy builders use
 `REPLACE_WITH_UNIQUE_TOKEN`; substitute a private per-machine value before
 using them, and keep generated configuration/media out of Git. The Mac
-agent currently uses a fixed port of 2222.
+agent reads `token=` and optional `port=` (default 2222) from `LLMAGENT.INI`
+beside its executable; see [Mac configuration](agent-mac-system7/README.md#installation-and-configuration).
 
 **Put your real `machines.ini` outside the repo**, e.g.
 `~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at

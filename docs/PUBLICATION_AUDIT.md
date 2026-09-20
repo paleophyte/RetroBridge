@@ -211,10 +211,12 @@ does not implement reboot. These are not interchangeable “power off” tools.
   with retained backup also prevent false success and direct truncation on I/O
   failures. This remains a bounded NCF check, not proof of a successful boot;
   see the NetWare README and follow-up validation below.
-- **Mac installation is partly hardcoded.** Port is fixed at 2222, and
-  the token fallback path names `MacOS:Desktop Folder:LLMAGENT`. The update
-  path uses the current directory. Different volume/folder names and
-  alternate startup contexts need explicit instructions or path discovery.
+- **Mac installation paths/port corrected (2026-09-20).** Both binaries
+  locate their own application folder through the Process Manager. INI,
+  helper, stage, recovery, and log paths no longer depend on a named volume
+  or launch directory. A validated optional `port=` replaces the fixed port;
+  missing/invalid configuration exits before listening. Fixed executable
+  names remain required for self-update. See the Mac installation follow-up.
 - **Mac screenshot width/framing limit (fixed 2026-09-20).** Rows now emit
   every pixel in bounded chunks, with correct padded BMP lengths. Capture
   validation and send-failure cleanup are covered by regression tests;
@@ -1293,3 +1295,44 @@ preparation/checks while remaining Git-clean.
 Compiled releases still require a review of the actual linked Novell objects,
 Watt-32 code, and compiler runtimes, with their applicable notices and terms.
 The source license is not a blanket license for those binaries or guest media.
+
+### Mac installation and configuration follow-up (2026-09-20)
+
+Both applications now obtain their own FSSpec from the Process Manager and
+anchor private files to its volume/directory. Relative GET/PUT paths use the
+application folder; absolute HFS paths remain supported. The agent reads its
+INI through checked native File Manager calls. The bounded parser accepts
+CR/LF/CRLF, requires a non-placeholder token, and validates optional `port=`
+(default 2222). Missing, malformed, duplicate, unknown, truncated, oversized,
+or unreadable configuration prevents listening; best-effort AGENT.LOG entries
+contain reasons without configuration values. SYSINFO reports the active port
+and configuration location. Self-update retains fixed executable names and
+rejects a renamed running agent before staging, while draining its payload.
+
+All 55 root host tests and both Mac-specific tests passed. New coverage compiles
+the production parser, configuration loader, and application-file helpers with
+unrelated launch-directory fixtures, token/port/text boundaries, and native
+lookup/read/close failures. Upload tests cover renamed-agent update rejection;
+updater fault tests now assert explicit application-directory lookup as well
+as retaining the previous exchange/rollback checks. Native Retro68 builds for
+both binaries passed with existing compiler/CMake warnings.
+
+Both applications were deployed to the System 7.5.3 guest. Build
+`Sep 20 2026 18:13:13` first authenticated using the unchanged token-only INI
+on port 2222. With the guest cleanly shut down and the full original disk
+retained, the installation was moved from the Desktop to a differently named
+folder at the volume root and given a CR-only INI with temporary port 2233.
+The existing Startup Items alias launched it there. Relative and absolute
+GET/PUT readbacks passed, and self-update from that folder completed: both
+forks verified, the prior application was retained, the new process served
+requests, and staging was removed. The test used Ubuntu as the client because
+Windows-to-guest connections on 2233 timed out; Ubuntu could reach that port.
+The network restriction was not changed.
+
+The original folder and exact token-only INI bytes were restored, and the
+temporary transfer file was removed. Startup Items launch, authentication
+from Windows on 2222, relative/absolute GET, and a complete 640x480
+SCREENSHOT followed by PONG passed. Private configuration and disk backups
+were retained. Volume renaming, a second physical volume, and live startup
+with invalid configuration were not exercised; invalid configuration and
+native API failure paths were covered by host fault injection.

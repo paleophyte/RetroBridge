@@ -35,6 +35,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "app_files.h"
+
 #define STAGED_PATH   "STAGED_AGENT.bin"
 #define TARGET_NAME   "llm_agent"
 #define MACBIN_HDR_SZ 128
@@ -50,11 +52,7 @@ typedef struct {
 
 static void Log(const char *msg)
 {
-    FILE *f = fopen(LOG_PATH, "a");
-    if (!f) return;
-    fputs(msg, f);
-    fputc('\n', f);
-    fclose(f);
+    MacAppendLog(LOG_PATH, msg);
 }
 
 static void LogErr(const char *prefix, OSErr err)
@@ -62,14 +60,6 @@ static void LogErr(const char *prefix, OSErr err)
     char buf[128];
     sprintf(buf, "%s (err=%d)", prefix, (int)err);
     Log(buf);
-}
-
-static void CToPascal(const char *src, unsigned char *dst)
-{
-    int len = (int)strlen(src);
-    if (len > 255) len = 255;
-    dst[0] = (unsigned char)len;
-    memcpy(dst + 1, src, len);
 }
 
 /* This decoder accepts the classic 128-byte MacBinary layout used by
@@ -99,9 +89,7 @@ static int ParseMacBinaryHeader(const unsigned char *hdr, MacBinInfo *info)
 
 static OSErr NamedSpec(const char *name, FSSpec *spec)
 {
-    unsigned char pname[256];
-    CToPascal(name, pname);
-    return FSMakeFSSpec(0, 0, pname, spec);
+    return MacApplicationFile(name, spec);
 }
 
 /* Never reuse or delete a recovery copy from an earlier attempt. Before
@@ -339,6 +327,11 @@ int main(void)
 {
     unsigned long startTicks;
     InitGraf(&qd.thePort);
+    if (MacLocateApplication() != noErr) return 1;
+    if (MacSelectApplicationDirectory() != noErr) {
+        Log("startup: cannot select updater folder");
+        return 1;
+    }
     Log("=== llm_updater starting ===");
     /* Retain the proven cooperative teardown grace period. Do not poll or
      * manipulate the old agent's process or files during its cleanup. */

@@ -36,12 +36,16 @@ static void Log(const char *s) { assert(strlen(logs)+strlen(s)+2<sizeof(logs)); 
 static void LogErr(const char *s, OSErr e) { (void)e; Log(s); }
 static OSErr FSMakeFSSpec(int v, int d, const unsigned char *p, FSSpec *s) {
     char name[256]; int n;
-    (void)v; (void)d; memcpy(name,p+1,p[0]); name[p[0]]=0;
+    assert(v==1 && d==678); memcpy(name,p+1,p[0]); name[p[0]]=0;
     if (!strcmp(name,"llm_agent")) { s->id=0; if (fault==27) return -36; }
     else if (!strcmp(name,"STAGED_AGENT.bin")) s->id=1;
     else { assert(sscanf(name,"llm_agent.saved.%d",&n)==1 && n>=1 && n<=99);
            if (fault==28) return -36; s->id=n+1; }
     s->vRefNum=1; return files[s->id].exists ? noErr : fnfErr;
+}
+static OSErr MacApplicationFile(const char *name, FSSpec *spec) {
+    unsigned char p[32]; p[0]=(unsigned char)strlen(name); memcpy(p+1,name,p[0]);
+    return FSMakeFSSpec(1,678,p,spec);
 }
 static OSErr FSpCreate(FSSpec *s, OSType c, OSType t, int script) {
     (void)c; (void)t; (void)script;
@@ -184,7 +188,7 @@ class UpdateTests(unittest.TestCase):
     def test_transaction(self):
         source = SOURCE.read_text(encoding="utf-8")
         constants = source[source.index("#define STAGED_PATH"):source.index("static void Log(")]
-        helpers = source[source.index("static void CToPascal("):source.index("int main(void)")]
+        helpers = source[source.index("static int ParseMacBinaryHeader("):source.index("int main(void)")]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cfile = root / "update.c"

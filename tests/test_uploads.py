@@ -36,6 +36,7 @@ typedef int BOOL;
 typedef unsigned long DWORD;
 typedef int OSErr;
 typedef struct { short vRefNum; int kind; } FSSpec;
+static struct { short vRefNum; long parID; } gApplicationSpec = {1, 678};
 typedef struct { int launchBlockID, launchEPBLength, launchControlFlags;
                  FSSpec *launchAppSpec; } LaunchParamBlockRec;
 enum { TRUE=1, FALSE=0, true=1, noErr=0, INVALID_HANDLE_VALUE=-1,
@@ -114,7 +115,7 @@ static BOOL WriteFile(HANDLE h, const void *data, DWORD n, DWORD *written, void 
 static BOOL FlushFileBuffers(HANDLE h) { assert(h == 42); ++flushes; return fault != 4; }
 static BOOL CloseHandle(HANDLE h) { assert(h == 42); ++closes; return fault != 5; }
 static OSErr FSMakeFSSpec(int a, int b, unsigned char *name, FSSpec *spec) {
-    (void)a; (void)b; spec->vRefNum=1; spec->kind=2;
+    assert(a==1 && b==678); spec->vRefNum=1; spec->kind=2;
     if (name[0]==11 && !memcmp(name+1,"llm_updater",11)) {
         spec->kind=1;
         assert((fault == 0 || fault == 9 || fault == 10) && consumed == declared && closes == 1 && flushes == 1);
@@ -122,6 +123,13 @@ static OSErr FSMakeFSSpec(int a, int b, unsigned char *name, FSSpec *spec) {
     }
     if (fault == 12) return fnfErr;
     return noErr;
+}
+static OSErr MacApplicationFile(const char *name, FSSpec *spec) {
+    unsigned char p[32]; p[0]=(unsigned char)strlen(name); memcpy(p+1,name,p[0]);
+    return FSMakeFSSpec(1,678,p,spec);
+}
+static int MacApplicationHasName(const char *name) {
+    assert(!strcmp(name,"llm_agent")); return fault!=13;
 }
 static OSErr FSpCreate(FSSpec *s, unsigned long creator, unsigned long type, int script) {
     (void)s; (void)creator; (void)type; (void)script; return fault==12?-1:noErr;
@@ -226,6 +234,9 @@ class UploadTests(unittest.TestCase):
     reset(0,0); strcpy(args,"0"); HandleUpdate(args);
     assert(!opens && !launches && !gQuitRequested);
     assert(!strncmp(response,"ERR:",4));
+    reset(13,23); strcpy(args,"23"); HandleUpdate(args);
+    assert(consumed==declared && !opens && !launches && !gQuitRequested);
+    assert(strstr(response,"application named llm_agent"));
 '''
                             else:
                                 extra += r'''
