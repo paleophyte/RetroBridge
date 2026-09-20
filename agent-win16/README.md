@@ -544,3 +544,12 @@ by a timed-out or interrupted invocation are retained for recovery and never
 reused by a later EXEC. Missing output does not cause automatic reexecution.
 See [long-running commands](../docs/LONG_RUNNING_COMMANDS.md) for wait/status
 semantics, retained-file cleanup, and live verification.
+
+## Tracked command jobs
+
+This build advertises `exec_jobs=1` and uses the DOS-target `JOBRUN.EXE`
+companion (built by `build.bat`). It retains two job results and permits one
+active foreground DOS-box command. Commands must fit 120 encoded bytes.
+Completion uses a marker; the inner command's exit code is unknown.
+Cancellation is unsupported, and redirected disk output is not capped.
+See [job protocol, deployment and limits](../docs/LONG_RUNNING_COMMANDS.md).

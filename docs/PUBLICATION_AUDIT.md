@@ -1441,3 +1441,32 @@ identifier; it and two NetWare guests retain ASCII pending locale verification.
 These tests do not certify every locale, application-output encoding, native
 startup/update path, or keyboard layout. DBCS and automatic locale negotiation
 remain unsupported. No native production binary changes were required.
+
+### Long-running command implementation (2026-09-20)
+
+Execution lifetime fixes landed in `ba032ca`; native Win32 jobs and five MCP
+tools landed in `3f061dc`. The bridge now registers 43 tools. All six Win32
+guests passed verified deployment and job operations; Win95 and XP also
+passed native process/pipe fixtures and quiet-command/disconnect/cancellation
+tests. Cancellation covers only the direct child. Results are bounded and
+retained until release; updates refuse retained jobs.
+
+Win16 and all three OS/2 guests now have a shell-job adapter with a separate
+JOBRUN helper. It uses unique spool directories and completion markers, has
+no safe cancellation, and caps retrieval rather than actual disk growth.
+Win16 permits one active foreground DOS job and reports unknown command exit
+status; OS/2 preserved nonzero exit status and concurrent command isolation.
+The host suite passed 81 tests; both MCP SDKs passed the four legacy guests.
+Win16 startup initially exhausted the shared near heap; buffer reuse, smaller
+stored commands, an explicit heap, and a smaller Watcom allocation increment
+fixed it. The failed builds were recovered using the previous executable.
+
+Win7 had a disabled service and an interactive agent. The service updater
+replaced its file but failed to restart the service; verification correctly
+failed. An explicit interactive restart then verified the replacement. The
+interactive agent now has an Administrator HKCU Run startup entry, verified
+by readback; next-logon execution remains untested. The generic NT updater's
+service assumption remains a documented deployment limitation.
+
+See [long-running commands](LONG_RUNNING_COMMANDS.md) for current semantics,
+verification, recovery requirements, and the separate DOS experiment.

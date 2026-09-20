@@ -29,7 +29,12 @@ REM (wcl's DOS-oriented shortcut) has no effect combined with -l=windows
 REM for this NE target -- pass wlink's own OPTION STACK directive
 REM straight through instead (any arg wcl doesn't recognize goes to the
 REM linker unchanged).
-wcl -zq -zW -bt=windows -os -w4 -fm=llm_agent.map -i="%WATCOM%\H\WIN" -i="%WATCOM%\H" llm_agent.c -fe=llm_agent.exe -l=windows winsock.lib toolhelp.lib -"OPTION STACK=16384"
+REM Explicit local heap for CRT file structures plus transient allocations.
+REM Keep DGROUP data + 16 KiB stack + 4 KiB heap below the 64 KiB limit.
+wcl -zq -zW -bt=windows -os -w4 -fm=llm_agent.map -i="%WATCOM%\H\WIN" -i="%WATCOM%\H" llm_agent.c -fe=llm_agent.exe -l=windows winsock.lib toolhelp.lib -"OPTION STACK=16384" -"OPTION HEAP=4096"
 if errorlevel 1 exit /b 1
 echo OK: llm_agent.exe
 dir llm_agent.exe
+
+call "%~dp0build_jobrun.bat"
+if errorlevel 1 exit /b 1

@@ -71,6 +71,10 @@
 #define WM_AGENT_SOCKET (WM_USER + 100)
 
 #define DEFAULT_PORT 2222
+/* Watcom's default first near-heap request is 8 KiB even for tiny startup
+ * FILE links. Our shared 64 KiB data/stack segment has less contiguous room.
+ * Define the CRT growth quantum before its initializers, not in WinMain. */
+unsigned _amblksiz = 1024;
 #define LINE_MAX_LEN 512
 #define READ_CHUNK   4096
 #define EXEC_CAP     8192
@@ -297,6 +301,21 @@ static void get_local_ip(char *out, int outlen) {
    EXECDETACH for those instead). Output is capped at EXEC_CAP; put
    long-running or high-output work in a .BAT and EXEC that file. ---- */
 
+
+/* A fresh DOS helper owns redirection and command completion. */
+#define FJ_COMMAND_MAX 120
+#define FJ_SHARED_BUFFER g_iobuf
+#define FJ_SINGLE_ACTIVE
+static void fj_encode(char *s) { AnsiToOem(s,s); }
+static int fj_launch(const char *dir) {
+    char cmd[272];
+    sprintf(cmd,"%s\\JOBRUN.EXE %s",g_exedir,dir);
+    /* Like REDIR, JOBRUN must start in a foreground DOS box on WFW.
+     * Launching another DOS job would suspend the first on this setup. */
+    return WinExec(cmd,SW_SHOWNORMAL)>31;
+}
+#include "../common/file_jobs.h"
+
 static int run_exec(const char *cmdline) {
     FILE *f;
     char spool[164];
@@ -515,6 +534,7 @@ static int handle_sysinfo(void) {
     len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
                    g_update_exe, g_update_sha256, g_update_started);
     len += sprintf(buf + len, "os_family=win16\r\n");
+    len += sprintf(buf + len,"exec_jobs=1\r\njob_cancel_scope=unsupported\r\njob_output_storage=file_unbounded\r\njob_command_modes=shell\r\n");
     len += sprintf(buf + len, "windows_version=%u.%u\r\n",
                    (unsigned)LOBYTE(LOWORD(verInfo)), (unsigned)HIBYTE(LOWORD(verInfo)));
     /* Unlike the Windows word (low byte=major/high byte=minor), the DOS
@@ -1482,8 +1502,11 @@ static void handle_client(void) {
     for (;;) {
         if (recv_line(g_line, sizeof(g_line)) < 0) break;
 
-        if (strncmp(g_line, "EXEC ", 5) == 0) {
-            run_exec(g_line + 5);
+        if (strncmp(g_line,"JOB",3)==0) {
+            if(handle_file_job(g_line)<0)break;
+        } else if (strncmp(g_line, "EXEC ", 5) == 0) {
+            if(fj_active())send_cstr("ERR:background job completion pending; use JOBSTART instead of blocking EXEC\n");
+            else run_exec(g_line + 5);
         } else if (strncmp(g_line, "PUT ", 4) == 0) {
             handle_put(g_line + 4);
         } else if (strncmp(g_line, "GET ", 4) == 0) {

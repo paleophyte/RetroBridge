@@ -82,3 +82,6 @@ wlink system os2 option quiet, map name ioreset file ioreset ^
 if errorlevel 1 exit /b 1
 echo Built ioreset.exe (reboot helper)
 dir ioreset.exe
+
+call "%~dp0build_jobrun.bat"
+if errorlevel 1 exit /b 1

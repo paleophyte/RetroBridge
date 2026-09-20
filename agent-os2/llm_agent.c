@@ -409,6 +409,24 @@ static int run_exec_detach(const char *cmdline) {
 
 #define OS2_CMD_EXE      "C:\\OS2\\CMD.EXE"
 
+
+#define FJ_COMMAND_MAX 450
+static void fj_encode(char *s) { (void)s; }
+static int fj_launch(const char *dir) {
+    STARTDATA sd;ULONG session=0;PID pid=0;APIRET rc;
+    char exe[256],args[272],obj[256];
+    sprintf(exe,"%s\\JOBRUN.EXE",g_exedir);sprintf(args," %s",dir);
+    memset(&sd,0,sizeof(sd));sd.Length=sizeof(sd);
+    sd.Related=SSF_RELATED_INDEPENDENT;sd.FgBg=SSF_FGBG_BACK;
+    sd.PgmTitle=(PSZ)"llm_job";sd.PgmName=(PSZ)exe;sd.PgmInputs=(PBYTE)args;
+    sd.InheritOpt=SSF_INHERTOPT_PARENT;sd.SessionType=SSF_TYPE_WINDOWABLEVIO;
+    sd.PgmControl=SSF_CONTROL_MINIMIZE;sd.ObjectBuffer=obj;sd.ObjectBuffLen=sizeof(obj);
+    rc=DosStartSession(&sd,&session,&pid);
+    /* 457 means started in background, not failure. */
+    return rc==0 || rc==457;
+}
+#include "../common/file_jobs.h"
+
 static int run_exec(const char *cmdline) {
     FILE *f;
     int exit_code = 0;
@@ -802,6 +820,7 @@ static int handle_sysinfo(void) {
         len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
                        g_update_exe, g_update_sha256, g_update_started);
         len += sprintf(buf + len, "os_family=os2\r\n");
+    len += sprintf(buf + len,"exec_jobs=1\r\njob_cancel_scope=unsupported\r\njob_output_storage=file_unbounded\r\njob_command_modes=shell\r\n");
         len += sprintf(buf + len, "os2_major=%lu\r\n", (unsigned long)major);
         len += sprintf(buf + len, "os2_minor=%lu\r\n", (unsigned long)minor);
         len += sprintf(buf + len, "os2_version=%lu.%02lu\r\n", (unsigned long)disp_major, (unsigned long)disp_minor);
@@ -1565,10 +1584,13 @@ static void handle_client(void) {
     for (;;) {
         if (recv_line(g_line, sizeof(g_line)) < 0) break;
 
-        if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
+        if (strncmp(g_line,"JOB",3)==0) {
+            if(handle_file_job(g_line)<0)break;
+        } else if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
             run_exec_detach(g_line + 11);
         } else if (strncmp(g_line, "EXEC ", 5) == 0) {
-            run_exec(g_line + 5);
+            if(fj_active())send_cstr("ERR:background job completion pending; use JOBSTART instead of blocking EXEC\n");
+            else run_exec(g_line + 5);
         } else if (strncmp(g_line, "PUT ", 4) == 0) {
             handle_put(g_line + 4);
         } else if (strncmp(g_line, "GET ", 4) == 0) {

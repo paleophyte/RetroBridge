@@ -413,3 +413,11 @@ by a timed-out or interrupted invocation are retained for recovery and never
 reused by a later EXEC. Missing output does not cause automatic reexecution.
 See [long-running commands](../docs/LONG_RUNNING_COMMANDS.md) for wait/status
 semantics, retained-file cleanup, and live verification.
+
+## Tracked command jobs
+
+This build advertises `exec_jobs=1`. Deploy the 16-bit OS/2 `JOBRUN.EXE`
+companion built by `build.bat` alongside the agent. Two shell jobs can run
+independently, with marker-based completion and observed shell exit status.
+Cancellation is unsupported; disk output is not capped, while retrieval
+exposes at most the first 1 MiB. See [job lifecycle and limits](../docs/LONG_RUNNING_COMMANDS.md).

@@ -84,6 +84,77 @@ reported replacement unverified. Restarting the known interactive instance
 then passed identity/hash/configuration and job checks. The generic NT updater
 still assumes a service installation; interactive NT deployments need an
 explicit restart appropriate to their launch configuration.
+Win7 now also has an Administrator HKCU Run entry for the interactive agent.
+That registration was read back and desktop capture verified; a fresh logon
+was not exercised. It starts when that user logs on, not before logon.
+
+## Win16 and OS/2 file jobs
+
+These agents implement the same job commands using a separately built
+`JOBRUN.EXE` beside the agent. Build scripts now build that companion too;
+deploy the correct DOS, 32-bit OS/2, or 16-bit OS/2 helper and verify its bytes
+before updating the agent. Do not replace a helper while jobs are active.
+The helper reads a command file, redirects stdout/stderr itself, waits for
+the shell, closes output, then renames a completion marker into place.
+Spool directories are reserved atomically and never reused across restart.
+
+Two results can be retained. OS/2 can run two shell jobs concurrently; Win16
+allows only one active DOS-box job, with up to two retained results. Direct
+mode is rejected. Command limits are 120 encoded bytes on Win16 and 450 on
+OS/2, within the overall protocol line limit. Installation paths must be
+short (up to 100 bytes) and contain no spaces. Win16 converts ANSI command
+text to OEM for the DOS helper. All jobs use NUL stdin.
+
+Win16 must launch the DOS box in the foreground on the tested WFW setup.
+Minimized launches were suspended before creating output. Switching focus
+or changing PIF scheduling can affect progress: this does not promise a
+background DOS scheduler. PING, screenshots, status, and file reads remain
+available while a foreground DOS job runs. Win16 reports a completed inner
+command's exit code as null because COMMAND.COM /C lost its nonzero status
+in live tests. OS/2 preserved the test child's real exit status 7.
+
+Until a valid completion marker arrives, state is `unknown`: it means
+completion has not been observed, not proof that a process is still alive.
+Missing/corrupt markers or a helper failure can leave a job unknown indefinitely.
+`completion_tracking=marker`, `pid=null`, and `cancel_scope=unsupported`
+make these restrictions explicit. Cancellation always returns an error and
+is excluded from the advisory capability list. Release refuses a missing
+completion marker, preventing removal of files a child may still use. A
+helper-reported launch/I/O error remains unknown with `output_error` nonzero,
+but its completed marker allows cleanup. Local recovery of a stuck unknown
+job requires confirming the helper/child has stopped before restarting the
+agent and removing that invocation's files. No automatic orphan cleanup runs.
+
+**Disk output is not capped.** `output_storage=file_unbounded` is returned
+by every job status and advertised in SYSINFO. Reads expose the first 1 MiB,
+marking truncation beyond that; the redirected file can continue growing.
+Use bounded-output commands and watch free space. Output reads are at most
+64 KiB and use a reusable transfer buffer; a concurrent file-read failure
+closes the connection instead of misframing a following command. Metadata
+may not show buffered child output immediately. Completion tracks the shell,
+not descendants that it launched independently.
+
+Restart loses the registry while spool files remain on disk; children may
+continue. Bridge updates refuse retained jobs as on Win32. Existing EXEC is
+refused while job completion remains pending so it cannot block job queries.
+
+The Win16 build shares its transfer buffer and sizes stored commands to the
+platform limit. It sets Watcom's `_amblksiz` before CRT startup and reserves
+a 4 KiB local heap: the default 8 KiB allocation increment failed startup
+after the new static data reduced contiguous room in the shared 64 KiB
+data/stack segment. The live failure was recovered using the previous binary;
+the corrected build passed verified replacement and job operations.
+
+Open Watcom builds and host tests cover repeat IDs, slot limits, malformed
+offsets/counts, binary output, prefix truncation, helper launch errors,
+missing completion, explicit cancellation rejection, and cleanup. Live
+Win16 and all three OS/2 guests ran a quiet 20-second child while PING and
+screenshots stayed available. OS/2 also ran a concurrent second command
+without mixing output. Win16 rejected that second active job. Encoded shell
+output and release passed, and configuration was preserved on deployment.
+Both MCP SDK 2.0.0 and 2.2.0 passed the file-job lifecycle on all four guests.
+OS/2 1.3 launches helpers with `P_NOWAITO` so the CRT does not retain a child
+wait result that the marker-based implementation would never collect.
 
 Source review against `86cf91b`, 2026-09-20. This document records current
 findings and a proposed implementation. The execution-hazard follow-up

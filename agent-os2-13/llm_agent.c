@@ -328,6 +328,19 @@ static void minimize_self(void) {
  */
 #include "../common/exec_spool.h"
 
+
+#define FJ_COMMAND_MAX 450
+static void fj_encode(char *s) { (void)s; }
+static int fj_launch(const char *dir) {
+    char exe[256];const char *args[3];int rc;
+    sprintf(exe,"%s\\JOBRUN.EXE",g_exedir);args[0]=exe;args[1]=dir;args[2]=NULL;
+    /* The helper writes its own completion record. Do not retain an OS/2
+     * wait result that nobody will collect after JOBRELEASE. */
+    rc=spawnv(P_NOWAITO,exe,args);
+    return rc!=-1;
+}
+#include "../common/file_jobs.h"
+
 static int run_exec(const char *cmdline) {
     FILE *f;
     int rc;
@@ -646,6 +659,7 @@ static int handle_sysinfo(void) {
     len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
                    g_update_exe, g_update_sha256, g_update_started);
     len += sprintf(buf + len, "os_family=os2\r\n");
+    len += sprintf(buf + len,"exec_jobs=1\r\njob_cancel_scope=unsupported\r\njob_output_storage=file_unbounded\r\njob_command_modes=shell\r\n");
     len += sprintf(buf + len, "os2_major=%u\r\n", major);
     len += sprintf(buf + len, "os2_minor=%u\r\n", minor);
 
@@ -1334,10 +1348,13 @@ static void handle_client(void) {
     for (;;) {
         if (recv_line(g_line, sizeof(g_line)) < 0) break;
 
-        if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
+        if (strncmp(g_line,"JOB",3)==0) {
+            if(handle_file_job(g_line)<0)break;
+        } else if (strncmp(g_line, "EXECDETACH ", 11) == 0) {
             run_exec_detach(g_line + 11);
         } else if (strncmp(g_line, "EXEC ", 5) == 0) {
-            run_exec(g_line + 5);
+            if(fj_active())send_cstr("ERR:background job completion pending; use JOBSTART instead of blocking EXEC\n");
+            else run_exec(g_line + 5);
         } else if (strncmp(g_line, "PUT ", 4) == 0) {
             handle_put(g_line + 4);
         } else if (strncmp(g_line, "GET ", 4) == 0) {

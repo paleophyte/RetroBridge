@@ -44,3 +44,6 @@ wlink @reboot.lnk
 if errorlevel 1 exit /b 1
 echo Built reboot.exe ^(detached reboot helper^)
 dir reboot.exe
+
+call "%~dp0build_jobrun.bat"
+if errorlevel 1 exit /b 1

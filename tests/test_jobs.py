@@ -97,4 +97,22 @@ class JobTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stdout.decode(errors='replace')+result.stderr.decode(errors='replace'))
             self.assertIn(b'PASS job engine',result.stdout)
 
+    @unittest.skipUnless(os.name=='nt','DOS path and mkdir semantics')
+    def test_native_file_job_adapter(self):
+        with tempfile.TemporaryDirectory() as td:
+            exe=Path(td)/'filejobs.exe'
+            subprocess.run([os.environ.get('CC','gcc'),'-O2','-Wall',str(ROOT/'tests/file_jobs_fixture.c'),'-o',str(exe)],check=True)
+            result=subprocess.run([str(exe)],cwd=td,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+            self.assertIn(b'PASS file jobs',result.stdout)
+
+    def test_file_job_limits_are_exposed(self):
+        c=self.client()
+        payload=STATUS.replace(b'cancel_scope=process',b'cancel_scope=unsupported')+b'output_storage=file_unbounded\ncompletion_tracking=marker\n'
+        data=c._job_status_payload(payload,ID)
+        self.assertEqual(data['output_storage'],'file_unbounded')
+        info={'os_family':'win16','exec_jobs':'1','job_cancel_scope':'unsupported'}
+        self.assertNotIn('legacy_job_cancel',describe(info)['tools'])
+        self.assertIn('legacy_job_start',describe(info)['tools'])
+
 if __name__=='__main__':unittest.main()

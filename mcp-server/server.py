@@ -1040,6 +1040,9 @@ def legacy_job_start(machine: str, command: str, shell: bool = True) -> str:
     Jobs survive client disconnects, but results are lost on agent restart.
     Cancellation scope is reported by the agent; process means descendants
     are NOT guaranteed to stop. Never automatically repeat an uncertain start.
+    Win16/OS2 support shell jobs only and no cancellation. Their output uses
+    uncapped disk files (only retrieval is capped). Win16 runs one active
+    foreground DOS box and cannot report the inner command's exit status.
     Use legacy_job_status/output and release completed results explicitly."""
     import uuid
     job_id = uuid.uuid4().hex
