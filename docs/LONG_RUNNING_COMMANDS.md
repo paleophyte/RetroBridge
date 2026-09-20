@@ -87,3 +87,56 @@ For Win16/OS2, test a second command after the original wait deadline and
 verify that neither job's script/output/completion marker is reused. DOS and
 NetWare must advertise their actual restrictions rather than inherit the
 Win32 capability profile.
+
+## DOS resident monitor feasibility
+
+A TSR is possible in principle; a limited resident monitor is worth testing
+before considering a full background agent. The current build is 16-bit
+real-mode Open Watcom large model with Watt-32, not a protected-mode DOS
+extender. During `system()`, the parent agent already remains in memory. An
+interrupt-driven monitor could therefore be prototyped around that existing
+parent first, without immediately converting the executable into a TSR.
+
+The installed Watt-32 source and [upstream `src/pcintr.c`](https://github.com/gvanem/Watt-32/blob/master/src/pcintr.c)
+contain a timer-interrupt network poller with a real-mode Watcom path. It
+switches to a private stack, checks the InDOS and critical-error flags, and
+can call `tcp_tick(NULL)` and a callback. The agent currently pumps TCP only
+from its foreground loops and does not enable this facility. Its existence
+is a concrete implementation lead, not evidence that our build/packet driver
+can safely service the full agent from interrupts. The poller's guard and
+the stack's own reentry guard do not certify arbitrary C runtime or agent
+operations as interrupt-safe.
+
+DOS calls must be deferred when DOS is in a critical section; Microsoft's
+[GetInDOSF description](https://github.com/microsoft/MS-DOS/blob/main/v2.0/source/SYSCALL.txt)
+documents that restriction. A resident handler also needs to preserve the
+interrupted program's machine/DOS context and respect BIOS, packet-driver,
+and C-runtime reentrancy. InDOS alone is not a complete execution scheduler.
+
+Candidate scope for a first prototype:
+
+- Keep bounded network progress and report an in-memory running/busy status
+  while a foreground child executes. A DOS-safe callback must not invoke the
+  current blocking command dispatcher, file I/O, allocation, or `system()`.
+- Evaluate raw text-screen snapshots and queued keystrokes separately. Current
+  BMP construction and BIOS injection cannot simply be called from an ISR.
+- Defer file transfer and new command execution to an explicitly safe context.
+  Cooperative break requests would be best-effort; a TSR does not provide a
+  general safe process-kill primitive for arbitrary DOS programs.
+
+A tiny shim that loads the full agent has additional limits: loading the
+EXE is itself a DOS operation, and a foreground program may have consumed the
+conventional memory it needs. Swapping that program out and restoring it is
+a much larger design. Keeping only the packet-driver TSR resident does not
+keep TCP/authentication/agent services alive; those still need a resident
+implementation or a different wake-up transport with an explicit handoff.
+The foreground and resident halves must agree on one owner of network state.
+
+First test a separate experimental binary on both FreeDOS and MS-DOS 6.22:
+timer/stack/context integrity, then bounded network progress during a CPU
+loop, a disk-intensive child, and a program waiting for keyboard input.
+Measure conventional-memory use and foreground slowdown, test disconnects
+and return to the parent, and restore interrupt vectors on every normal
+exit. Programs that disable interrupts or retain unsafe DOS/driver contexts
+can still starve a monitor. Keep the current installed agent and boot path
+until those experiments establish what can be supported reliably.
