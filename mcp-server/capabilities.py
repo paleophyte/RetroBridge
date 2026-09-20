@@ -17,6 +17,7 @@ COMMON = {
 }
 GUI = {"legacy_click", "legacy_winlist", "legacy_ps", "legacy_kill"}
 EXEC = {"legacy_exec", "legacy_exec_detach"}
+JOBS = {"legacy_job_start", "legacy_job_status", "legacy_job_output", "legacy_job_cancel", "legacy_job_release"}
 TOOLS = {
     "win32": COMMON | GUI | EXEC | {
         "legacy_reboot", "legacy_shutdown", "legacy_clipboard_set", "legacy_reg_get",
@@ -66,6 +67,10 @@ NOTES = {
 def describe(info: dict[str, str]) -> dict:
     profile = profile_for(info)
     tools = TOOLS[profile].copy()
+    if info.get("exec_jobs") == "1" and profile in {"win32", "win16", "os2", "os2-13"}:
+        tools |= JOBS
+        if info.get("job_cancel_scope") == "unsupported":
+            tools.discard("legacy_job_cancel")
     if info.get("os_family") == "9x":
         tools -= {"legacy_enable_autologon", "legacy_disable_autologon"}
     return {
@@ -74,5 +79,6 @@ def describe(info: dict[str, str]) -> dict:
         "identity": {key: info[key] for key in ("os_family", "agent", "agent_build", "agent_started") if key in info},
         "tools": sorted(tools),
         "limitations": NOTES[profile],
+        "jobs": {key: info[key] for key in ("exec_jobs", "job_cancel_scope", "job_output_storage", "job_command_modes") if key in info},
         "text_encoding_policy": "Explicit per-machine codecs with strict conversion; default ASCII. TYPE/KEY remain ASCII-only; files stay raw bytes. See docs/TEXT_ENCODINGS.md.",
     }

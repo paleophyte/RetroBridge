@@ -1,4 +1,89 @@
-# Long-running commands: findings and implementation proposal
+# Long-running commands: implementation and remaining experiments
+
+## Win32 background jobs
+
+Win32 now advertises `exec_jobs=1` and `job_cancel_scope=process` in SYSINFO.
+The bridge requires that advertisement before sending job commands. Use
+`legacy_job_start(machine, command, shell=True)` to start a shell command,
+or `shell=False` for a direct executable command line. The reply contains a
+32-character lowercase hexadecimal ID. Start returns promptly; the command
+continues after disconnect. `legacy_job_status(machine)` lists retained jobs;
+pass `job_id` to query one. No launch is automatically retried after an
+uncertain response: the bridge returns the generated ID so it can be queried.
+
+`legacy_job_output` reads at a byte offset (up to 65,536 bytes per call),
+returning exact base64 bytes, decoded text when possible, and the next offset.
+It uses the configured EXEC output codec or a per-call override. An empty
+read means no bytes currently available, not completion. Decode failures,
+including multibyte characters split across reads, preserve the raw bytes.
+
+There are four slots, each retaining the first 1 MiB of merged stdout/stderr
+in memory. Excess output is drained and discarded with `truncated=true`.
+Polling continues with no connected client and is bounded to 16 KiB per
+job per pass. Network transfers can delay polling and backpressure the child.
+Blocking EXEC is refused while jobs are active. Completed results remain
+until explicitly released; full slots reject new starts without evicting data.
+Jobs inherit the agent's environment and working directory and have NUL stdin;
+they are intended for unattended commands. Interactive programs need a
+different launch/control workflow.
+
+States are `running`, `cancelling`, `cancelled`, `finished`, or `unknown`.
+Exit status is null while unavailable; errors do not become exit zero.
+`legacy_job_cancel` uses the retained process handle, then reports cancelled
+only after termination is observed. This covers the direct process only on
+both 9x and NT: a shell's children can survive. Direct-child exit finishes
+capture after a bounded final drain even if descendants retain the pipe;
+later descendant output is not captured. Prefer direct mode when suitable.
+`output_error` reports a pipe-read error separately from process exit.
+
+`legacy_job_release` refuses active jobs and removes completed output/handles.
+Agent restart loses the job registry and output. Graceful agent stop attempts
+to terminate direct children; crashes/forced termination can leave children
+running. Shutdown/reboot follows the requested machine operation. Bridge
+self-update refuses any retained job, including completed results: retrieve
+and release those first. This guard is advisory against another concurrent
+controller; raw detached updater launches can bypass it.
+
+Wire commands (after ordinary authentication):
+
+```
+JOBSTART <id> S <shell command>
+JOBSTART <id> D <executable command line>
+JOBS
+JOBSTATUS <id>
+JOBREAD <id> <byte offset> <count up to 65536>
+JOBCANCEL <id>
+JOBRELEASE <id>
+```
+
+Start/status/cancel return `SIZE:n` followed by ASCII key=value metadata.
+List returns SIZE-framed newline-separated IDs; read returns SIZE-framed raw
+bytes; release returns OK. Failures return ERR. IDs must be 32 lowercase hex
+digits. Repeating an existing retained ID with identical mode and command
+returns that job without launching again. Reusing it after release or restart
+can launch again; IDs are not a persistent exactly-once ledger.
+
+The Win32 native fixture covers binary/nonzero output, output-cap draining,
+four-slot exhaustion, repeated starts, launch failure, direct cancellation,
+and a descendant holding the output pipe open. It passed on the build host,
+Windows 95, and XP. Live 95/XP tests also kept PING and screenshots responsive
+during a quiet 20-second child, ran concurrent commands, decoded OEM output,
+recovered a job after disconnect immediately after launch, confirmed
+cancellation, and released all test results.
+
+All six connected Win32 guests received the build with executable hash,
+new startup identity, and unchanged configuration verified. Native job
+start/status/output/release passed on each. Both MCP SDK 2.0.0 and 2.2.0
+discovered 43 tools and passed live 95/XP jobs and unsupported-build rejection.
+The host suite passed 79 tests at this stage.
+
+Windows 7 required an interactive restart: its service was disabled, while
+an interactive agent remained running. The NT updater replaced the file but
+could not start the disabled service (error 1058), and the bridge correctly
+reported replacement unverified. Restarting the known interactive instance
+then passed identity/hash/configuration and job checks. The generic NT updater
+still assumes a service installation; interactive NT deployments need an
+explicit restart appropriate to their launch configuration.
 
 Source review against `86cf91b`, 2026-09-20. This document records current
 findings and a proposed implementation. The execution-hazard follow-up

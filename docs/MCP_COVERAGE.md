@@ -1,7 +1,15 @@
 # MCP coverage and platform extensions
 
-The bridge registers 38 tools. Restart an existing bridge process to load
-new tools; this bridge change does not require rebuilding the native agents.
+The bridge registers 43 tools. Restart an existing bridge process to load
+new tools. The five background-job tools require a native build advertising
+`exec_jobs=1`; the other coverage additions below use existing native commands.
+
+`legacy_job_start/status/output/cancel/release` expose tracked commands with
+explicit retention, byte offsets, and platform cancellation limits. See
+[long-running commands](LONG_RUNNING_COMMANDS.md) for wire syntax, lifecycle,
+output limits, and deployment evidence. Old agents are rejected before a
+job command is sent. Update tools refuse retained jobs, including completed
+results, until their output has been collected and they have been released.
 The installed agents must already implement the requested command.
 
 `legacy_capabilities(machine)` reads SYSINFO and returns a JSON report of

@@ -645,3 +645,92 @@ class AgentClient:
     def ping(self) -> bool:
         with self._command_session("PING") as sock:
             return self._recv_line(sock) == "PONG"
+
+    @staticmethod
+    def _job_id(job_id: str) -> str:
+        if not isinstance(job_id, str) or re.fullmatch(r"[0-9a-f]{32}", job_id) is None:
+            raise AgentInputError("job_id must contain 32 lowercase hexadecimal characters")
+        return job_id
+
+    def _job_payload(self, command: str, *, limit: int, encoding: str | None = None) -> bytes:
+        with self._command_session(command, encoding=encoding) as sock:
+            header = self._recv_line(sock)
+            if header.startswith("ERR:"):
+                raise AgentProtocolError(header)
+            if not header.startswith("SIZE:"):
+                raise AgentProtocolError("invalid job response framing")
+            size = self._size(header[5:])
+            if size > limit:
+                raise AgentProtocolError("job reply exceeds operation limit")
+            return self._recv_exact(sock, size, min(limit, self.max_response_bytes))
+
+    def _job_status_payload(self, payload: bytes, job_id: str) -> dict:
+        try:
+            fields = {}
+            for line in payload.decode("ascii", "strict").splitlines():
+                key, sep, value = line.partition("=")
+                if not sep or key in fields:
+                    raise ValueError()
+                fields[key] = value
+            if fields["id"] != job_id or fields["state"] not in {
+                "running", "finished", "cancelling", "cancelled", "unknown"
+            } or fields["command_mode"] not in {"shell", "direct"}:
+                raise ValueError()
+            if fields["cancel_scope"] not in {"process", "tree", "unsupported"}:
+                raise ValueError()
+            result = {key: fields[key] for key in ("id", "state", "cancel_scope", "command_mode")}
+            for key in ("pid", "exit_code"):
+                result[key] = None if fields[key] == "unknown" else self._integer(fields[key], signed=key == "exit_code")
+            for key in ("captured_bytes", "output_limit", "output_error"):
+                result[key] = self._integer(fields[key])
+            if fields["truncated"] not in {"0", "1"} or result["captured_bytes"] > result["output_limit"]:
+                raise ValueError()
+            result["truncated"] = fields["truncated"] == "1"
+            for key, allowed in (("output_storage", {"file_unbounded", "memory_bounded"}),
+                                 ("completion_tracking", {"marker", "process"})):
+                if key in fields:
+                    if fields[key] not in allowed:
+                        raise ValueError()
+                    result[key] = fields[key]
+            return result
+        except (UnicodeError, KeyError, ValueError):
+            raise AgentProtocolError("invalid job status fields") from None
+
+    def job_start(self, job_id: str, command: str, *, shell: bool = True) -> dict:
+        self._job_id(job_id)
+        if type(shell) is not bool:
+            raise AgentInputError("shell must be a boolean")
+        payload = self._job_payload(f"JOBSTART {job_id} {'S' if shell else 'D'} {command}", limit=4096,
+                                    encoding=self.exec_command_encoding if shell else self.text_encoding)
+        return self._job_status_payload(payload, job_id)
+
+    def job_list(self) -> list[str]:
+        payload = self._job_payload("JOBS", limit=4096)
+        try:
+            ids = payload.decode("ascii", "strict").splitlines()
+            for job_id in ids:
+                self._job_id(job_id)
+            if len(ids) != len(set(ids)):
+                raise ValueError()
+            return ids
+        except (UnicodeError, ValueError):
+            raise AgentProtocolError("invalid job listing") from None
+
+    def job_status(self, job_id: str) -> dict:
+        self._job_id(job_id)
+        return self._job_status_payload(self._job_payload(f"JOBSTATUS {job_id}", limit=4096), job_id)
+
+    def job_read(self, job_id: str, offset: int = 0, max_bytes: int = 65536) -> bytes:
+        self._job_id(job_id)
+        if type(offset) is not int or not 0 <= offset <= 4294967295:
+            raise AgentInputError("offset must be a nonnegative 32-bit byte offset")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 65536:
+            raise AgentInputError("max_bytes must be between 1 and 65536")
+        return self._job_payload(f"JOBREAD {job_id} {offset} {max_bytes}", limit=max_bytes)
+
+    def job_cancel(self, job_id: str) -> dict:
+        self._job_id(job_id)
+        return self._job_status_payload(self._job_payload(f"JOBCANCEL {job_id}", limit=4096), job_id)
+
+    def job_release(self, job_id: str) -> None:
+        self._simple_command(f"JOBRELEASE {self._job_id(job_id)}")

@@ -275,6 +275,9 @@ first if you don't remember the exact name):
   launch a command without waiting, check connectivity. Use
   `legacy_exec_detach` for GUI apps and long-running helpers.
 - `legacy_upload`, `legacy_download` — file transfer
+- `legacy_job_start`, `legacy_job_status`, `legacy_job_output`,
+  `legacy_job_cancel`, `legacy_job_release` — tracked background commands
+  on agents advertising `exec_jobs=1`. See [job lifetime and limits](docs/LONG_RUNNING_COMMANDS.md).
 - `legacy_screenshot`, `legacy_screenshot_file`, `legacy_click`,
   `legacy_key`, `legacy_type` — screen capture and input injection.
   Use `legacy_screenshot_file` for large screenshots you want saved on

@@ -172,7 +172,9 @@ static int is_windows_9x(void) {
 #include "../common/update_identity.h"
 
 /* ---- run a command line via cmd.exe /C, stream combined stdout+stderr ---- */
+static void jobs_poll(void);
 static void network_idle(void) {
+    jobs_poll();
     Sleep(20);
 }
 
@@ -300,6 +302,8 @@ static int exec_launch_error(SOCKET s, const char *api, DWORD error) {
     send_cstr(s, "EXIT:-1\n");
     return -1;
 }
+
+#include "jobs.h"
 
 static int run_exec(SOCKET s, const char *cmdline) {
     SECURITY_ATTRIBUTES sa;
@@ -999,6 +1003,7 @@ static int handle_sysinfo(SOCKET s) {
     len += wsprintfA(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
                    g_update_exe, g_update_sha256, g_update_started);
     len += wsprintfA(buf + len, "os_family=%s\r\n", is9x ? "9x" : "nt");
+    len += wsprintfA(buf + len, "exec_jobs=1\r\njob_cancel_scope=process\r\n");
     len += wsprintfA(buf + len, "os_major=%lu\r\n", (unsigned long)vi.dwMajorVersion);
     len += wsprintfA(buf + len, "os_minor=%lu\r\n", (unsigned long)vi.dwMinorVersion);
     /* On 9x, dwBuildNumber packs major/minor into the high word and the
@@ -1419,10 +1424,14 @@ static void handle_client(SOCKET s) {
 
     for (;;) {
         if (recv_line(s, line, sizeof(line)) < 0) break;
-        if (strncmp(line, "EXECDETACH ", 11) == 0) {
+        jobs_poll();
+        if (strcmp(line,"JOBS")==0 || strncmp(line,"JOB",3)==0) {
+            handle_job(s,line);
+        } else if (strncmp(line, "EXECDETACH ", 11) == 0) {
             run_exec_detach(s, line + 11);
         } else if (strncmp(line, "EXEC ", 5) == 0) {
-            run_exec(s, line + 5);
+            if (jobs_running()) send_cstr(s,"ERR:background jobs active; use JOBSTART instead of blocking EXEC\n");
+            else run_exec(s, line + 5);
         } else if (strncmp(line, "PUT ", 4) == 0) {
             handle_put(s, line + 4);
         } else if (strncmp(line, "GET ", 4) == 0) {
@@ -1545,7 +1554,17 @@ static int server_main(void) {
     while (g_running) {
         struct sockaddr_in clientAddr;
         int clientLen = sizeof(clientAddr);
-        SOCKET client = accept(listenSock, (struct sockaddr *)&clientAddr, &clientLen);
+        SOCKET client;
+        fd_set readable;
+        struct timeval interval;
+        jobs_poll();
+        FD_ZERO(&readable);FD_SET(listenSock,&readable);
+        interval.tv_sec=0;interval.tv_usec=100000;
+        if (select(0,&readable,NULL,NULL,&interval)<=0) {
+            if(g_running) Sleep(10);
+            continue;
+        }
+        client = accept(listenSock, (struct sockaddr *)&clientAddr, &clientLen);
         if (client == INVALID_SOCKET) {
             if (!g_running) break;
             continue;
@@ -1564,6 +1583,7 @@ static int server_main(void) {
     }
 
     g_listenSock = INVALID_SOCKET;
+    jobs_shutdown();
     closesocket(listenSock);
     WSACleanup();
     return 0;

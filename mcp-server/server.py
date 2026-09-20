@@ -716,6 +716,11 @@ def _wait_for_replaced_agent(
     return f"[update NOT verified] timed out on {machine}; last: {last}"
 
 
+def _check_update_jobs(agent: AgentClient, info: dict[str, str]) -> None:
+    if info.get("exec_jobs") == "1" and agent.job_list():
+        raise ValueError("retained jobs exist; collect output and release completed jobs before updating")
+
+
 @srv.tool()
 def legacy_self_update(
     machine: str,
@@ -751,6 +756,7 @@ def legacy_self_update(
             remote_dir, new_agent_name, update_exe_name, target_agent_name)
         agent = _agent(machine)
         before = agent.sysinfo()
+        _check_update_jobs(agent, before)
         _check_update_target(before, remote_target_agent)
         # Freeze both inputs before uploading either one. A rebuild during the
         # update must not change which bytes we later call verified.
@@ -812,6 +818,7 @@ def legacy_win16_self_update(
             raise ValueError("Win16 update requires a short directory path without whitespace")
         agent = _agent(machine)
         before = agent.sysinfo()
+        _check_update_jobs(agent, before)
         _check_update_target(before, remote_target)
         with tempfile.TemporaryDirectory() as td:
             binary, helper, scratch = (Path(td) / n for n in ("agent.exe", "helper.exe", "readback"))
@@ -1016,6 +1023,110 @@ def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_n
         return f"[protocol/input error] {e}; replacement NOT verified"
     except OSError as e:
         return f"[connection/file error] {e}; replacement NOT verified; do not blindly retry an uncertain handoff"
+
+
+def _job_agent(machine: str) -> AgentClient:
+    agent = _agent(machine)
+    info = agent.sysinfo()
+    if info.get("exec_jobs") != "1":
+        raise AgentProtocolError("installed agent does not advertise background jobs; command not sent")
+    return agent
+
+
+@srv.tool()
+def legacy_job_start(machine: str, command: str, shell: bool = True) -> str:
+    """Start a background job and return a job ID without waiting for completion.
+    shell=True uses the platform's shell; False launches a program directly.
+    Jobs survive client disconnects, but results are lost on agent restart.
+    Cancellation scope is reported by the agent; process means descendants
+    are NOT guaranteed to stop. Never automatically repeat an uncertain start.
+    Use legacy_job_status/output and release completed results explicitly."""
+    import uuid
+    job_id = uuid.uuid4().hex
+    attempted = False
+    try:
+        agent = _job_agent(machine)
+        # Validate the entire encoded request before marking launch uncertain.
+        if type(shell) is not bool:
+            raise ValueError("shell must be a boolean")
+        agent._encode_command(f"JOBSTART {job_id} {'S' if shell else 'D'} {command}",
+                              encoding=agent.exec_command_encoding if shell else agent.text_encoding)
+        attempted = True
+        return json.dumps(agent.job_start(job_id, command, shell=shell))
+    except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError, ValueError) as e:
+        return json.dumps({"job_id": job_id, "error": str(e),
+                           "launch_uncertain": attempted,
+                           "guidance": "Query this ID/list jobs; do not rerun blindly." if attempted else "Start was not sent."})
+
+
+@srv.tool()
+def legacy_job_status(machine: str, job_id: str | None = None) -> str:
+    """Read one job's state or list retained jobs when job_id is omitted.
+    A null exit_code means unavailable, not success. Completion/cancellation
+    follows the reported scope. No command strings are included in listings."""
+    try:
+        if job_id is not None:
+            AgentClient._job_id(job_id)
+        agent = _job_agent(machine)
+        return json.dumps(agent.job_status(job_id) if job_id is not None else
+                          [agent.job_status(j) for j in agent.job_list()])
+    except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+        return f"[job error] {e}"
+
+
+@srv.tool()
+def legacy_job_output(machine: str, job_id: str, offset: int = 0,
+                      max_bytes: int = 65536, output_encoding: str | None = None) -> str:
+    """Read retained job output by byte offset, up to 65536 bytes per call.
+    Returns exact base64 bytes plus strictly decoded text where possible.
+    Offsets are byte offsets; multibyte characters may span chunks. Empty
+    output is not proof of completion: inspect legacy_job_status. This does
+    not consume output or rerun the job. Check status for truncation/errors."""
+    import base64
+    try:
+        AgentClient._job_id(job_id)
+        if type(offset) is not int or not 0 <= offset <= 4294967295:
+            raise ValueError("invalid byte offset")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 65536:
+            raise ValueError("max_bytes must be between 1 and 65536")
+        codec = normalize_encoding(output_encoding, output=True) if output_encoding is not None else None
+        agent = _job_agent(machine)
+        codec = codec or agent.exec_encoding
+        data = agent.job_read(job_id, offset, max_bytes)
+        result = {"job_id": job_id, "offset": offset, "next_offset": offset + len(data),
+                  "data_base64": base64.b64encode(data).decode("ascii"), "encoding": codec}
+        try:
+            result["text"] = decode_text(data, codec, "job output chunk")
+        except ValueError as e:
+            result["decoding_error"] = f"{e}; raw bytes retained; a multibyte character may cross the chunk boundary"
+        return json.dumps(result)
+    except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError, ValueError) as e:
+        return f"[job error] {e}"
+
+
+@srv.tool()
+def legacy_job_cancel(machine: str, job_id: str) -> str:
+    """Request cancellation of a job, then inspect its returned state.
+    cancelling means requested, not confirmed stopped. Scope 'process' stops
+    only the direct child; a shell's children may survive. Retains output.
+    Platforms without safe cancellation reject the request explicitly."""
+    try:
+        AgentClient._job_id(job_id)
+        return json.dumps(_job_agent(machine).job_cancel(job_id))
+    except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+        return f"[job error] {e}"
+
+
+@srv.tool()
+def legacy_job_release(machine: str, job_id: str) -> str:
+    """Discard a completed job and its captured output, freeing a job slot.
+    Running jobs cannot be released. Retrieve needed output first."""
+    try:
+        AgentClient._job_id(job_id)
+        _job_agent(machine).job_release(job_id)
+        return "Released completed job and retained output."
+    except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
+        return f"[job error] {e}"
 
 
 if __name__ == "__main__":
