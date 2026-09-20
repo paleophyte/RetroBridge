@@ -213,10 +213,10 @@ does not implement reboot. These are not interchangeable “power off” tools.
   the token fallback path names `MacOS:Desktop Folder:LLMAGENT`. The update
   path uses the current directory. Different volume/folder names and
   alternate startup contexts need explicit instructions or path discovery.
-- **Mac screenshots have a source-level width limit.** The header describes
-  the full screen width, but each row emits at most 2048 pixels. Wider
-  displays produce a short/misframed BMP. Reject unsupported dimensions
-  or emit rows in chunks; this was not tested on a live wide Mac display.
+- **Mac screenshot width/framing limit (fixed 2026-09-20).** Rows now emit
+  every pixel in bounded chunks, with correct padded BMP lengths. Capture
+  validation and send-failure cleanup are covered by regression tests;
+  see the Mac screenshot follow-up below for live validation and limits.
 - **Build stamps do not establish stock-OS compatibility.** Win32 links
   `WS2_32.dll`, `msvcrt.dll`, and GDI, and its Makefile documents residual
   CMOV instructions in prebuilt CRT startup code. A PE subsystem stamp
@@ -1214,3 +1214,32 @@ staged UPDATE; complete binary and INI readback matched. Repeated real AUTOEXEC
 commands returned present, and the real NCF bytes remained unchanged on both
 guests. Temporary fixture files were removed; private backups and the existing
 4.11 LLMAUTO.BAK recovery file were retained. No reboot was needed or tested.
+
+### Mac screenshot follow-up (2026-09-20)
+
+The former 2,048-pixel row truncation is replaced by chunked conversion and
+transmission of the complete width. Both the BMP file size and image-size
+field include row padding. Dimension arithmetic uses long values before
+subtraction and rejects invalid dimensions or output above 64 MiB before
+advertising SIZE. Pixel depth, source stride, palette availability, capture
+bounds, allocation, and locking are checked. CopyBits into an offscreen
+GWorld remains necessary for correct capture under QEMU q800. Failed sends
+stop conversion and mark the session failed, including immediate MacTCP
+errors; locked pixels/GWorld storage are released afterward.
+
+All 52 host tests passed. Three new tests compile the production screenshot
+functions against a simulated QuickDraw capture and sender. They check every
+output pixel across 12 widths (1 through 4,093, including the 2,048 boundary)
+and all six supported source depths, bottom-up row order, all padding sizes,
+exact framing followed by PONG, invalid capture metadata and size limits,
+and cleanup after partial send failures throughout a response.
+
+The native Retro68 agent and updater builds passed with existing toolchain
+warnings. The updated agent was deployed to the System 7.5.3 Mac; SYSINFO
+reported build `Sep 20 2026 16:57:56`. Two SCREENSHOT/PING pairs on one
+authenticated connection returned complete 640x480 BMPs of 921,654 bytes
+followed immediately by PONG. Both images decoded, and the desktop was
+visually checked. Configuration bytes remained unchanged and private
+executable/configuration backups were retained. The updater was unchanged.
+Wide displays were tested with synthetic PixMaps only; live capture remains
+subject to QuickDraw row-stride and available-memory limits.

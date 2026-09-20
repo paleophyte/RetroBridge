@@ -1962,10 +1962,8 @@ static void HandleUpdate(char *args)
     gQuitRequested = true;
 }
 
-/* SCREENSHOT -- captures the main screen via CopyBits into an offscreen
- * GWorld-free 1-bit-per-pixel-free... kept simple: we walk the screen
- * PixMap directly and emit an uncompressed 24-bit BMP, matching what
- * the other agents' SCREENSHOT already returns to the bridge tooling. */
+/* SCREENSHOT -- CopyBits into a locked offscreen PixMap, then stream a
+ * complete uncompressed 24-bit BMP without allocating a full output image. */
 /* Reads one pixel at (x, rowBase) as RGB, given the source PixMap's bit
  * depth. Plain qd.screenBits is always a 1-bit monochrome *view* --
  * classic QuickDraw's original model -- and does NOT reflect a color
@@ -1995,10 +1993,9 @@ static void GetPixelRGB(CTabHandle table, short pixelSize, const unsigned char *
             *outR = *outG = *outB = 0;
         }
     } else if (pixelSize == 16) {
-        /* Thousands of colors: 1 unused + 5-5-5 RGB, big-endian (68k
-         * native, no byte-swap needed). */
-        const unsigned short *p = (const unsigned short *)(rowBase + x * 2);
-        unsigned short v = *p;
+        /* Thousands of colors: 1 unused + 5-5-5 RGB, big-endian bytes. */
+        const unsigned char *p = rowBase + x * 2;
+        unsigned short v = (unsigned short)(((unsigned short)p[0] << 8) | p[1]);
         int r5 = (v >> 10) & 0x1F;
         int g5 = (v >> 5) & 0x1F;
         int b5 = v & 0x1F;
@@ -2012,6 +2009,72 @@ static void GetPixelRGB(CTabHandle table, short pixelSize, const unsigned char *
         *outG = p[2];
         *outB = p[3];
     }
+}
+
+/* Limit matches the shared client's default maximum binary response.
+ * Bounds are signed QuickDraw coordinates; subtract using long first. */
+#define SCREENSHOT_MAX_BYTES (64L * 1024L * 1024L)
+#define SCREENSHOT_CHUNK_PIXELS 2048
+static int ScreenshotLayout(long width, long height, long *stride, long *fileSize)
+{
+    if (width <= 0 || height <= 0 || width > 32767 || height > 32767) return -1;
+    *stride = (width * 3 + 3) & ~3L;
+    if (height > (SCREENSHOT_MAX_BYTES - 54) / *stride) return -1;
+    *fileSize = 54 + *stride * height;
+    return 0;
+}
+
+static int ScreenshotPixelsValid(CTabHandle table, short depth,
+                                 const unsigned char *base, long rowBytes, long width)
+{
+    if (!base || (depth != 1 && depth != 2 && depth != 4 && depth != 8 &&
+                  depth != 16 && depth != 32)) return 0;
+    if (rowBytes < (width * depth + 7) / 8) return 0;
+    if (depth <= 8 && (!table || !*table || (**table).ctSize < 0)) return 0;
+    return 1;
+}
+
+static int SendScreenshotBMP(CTabHandle table, short depth, const unsigned char *base,
+                             long rowBytes, long width, long height)
+{
+    unsigned char bmpHeader[54], pixels[SCREENSHOT_CHUNK_PIXELS * 3];
+    static const char padding[3] = {0, 0, 0};
+    char hdr[32];
+    long stride, fileSize, rowPad, x, y, count, i;
+    if (ScreenshotLayout(width, height, &stride, &fileSize) < 0 ||
+        !ScreenshotPixelsValid(table, depth, base, rowBytes, width)) {
+        SendCStr("ERR:unsupported screenshot dimensions or pixel layout\n");
+        return -1;
+    }
+    rowPad = stride - width * 3;
+    memset(bmpHeader, 0, sizeof(bmpHeader));
+    bmpHeader[0] = 'B'; bmpHeader[1] = 'M';
+    /* Byte writes also avoid 68k alignment faults. biSizeImage includes pad. */
+    PutLE32(bmpHeader + 2, fileSize);
+    PutLE32(bmpHeader + 10, 54);
+    PutLE32(bmpHeader + 14, 40);
+    PutLE32(bmpHeader + 18, width);
+    PutLE32(bmpHeader + 22, height);
+    PutLE16(bmpHeader + 26, 1);
+    PutLE16(bmpHeader + 28, 24);
+    PutLE32(bmpHeader + 34, stride * height);
+    sprintf(hdr, "SIZE:%ld\n", fileSize);
+    if (SendCStr(hdr) < 0 || SendAll((char *)bmpHeader, sizeof(bmpHeader)) < 0) return -1;
+    for (y = height - 1; y >= 0; --y) {
+        const unsigned char *row = base + y * rowBytes;
+        for (x = 0; x < width; x += count) {
+            count = width - x;
+            if (count > SCREENSHOT_CHUNK_PIXELS) count = SCREENSHOT_CHUNK_PIXELS;
+            for (i = 0; i < count; ++i) {
+                unsigned char r, g, b;
+                GetPixelRGB(table, depth, row, x + i, &r, &g, &b);
+                pixels[i * 3] = b; pixels[i * 3 + 1] = g; pixels[i * 3 + 2] = r;
+            }
+            if (SendAll((char *)pixels, count * 3) < 0) return -1;
+        }
+        if (rowPad && SendAll(padding, rowPad) < 0) return -1;
+    }
+    return 0;
 }
 
 /* Reading GetMainDevice()->gdPMap->baseAddr directly (the textbook
@@ -2032,101 +2095,52 @@ static void GetPixelRGB(CTabHandle table, short pixelSize, const unsigned char *
  * pixels from that safe copy instead. */
 static void HandleScreenshot(void)
 {
-    GDHandle mainDevice;
-    PixMapHandle screenPM;
-    GWorldPtr offscreen;
-    PixMapHandle pm;
-    CTabHandle table;
+    GDHandle mainDevice, saveDevice;
+    PixMapHandle screenPM, pm;
+    GWorldPtr offscreen = NULL;
     CGrafPtr savePort;
-    GDHandle saveDevice;
     QDErr gwErr;
     Rect bounds;
-    short width, height;
-    short pixelSize;
-    long rowBytesAbs;
-    Ptr baseAddr;
-    long imageSize;
-    long fileSize;
-    char hdr[32];
-    unsigned char bmpHeader[54];
-    short x, y;
+    long width, height, stride, fileSize;
 
     mainDevice = GetMainDevice();
-    screenPM = (**mainDevice).gdPMap;
+    if (!mainDevice || !*mainDevice || !(screenPM = (**mainDevice).gdPMap) || !*screenPM) {
+        SendCStr("ERR:screen PixMap unavailable\n");
+        return;
+    }
     bounds = (**screenPM).bounds;
-    width = bounds.right - bounds.left;
-    height = bounds.bottom - bounds.top;
-
+    width = (long)bounds.right - bounds.left;
+    height = (long)bounds.bottom - bounds.top;
+    if (ScreenshotLayout(width, height, &stride, &fileSize) < 0) {
+        SendCStr("ERR:unsupported screenshot dimensions or size\n");
+        return;
+    }
     GetGWorld(&savePort, &saveDevice);
-
-    offscreen = NULL;
     gwErr = NewGWorld(&offscreen, 0, &bounds, NULL, mainDevice, 0);
     if (gwErr != noErr || offscreen == NULL) {
+        if (offscreen) DisposeGWorld(offscreen);
         SendCStr("ERR:NewGWorld failed\n");
         return;
     }
-
     pm = GetGWorldPixMap(offscreen);
-    LockPixels(pm);
-
-    SetGWorld(offscreen, mainDevice);
-    {
-        BitMap *srcBits = (BitMap *)*screenPM;
-        BitMap *dstBits = (BitMap *)*pm;
-        CopyBits(srcBits, dstBits, &bounds, &bounds, srcCopy, NULL);
+    if (!pm || !*pm || !LockPixels(pm)) {
+        DisposeGWorld(offscreen);
+        SendCStr("ERR:cannot lock screenshot pixels\n");
+        return;
     }
-    SetGWorld(savePort, saveDevice);
-
-    rowBytesAbs = (**pm).rowBytes & 0x3fff;
-    baseAddr = (**pm).baseAddr;
-    pixelSize = (**pm).pixelSize;
-    table = (**pm).pmTable;
-
-    imageSize = (long)width * height * 3;
-    /* BMP rows are padded to 4 bytes; account for that in fileSize. */
-    {
-        long rowPad = (4 - ((long)width * 3) % 4) % 4;
-        fileSize = 54 + (long)(width * 3 + rowPad) * height;
-
-        /* 68k requires word/long accesses to be even-aligned; a raw
-         * "*(long*)(buf+N) = v" cast risks an Address Error if the
-         * offset lands odd relative to the array's actual alignment.
-         * Write every multi-byte field out byte-by-byte instead. */
-        memset(bmpHeader, 0, sizeof(bmpHeader));
-        bmpHeader[0] = 'B'; bmpHeader[1] = 'M';
-        PutLE32(bmpHeader + 2, fileSize);
-        PutLE32(bmpHeader + 10, 54);
-        PutLE32(bmpHeader + 14, 40);
-        PutLE32(bmpHeader + 18, (long)width);
-        PutLE32(bmpHeader + 22, (long)height);
-        PutLE16(bmpHeader + 26, 1);
-        PutLE16(bmpHeader + 28, 24);
-        PutLE32(bmpHeader + 34, imageSize);
-
-        sprintf(hdr, "SIZE:%ld\n", fileSize);
-        SendCStr(hdr);
-        SendAll((char *)bmpHeader, 54);
-
-        for (y = height - 1; y >= 0; y--) {
-            unsigned char rowBuf[2048 * 3];
-            long col = 0;
-            unsigned char *rowBase = (unsigned char *)baseAddr + (long)y * rowBytesAbs;
-
-            for (x = 0; x < width && x < 2048; x++) {
-                unsigned char r, g, b;
-                GetPixelRGB(table, pixelSize, rowBase, x, &r, &g, &b);
-                rowBuf[col++] = b;
-                rowBuf[col++] = g;
-                rowBuf[col++] = r;
-            }
-            SendAll((char *)rowBuf, col);
-            if (rowPad) {
-                static const char pad[4] = {0, 0, 0, 0};
-                SendAll(pad, rowPad);
-            }
-        }
+    if (!ScreenshotPixelsValid((**pm).pmTable, (**pm).pixelSize,
+            (const unsigned char *)(**pm).baseAddr, (**pm).rowBytes & 0x3fff, width) ||
+        (long)(**pm).bounds.right - (**pm).bounds.left != width ||
+        (long)(**pm).bounds.bottom - (**pm).bounds.top != height) {
+        SendCStr("ERR:unsupported screenshot pixel layout\n");
+    } else {
+        SetGWorld(offscreen, mainDevice);
+        CopyBits((BitMap *)*screenPM, (BitMap *)*pm, &bounds, &bounds, srcCopy, NULL);
+        SetGWorld(savePort, saveDevice);
+        if (SendScreenshotBMP((**pm).pmTable, (**pm).pixelSize,
+                (const unsigned char *)(**pm).baseAddr, (**pm).rowBytes & 0x3fff,
+                width, height) < 0) net_fail();
     }
-
     UnlockPixels(pm);
     DisposeGWorld(offscreen);
 }

@@ -56,7 +56,7 @@ Guest needs MacTCP configured and working (Control Panel shows an IP).
 | auth / `PING` / `QUIT` | Same as other agents |
 | `SYSINFO` | `os_family=mac68k`, `os_version` (Gestalt, hex BCD-ish), `machine_gestalt`, `free_mem_kb`, `agent` |
 | `GET` / `PUT` | File transfer (data fork; plain `fopen`/`fread`/`fwrite`) |
-| `SCREENSHOT` | Full screen via `CopyBits` into an offscreen `GWorld` → 24-bit BMP (any color depth, indexed or direct) |
+| `SCREENSHOT` | Main display via `CopyBits` into an offscreen `GWorld` → 24-bit BMP (1/2/4/8-bit indexed, 16-bit RGB555, or 32-bit source) |
 | `QUITAGENT` | Terminates the agent process itself (see below) |
 | `PSLIST` | Live Process Manager process list (`GetNextProcess`/`GetProcessInformation`) |
 | `UPDATE` | Self-update with **no user interaction** (see below) |
@@ -84,6 +84,24 @@ UI whatsoever. There is no Finder menu, no dock, no window to close it
 from. `QUITAGENT` or a Quit Application Apple event stops it, and
 `UPDATE`/`llm_updater` is the only way to replace it short
 of decoding a new build by hand.
+
+## Screenshot limits
+
+`SCREENSHOT` captures the main display and streams complete rows in chunks,
+including widths above 2,048 pixels, without allocating a second full image
+for the BMP. Output rows have four-byte padding, included in both the file
+size and BMP image-size field. Dimensions must be positive and at most
+32,767 each; the complete BMP is capped at 64 MiB to match the shared client's
+default response limit. QuickDraw's source row stride and available memory
+can impose smaller practical limits.
+
+Unavailable pixels, unsupported layouts, allocation/locking failures, and
+oversized output return `ERR:` before a `SIZE:` header. A send failure stops
+conversion immediately; the offscreen pixels are unlocked and freed on both
+success and failure. Native live checks cover the 640×480 System 7.5.3
+desktop and consecutive screenshot/PING requests. Host regression tests cover
+all six supported source depths, row padding, widths through 4,093 pixels,
+and capture/send failures; a wider physical display has not been tested.
 
 ## Two binaries: `llm_agent` and `llm_updater`
 
