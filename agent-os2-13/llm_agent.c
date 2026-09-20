@@ -92,6 +92,7 @@ static unsigned long network_ticks(void) { return g_info->msecs; }
 #define NET_EXPIRED(d) ((long)(network_ticks() - (d)) >= 0)
 #include "../common/session_timeout.h"
 #include "../common/command_line.h"
+#include "../common/update_identity.h"
 
 static int send_all(const char *buf, int len) {
     int sent = 0;
@@ -549,7 +550,9 @@ static int is_4hex(const char *s) {
 }
 
 static int handle_pslist(void) {
-    static char out[16384];
+    /* Keep the large PSLIST buffer outside DGROUP so startup identity
+       and SYSINFO retain the full 16 KiB stack within the 64 KiB limit. */
+    static char __far out[16384];
     static char line[200];
     int len = 0;
     char hdr[32];
@@ -621,7 +624,7 @@ static void handle_pskill(const char *args) {
 }
 
 static int handle_sysinfo(void) {
-    static char buf[512];
+    static char buf[1024];
     int len = 0;
     char hdr[32];
     USHORT ver = 0;
@@ -640,6 +643,8 @@ static int handle_sysinfo(void) {
         major = ((ver >> 8) & 0xFF) / 10;
     }
 
+    len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
+                   g_update_exe, g_update_sha256, g_update_started);
     len += sprintf(buf + len, "os_family=os2\r\n");
     len += sprintf(buf + len, "os2_major=%u\r\n", major);
     len += sprintf(buf + len, "os2_minor=%u\r\n", minor);
@@ -1496,6 +1501,11 @@ int main(int argc, char **argv) {
         SEL global_sel, local_sel;
         if (DosGetInfoSeg(&global_sel, &local_sel) != 0) return 1;
         g_info = MAKEPGINFOSEG(global_sel);
+    }
+    {
+        PIDINFO pi;
+        if (DosGetPID(&pi) == 0)
+            update_identity_init(argc > 0 ? argv[0] : NULL, g_info->msecs, (unsigned long)pi.pid);
     }
     load_config(argc > 0 ? argv[0] : NULL);
     ensure_shell_env();

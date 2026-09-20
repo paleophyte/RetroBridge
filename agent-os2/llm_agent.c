@@ -160,6 +160,7 @@ static unsigned long network_ticks(void) {
 #define NET_EXPIRED(d) ((long)(network_ticks() - (d)) >= 0)
 #include "../common/session_timeout.h"
 #include "../common/command_line.h"
+#include "../common/update_identity.h"
 
 static int send_all(const char *buf, int len) {
     int sent = 0;
@@ -736,7 +737,7 @@ static void handle_pskill(const char *args) {
 }
 
 static int handle_sysinfo(void) {
-    static char buf[512];
+    static char buf[1024];
     int len = 0;
     char hdr[32];
     ULONG majmin = 0;
@@ -765,6 +766,8 @@ static int handle_sysinfo(void) {
             disp_minor = minor;
         }
 
+        len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
+                       g_update_exe, g_update_sha256, g_update_started);
         len += sprintf(buf + len, "os_family=os2\r\n");
         len += sprintf(buf + len, "os2_major=%lu\r\n", (unsigned long)major);
         len += sprintf(buf + len, "os2_minor=%lu\r\n", (unsigned long)minor);
@@ -1642,6 +1645,12 @@ static int server_main(void) {
 }
 
 int main(int argc, char **argv) {
+    {
+        PTIB tib; PPIB pib; ULONG ticks = 0;
+        if (DosGetInfoBlocks(&tib, &pib) == 0 && pib &&
+            DosQuerySysInfo(QSV_MS_COUNT, QSV_MS_COUNT, &ticks, sizeof(ticks)) == 0)
+            update_identity_init(argc > 0 ? argv[0] : NULL, ticks, pib->pib_ulpid);
+    }
     load_config(argc > 0 ? argv[0] : NULL);
     /* DosStartSession often leaves cwd as \, which breaks EXEC's LLMOUT.TMP */
     if (g_exedir[0]) DosSetCurrentDir(g_exedir);

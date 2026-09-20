@@ -133,6 +133,7 @@ static HHOOK g_hook = NULL;
 #define NET_EXPIRED(d) ((long)(GetTickCount() - (d)) >= 0)
 #include "../common/session_timeout.h"
 #include "../common/command_line.h"
+#include "../common/update_identity.h"
 
 static void network_idle(void) {
     MSG msg;
@@ -481,7 +482,7 @@ static int handle_get(const char *path) {
    has no Win32-style GetDiskFreeSpace to call instead. ---- */
 
 static int handle_sysinfo(void) {
-    static char buf[512];
+    static char buf[1024];
     int len = 0;
     union REGS r;
     char hdr[32];
@@ -489,6 +490,8 @@ static int handle_sysinfo(void) {
     unsigned long free_kb, total_kb;
 
     verInfo = GetVersion();
+    len += sprintf(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
+                   g_update_exe, g_update_sha256, g_update_started);
     len += sprintf(buf + len, "os_family=win16\r\n");
     len += sprintf(buf + len, "windows_version=%u.%u\r\n",
                    (unsigned)LOBYTE(LOWORD(verInfo)), (unsigned)HIBYTE(LOWORD(verInfo)));
@@ -1328,25 +1331,29 @@ static int handle_shutdown(void) {
    sufficient; let the normal path do the rest exactly once. ---- */
 
 static int handle_update(void) {
-    char cmd[288];
-    int i;
-
-    send_cstr("OK\r\n");
-    for (i = 0; i < 10; i++) {
-        MSG msg;
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        Yield();
+    char cmd[512];
+    char stage[160];
+    FILE *f;
+    unsigned int launched;
+    int reply_result;
+    if (strpbrk(g_exedir, " \t\r\n") || strlen(g_exedir) > 126) {
+        return send_cstr("ERR:update requires a short path without whitespace\r\n");
     }
-
+    sprintf(stage, "%s\\LLMNEW.EXE", g_exedir);
+    f = fopen(stage, "rb");
+    if (!f) return send_cstr("ERR:staged update missing\r\n");
+    fclose(f);
     sprintf(cmd, "%s\\RESTART.EXE %s\\LLMNEW.EXE %s\\LLMAGENT.EXE",
             g_exedir, g_exedir, g_exedir);
-    WinExec(cmd, SW_SHOWMINNOACTIVE);
-
+    launched = WinExec(cmd, SW_SHOWMINNOACTIVE);
+    if (launched <= 31) {
+        sprintf(cmd, "ERR:restart helper launch failed (%u)\r\n", launched);
+        return send_cstr(cmd);
+    }
+    /* OK means the helper was launched, not that the later swap succeeded. */
+    reply_result = send_cstr("OK\r\n");
     g_shutdown = 1;
-    return 0;
+    return reply_result;
 }
 
 /* ---- PSLIST / PSKILL via ToolHelp -- Windows 3.1 has no real process
@@ -1705,6 +1712,12 @@ int PASCAL WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR cmdLine, int cmdS
     cmdLine = cmdLine;
 
     g_hinst = hInst;
+    {
+        char image[144];
+        int n = GetModuleFileName(hInst, image, sizeof(image));
+        if (n > 0 && n < sizeof(image))
+            update_identity_init(image, GetTickCount(), (unsigned long)GetCurrentTask());
+    }
     load_config(hInst);
     if (!init_window(hInst, hPrevInst, cmdShow)) return 0;
 

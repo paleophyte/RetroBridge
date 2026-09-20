@@ -169,6 +169,7 @@ static int is_windows_9x(void) {
 #define NET_EXPIRED(d) ((long)(GetTickCount() - (d)) >= 0)
 #include "../common/session_timeout.h"
 #include "../common/command_line.h"
+#include "../common/update_identity.h"
 
 /* ---- run a command line via cmd.exe /C, stream combined stdout+stderr ---- */
 static void network_idle(void) {
@@ -995,6 +996,8 @@ static int handle_sysinfo(SOCKET s) {
     GetVersionExA(&vi);
     is9x = (vi.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS);
 
+    len += wsprintfA(buf + len, "agent_exe=%s\r\nagent_sha256=%s\r\nagent_started=%s\r\n",
+                   g_update_exe, g_update_sha256, g_update_started);
     len += wsprintfA(buf + len, "os_family=%s\r\n", is9x ? "9x" : "nt");
     len += wsprintfA(buf + len, "os_major=%lu\r\n", (unsigned long)vi.dwMajorVersion);
     len += wsprintfA(buf + len, "os_minor=%lu\r\n", (unsigned long)vi.dwMinorVersion);
@@ -1763,6 +1766,10 @@ static void print_usage(void) {
 }
 
 int main(int argc, char **argv) {
+    char image[MAX_PATH];
+    DWORD image_len = GetModuleFileNameA(NULL, image, sizeof(image));
+    if (image_len && image_len < sizeof(image))
+        update_identity_init(image, GetTickCount(), GetCurrentProcessId());
     load_config();
 
     if (argc >= 2 && strcmp(argv[1], "--install") == 0) {

@@ -510,9 +510,11 @@ the wrong place.
 
 Sequencing, driven by `mcp-server/server.py`'s `legacy_self_update`:
 
-1. `PUT` the new `llm_agent.exe` to `<remote_dir>\llm_agent_new.exe`
-   (not directly over the live file — see above) and `update.exe` to
-   `<remote_dir>\update.exe`.
+1. Read the running agent's `SYSINFO` identity, validate distinct staging,
+   helper, and target paths, and snapshot both local inputs. `PUT` the new
+   executable to `<remote_dir>\llm_agent_new.exe` and the helper to
+   `<remote_dir>\update.exe`. Read back both uploads and compare every byte
+   before launching anything. A reported executable path must match the target.
 2. `EXECDETACH` launches `update.exe` with both paths, quoted, and
    returns immediately with its PID. The triggering connection gets its
    response and closes cleanly *before* `update.exe` actually stops the
@@ -537,19 +539,46 @@ Sequencing, driven by `mcp-server/server.py`'s `legacy_self_update`:
    only the file's contents did), or a direct `CreateProcess ... --run`
    on 9x (mirroring what the `Run` key would do on next logon, just
    immediately).
-6. `legacy_self_update` polls afterward with the same logic as
-   `legacy_wait_for_agent`, so the caller gets a real answer about
-   whether the new agent actually came back up, not just whether
-   `update.exe` was launched.
+6. After 15 quiet seconds, `legacy_self_update` polls for a different
+   `agent_started` marker, an `agent_sha256` matching the local snapshot,
+   and the expected `agent_exe` path. It downloads the installed executable
+   and checks its SHA-256, then confirms the startup identity stayed the same
+   across that readback. Rollback, wrong bytes, a still-running old process,
+   and missing identity fields cannot produce a verified result.
+
+`legacy_win16_self_update` uses the same verification after its `UPDATE`
+command. Win32, Win16, and both OS/2 agents compute `agent_sha256` once at
+startup from their executable file; it is never recomputed from a subsequently
+replaced file during `SYSINFO`. `agent_started` combines startup uptime and
+process/task ID. A collision fails verification rather than implying success.
+The portable implementation in `common/update_identity.h` supports 16-bit C
+and avoids MinGW's prebuilt formatted-I/O routines.
+
+These are deployment checks for trusted lab agents, not code signatures or
+attestation of executable memory. The hash describes the file read at startup;
+concurrent external file replacement is outside the update transaction. Old
+agents can be upgraded to identity-capable builds, but replacing an agent with
+a build that lacks these fields reports `[update NOT verified]` on timeout.
+`wait_for_agent=False` reports launch/acceptance only. `legacy_wait_for_agent`
+remains a readiness check; neither `PING` nor `AGENT.PID` proves an update.
+If the launch reply is lost as the old process exits, the bridge checks these
+same postconditions and does not launch a second updater.
+
+The stock Win32 helper expects an installed `LLMAgent` service on NT-family
+Windows. A manually launched agent needs a separate stop/relaunch procedure;
+the bridge does not silently treat that deployment as a verified service update.
 
 `update.exe` follows the exact same `-march=i486` / no-CRT-formatted-I/O
 discipline as `llm_agent.c` (see the SSE2 crash below) — it's a
 separately compiled binary, so it's just as exposed to the toolchain's
 unsafe default, and there'd be little point fixing that crash in one
 binary while shipping a second one with the identical latent bug.
-Verified via the same `objdump` check: zero `pxor`/`movups`/`movdqu`/
-`punpck` anywhere, only the same handful of unavoidable-CRT-startup
-`cmov` instructions `llm_agent.exe` already has.
+The compiler flag does not certify every prebuilt CRT routine for a 486.
+The September 20, 2026 agent build retains startup `cmov` instructions and
+six SSE2 instructions in CRT `__matherr`, also present in the preceding
+build. Startup fingerprinting added no SIMD instructions. Normal update
+paths passed on both Windows 95 lab guests; real 486/Pentium hardware and
+that CRT math-error path remain outside the tested coverage.
 
 **Verified**: the file-swap-with-rollback logic locally (both the
 success path and, separately, a deliberately-missing new-binary path to

@@ -86,7 +86,20 @@ hand and the new instance should come up right after, or fall back to
 `REBOOT` if it doesn't.
 
 Future bridge-side updates should use `legacy_win16_self_update`, which
-uploads `LLMNEW.EXE` and `RESTART.EXE` before sending `UPDATE`.
+uploads and reads back `LLMNEW.EXE` and `RESTART.EXE` before sending `UPDATE`.
+`OK` means the helper launched; a failed `WinExec` returns `ERR` and leaves
+the agent running. The helper checks backup removal and every rename, restores
+the old application if installation or launch fails, and writes its outcome to
+`RESTART.LOG`. A later application crash or loss of networking still requires
+local recovery from `LLMAGENT.OLD`.
+
+The bridge waits through a quiet settling period, then requires a changed
+startup marker, the expected startup executable SHA-256, and matching installed
+file readback. `SYSINFO` publishes `agent_exe`, `agent_started`, and
+`agent_sha256`; the hash is captured once at startup. Older replacement builds
+without these fields cannot be verified. Update paths must be short absolute
+drive paths without whitespace, with a directory length of at most 126
+characters (the helper uses unquoted Win16 arguments).
 
 
 ### PSLIST/PSKILL use HTASK as the "PID"

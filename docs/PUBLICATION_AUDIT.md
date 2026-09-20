@@ -196,13 +196,12 @@ does not implement reboot. These are not interchangeable “power off” tools.
   have `AgentClient` methods, others require a custom wire client. A shared
   protocol does not imply complete MCP coverage. There is no capability
   negotiation command or consistent build identifier across all ports.
-- **Update readiness is weaker than update verification.** The
-  `legacy_win16_self_update` immediately calls `legacy_wait_for_agent`,
-  which can see the outgoing process. The generic helper falls back to
-  ping when AGENT.PID is unavailable; even a changed PID proves restart,
-  not that the intended bytes were installed. Win16 helper launch/rename
-  results are also incompletely checked. Avoid claiming a verified update
-  without checking the resulting build and executable.
+- **Update verification corrected (2026-09-20).** Both bridge update tools
+  now read back staged inputs and require a new startup identity, matching
+  startup SHA-256, and matching installed executable. Win16 checks helper
+  launch and swap results and attempts rollback on launch failure. Builds
+  without startup identity explicitly remain unverified. See the follow-up
+  validation entry below and the architecture's Self-update section.
 - **NetWare AUTOEXEC detection is only a substring search.** A comment
   mentioning `llmagent` or `clibaux` satisfies `buf_has_token_ci`; this can
   report `present` without an active LOAD command. It also does not verify
@@ -1130,3 +1129,48 @@ smoke tests. Temporary native fixtures and update helpers were removed;
 private executable/configuration backups were retained. This fix does not
 add a command-runtime limit or resolve arbitrary pipe/process API failures
 after a child has successfully started.
+
+### Self-update verification follow-up (2026-09-20)
+
+Both bridge update tools now freeze local inputs, validate paths, and read
+back both staged files before starting the updater. After 15 quiet seconds,
+verification requires a changed startup marker, the expected startup
+executable path and SHA-256, exact installed-file hash agreement, and stable
+identity across that readback. Win32, Win16, OS/2 1.3, and 32-bit OS/2 expose
+these startup fields in SYSINFO. PING and AGENT.PID are no longer verification
+fallbacks. A replacement build without identity fields remains explicitly
+unverified. A lost launch reply triggers verification without launching a
+second updater; disabling the wait reports acceptance or an unknown outcome.
+
+Win16 checks that staging exists and that RESTART.EXE actually launched before
+acknowledging UPDATE and exiting. The acknowledgement precedes the shutdown
+flag so the network deadline code can still send it. RESTART.EXE checks backup
+removal and rename results, attempts to restore and launch the old binary on
+installation/launch failure, and records the outcome in RESTART.LOG. Its
+argument parser rejects truncation, and bridge/raw UPDATE path limits agree.
+Failure after a successful WinExec still requires local recovery if the new
+application crashes or cannot serve the network.
+
+All 47 host tests passed, including 13 update tests covering SHA-256 vectors
+and block/padding boundaries, startup hash immutability, old-process responses,
+wrong builds and paths, installed/staged corruption, absent identity, transient
+disconnects, identity changes during readback, local rebuilds during staging,
+launch-reply loss, Win16 launch failure, and swap/rollback faults. Native builds
+passed for all four affected ports and the Win16 helper. OS/2 1.3's existing
+DGROUP was full: moving the 16 KiB PSLIST output buffer into a separate far
+data segment preserved the full 16 KiB stack; PSLIST also passed live.
+
+Live deployment and executable/configuration readback passed on both Windows
+95 guests, NT4, Windows 2000, XP, Windows 7, WFW 3.11, and OS/2 1.3, 2.11,
+and Warp 4.50. Nine endpoints used the bridge's update tools; the manually
+launched Windows 7 agent used the existing process-targeted helper followed
+by the same verifier. Identical-binary repeat updates on Windows 95 and WFW
+confirmed that a matching hash alone does not finish verification. Live
+negative checks rejected an unchanged startup marker and a wrong expected
+hash. Private backups were retained and temporary helpers/staging removed.
+
+The fingerprint is of the executable file read once at startup, not a
+signature or attestation of loaded memory. These checks assume the trusted
+lab agent and no concurrent external file replacement. The Win32 disassembly
+comparison found no added SIMD instructions; six SSE2 instructions in the
+preexisting CRT `__matherr` routine remain outside this change.

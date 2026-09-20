@@ -276,11 +276,13 @@ first if you don't remember the exact name):
 - `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`**; take
   the target down immediately and interrupt anything in progress on it
 - `legacy_self_update` — updates the agent on a machine in place:
-  uploads a new `llm_agent.exe` + `update.exe`, launches `update.exe`
-  detached to stop/replace/restart the running agent, then polls for it
-  to come back. Requires `remote_dir` (the absolute directory the agent
-  is currently deployed in) since there's no remote way to ask the agent
-  where it's installed. See
+  uploads and reads back a new executable and update helper, launches the
+  helper detached, then verifies a changed startup identity, matching startup
+  SHA-256, and matching installed executable. Requires `remote_dir` (the
+  absolute installation directory); current agents report `agent_exe` in
+  `SYSINFO`. `legacy_win16_self_update` performs equivalent verification
+  through Win16's staged `UPDATE` flow. Replacement builds without identity
+  fields report **not verified**; disabling the wait reports acceptance only. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update).
 
 `legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not

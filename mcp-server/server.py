@@ -29,8 +29,11 @@ to this script.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import ntpath
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -602,76 +605,88 @@ def legacy_disable_autologon(machine: str) -> str:
     return f"disabled Winlogon autologon on {machine}"
 
 
-def _read_agent_pid(agent: AgentClient, remote_dir: str) -> str | None:
-    """The PID the agent wrote to AGENT.PID when it started listening.
+def _update_paths(remote_dir: str, *names: str) -> list[str]:
+    """Reject traversal and obvious filename collisions before any PUT."""
+    drive, tail = ntpath.splitdrive(remote_dir)
+    if (len(drive) != 2 or drive[1] != ":" or not tail.startswith("\\")
+            or any(c in tail for c in '/:*?"<>|\r\n\0\t')):
+        raise ValueError("update directory must be an absolute drive path")
+    if any(part in (".", "..") or part.endswith((".", " "))
+           for part in tail.split("\\") if part):
+        raise ValueError("update directory contains an ambiguous component")
+    for name in names:
+        if (not name or name in (".", "..") or name.endswith((".", " "))
+                or any(c in name for c in '\\/:*?"<>|\r\n\0')):
+            raise ValueError("update filenames must be plain, unambiguous filenames")
+    paths = [ntpath.join(remote_dir, name) for name in names]
+    if len({ntpath.normcase(p) for p in paths}) != len(paths):
+        raise ValueError("staged agent, helper, and target must be different files")
+    return paths
 
-    A bare ping is not a restart signal: the agent being replaced answers
-    it perfectly well right up until it exits, so polling for
-    reachability straight after launching the updater reports success
-    against the *outgoing* process. Confirmed live - two self-updates back
-    to back had the second one connect mid-swap and fail on a reset
-    connection. A changed PID is proof a new process is answering."""
-    import tempfile
 
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            local = Path(td) / "AGENT.PID"
-            agent.get(f"{remote_dir}\\AGENT.PID", local)
-            return local.read_text().strip() or None
-    except (AgentAuthError, AgentProtocolError, OSError):
-        return None
+def _check_update_target(info: dict[str, str], target: str) -> None:
+    actual = info.get("agent_exe")
+    if actual and ntpath.normcase(ntpath.normpath(actual)) != ntpath.normcase(ntpath.normpath(target)):
+        raise ValueError("target path differs from the responding agent's executable")
+
+
+def _stage_verified(agent: AgentClient, local: Path, remote: str, scratch: Path) -> int:
+    if not 0 < local.stat().st_size <= 64 * 1024 * 1024:
+        raise ValueError("update files must be nonempty and at most 64 MiB")
+    count = agent.put(local, remote)
+    agent.get(remote, scratch)
+    if scratch.read_bytes() != local.read_bytes():
+        raise AgentProtocolError("staged file readback differs from the local snapshot")
+    return count
 
 
 def _wait_for_replaced_agent(
     machine: str,
-    remote_dir: str,
-    old_pid: str | None,
+    remote_target: str,
+    old_started: str | None,
+    expected_sha256: str,
     timeout_seconds: int = 120,
     interval_seconds: int = 5,
-    settle_seconds: int = 10,
+    settle_seconds: int = 15,
 ) -> str:
-    """Wait until a *different* agent process is answering on `machine`.
+    """Verify a new startup identity, its startup hash, and installed bytes.
 
-    Sits out the first `settle_seconds` deliberately. The legacy agents
-    are single-threaded - one connection at a time - and during the swap
-    the one being replaced is busy exiting while the updater talks to it
-    over that same socket. Polling into that window is not free: an update
-    run that was polled every 3s from the moment it launched left the
-    updater dead just after SELFEXIT with no agent running at all, where
-    the same update with nothing connecting to it succeeded repeatedly.
-    Ten seconds is comfortably longer than a whole successful swap (~10s
-    end to end, of which the file work is a few hundred ms).
-
-    Falls back to plain reachability if the PID couldn't be read before
-    the swap, or if the agent doesn't publish one - better a weaker check
-    than a spurious failure."""
+    Quiet settling is essential on single-client OS/2 agents: probing while
+    the updater sends SELFEXIT has previously disrupted the swap. Never
+    substitute PING or the on-disk AGENT.PID file for these checks.
+    """
     time.sleep(max(0, settle_seconds))
-    if old_pid is None:
-        return legacy_wait_for_agent(
-            machine, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds
-        )
-
-    deadline = time.time() + max(1, timeout_seconds)
-    interval = max(1, interval_seconds)
+    deadline = time.monotonic() + max(1, timeout_seconds)
     last = "no response yet"
-    attempts = 0
-    while time.time() < deadline:
-        attempts += 1
-        try:
-            new_pid = _read_agent_pid(_agent(machine), remote_dir)
-            if new_pid and new_pid != old_pid:
-                return (
-                    f"agent restarted on {machine} after {attempts} attempt(s): "
-                    f"pid {old_pid} -> {new_pid}"
-                )
-            last = f"still pid {new_pid}" if new_pid else "agent not answering"
-        except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError) as e:
-            last = str(e)
-        time.sleep(interval)
-    return (
-        f"timed out waiting for a restarted agent on {machine} "
-        f"(was pid {old_pid}); last: {last}"
-    )
+    with tempfile.TemporaryDirectory() as td:
+        readback = Path(td) / "installed.exe"
+        while time.monotonic() < deadline:
+            try:
+                agent = _agent(machine)
+                info = agent.sysinfo()
+                started = info.get("agent_started")
+                if not started or started == old_started:
+                    last = "outgoing agent still responding or startup identity unavailable"
+                elif info.get("agent_sha256") != expected_sha256:
+                    last = "startup executable hash differs (wrong build or rollback)"
+                elif not info.get("agent_exe"):
+                    last = "startup executable path unavailable"
+                else:
+                    _check_update_target(info, remote_target)
+                    agent.get(remote_target, readback)
+                    if hashlib.sha256(readback.read_bytes()).hexdigest() != expected_sha256:
+                        last = "installed executable readback differs"
+                    else:
+                        confirm = agent.sysinfo()
+                        if any(confirm.get(k) != info.get(k) for k in
+                               ("agent_started", "agent_sha256", "agent_exe")):
+                            last = "agent changed during verification"
+                        else:
+                            return f"update verified on {machine}: new startup identity and installed executable match SHA-256 {expected_sha256}"
+            except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError, ValueError) as e:
+                last = str(e)
+            time.sleep(max(1, interval_seconds))
+    return f"[update NOT verified] timed out on {machine}; last: {last}"
 
 
 @srv.tool()
@@ -692,8 +707,7 @@ def legacy_self_update(
     On Windows, build both with `make` in agent-win32/. On OS/2, build with
     agent-os2/build.bat (produces llm_agent.exe + update.exe). remote_dir
     is the absolute directory the agent is currently deployed in (e.g.
-    C:\\llmagent) - there's no remote way to ask the agent where it's
-    installed, so this has to be supplied.
+    C:\\llmagent). Agents with startup identity reject a different target path.
 
     Optional *_name args set the remote filenames (defaults match the
     Windows layout). For OS/2 8.3 deploys use e.g. new_agent_name=
@@ -702,20 +716,35 @@ def legacy_self_update(
 
     The connection carrying this call completes and closes cleanly before
     the old agent process actually stops. If wait_for_agent is True, polls
-    afterward until the new agent responds."""
-    remote_dir = remote_dir.rstrip("\\")
-    remote_new_agent = f"{remote_dir}\\{new_agent_name}"
-    remote_update_exe = f"{remote_dir}\\{update_exe_name}"
-    remote_target_agent = f"{remote_dir}\\{target_agent_name}"
-
+    after a quiet settling period for a new startup identity, matching startup
+    SHA-256, and matching installed executable readback. Older replacement
+    agents without startup identity cannot be verified; PING is insufficient."""
     try:
+        remote_new_agent, remote_update_exe, remote_target_agent = _update_paths(
+            remote_dir, new_agent_name, update_exe_name, target_agent_name)
         agent = _agent(machine)
-        agent.put(new_agent_local_path, remote_new_agent)
-        agent.put(update_exe_local_path, remote_update_exe)
-        old_pid = _read_agent_pid(agent, remote_dir)
-        result = agent.exec_detach(
-            f'"{remote_update_exe}" "{remote_new_agent}" "{remote_target_agent}"'
-        )
+        before = agent.sysinfo()
+        _check_update_target(before, remote_target_agent)
+        # Freeze both inputs before uploading either one. A rebuild during the
+        # update must not change which bytes we later call verified.
+        with tempfile.TemporaryDirectory() as td:
+            binary, helper, scratch = (Path(td) / n for n in ("agent.exe", "helper.exe", "readback"))
+            binary.write_bytes(Path(new_agent_local_path).read_bytes())
+            helper.write_bytes(Path(update_exe_local_path).read_bytes())
+            expected = hashlib.sha256(binary.read_bytes()).hexdigest()
+            _stage_verified(agent, binary, remote_new_agent, scratch)
+            _stage_verified(agent, helper, remote_update_exe, scratch)
+            try:
+                result = agent.exec_detach(
+                    f'"{remote_update_exe}" "{remote_new_agent}" "{remote_target_agent}"'
+                )
+                launch = f"update launched on {machine}: {result.reply}"
+            except (AgentProtocolError, OSError) as e:
+                # The updater can stop the old process before its reply arrives.
+                # Do not relaunch it or infer success; verify the postconditions.
+                launch = f"update launch outcome unknown on {machine}: {e}"
+    except ValueError as e:
+        return f"[update preflight error] {e}"
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:
@@ -723,9 +752,10 @@ def legacy_self_update(
     except OSError as e:
         return f"[connection/file error] {e}"
 
-    msg = f"update launched on {machine}: {result.reply}"
+    msg = launch + " (not yet verified)"
     if wait_for_agent:
-        msg += "\n" + _wait_for_replaced_agent(machine, remote_dir, old_pid)
+        msg += "\n" + _wait_for_replaced_agent(
+            machine, remote_target_agent, before.get("agent_started"), expected)
     return msg
 
 
@@ -743,16 +773,33 @@ def legacy_win16_self_update(
     LLMNEW.EXE and then sends the agent's UPDATE command. RESTART.EXE
     does the swap only after the old Win16 task exits, preserving the
     previous binary as LLMAGENT.OLD for local recovery.
+    Both uploads are read back before UPDATE. Waiting requires a new startup
+    identity, matching startup SHA-256 and installed bytes; older replacement
+    builds without identity fields remain unverified. Use a short absolute
+    directory path without whitespace.
     """
-    remote_dir = remote_dir.rstrip("\\")
-    remote_new_agent = f"{remote_dir}\\LLMNEW.EXE"
-    remote_restart = f"{remote_dir}\\RESTART.EXE"
-
     try:
+        remote_new_agent, remote_restart, remote_target = _update_paths(
+            remote_dir, "LLMNEW.EXE", "RESTART.EXE", "LLMAGENT.EXE")
+        if any(c.isspace() for c in remote_dir) or len(remote_dir) > 126:
+            raise ValueError("Win16 update requires a short directory path without whitespace")
         agent = _agent(machine)
-        n_agent = agent.put(new_agent_local_path, remote_new_agent)
-        n_restart = agent.put(restart_exe_local_path, remote_restart)
-        agent.update()
+        before = agent.sysinfo()
+        _check_update_target(before, remote_target)
+        with tempfile.TemporaryDirectory() as td:
+            binary, helper, scratch = (Path(td) / n for n in ("agent.exe", "helper.exe", "readback"))
+            binary.write_bytes(Path(new_agent_local_path).read_bytes())
+            helper.write_bytes(Path(restart_exe_local_path).read_bytes())
+            expected = hashlib.sha256(binary.read_bytes()).hexdigest()
+            n_agent = _stage_verified(agent, binary, remote_new_agent, scratch)
+            n_restart = _stage_verified(agent, helper, remote_restart, scratch)
+            try:
+                agent.update()
+                launch = "UPDATE accepted"
+            except (AgentProtocolError, OSError) as e:
+                launch = f"UPDATE outcome unknown: {e}"
+    except ValueError as e:
+        return f"[update preflight error] {e}"
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:
@@ -763,10 +810,11 @@ def legacy_win16_self_update(
     msg = (
         f"Win16 update staged on {machine}: "
         f"{n_agent} bytes to {remote_new_agent}, "
-        f"{n_restart} bytes to {remote_restart}; UPDATE accepted"
+        f"{n_restart} bytes to {remote_restart}; {launch} (not yet verified)"
     )
     if wait_for_agent:
-        msg += "\n" + legacy_wait_for_agent(machine, timeout_seconds=120, interval_seconds=5)
+        msg += "\n" + _wait_for_replaced_agent(
+            machine, remote_target, before.get("agent_started"), expected)
     return msg
 
 

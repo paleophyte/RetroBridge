@@ -41,6 +41,8 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
 
 static void backup_path_for_target(const char *target, char *backup, int backup_len) {
     int i;
@@ -65,35 +67,70 @@ static void backup_path_for_target(const char *target, char *backup, int backup_
     }
 }
 
+/* 0 = replacement launched; 1 = old application retained/restored;
+   2 = recovery needs local attention. Never swap after a failed backup. */
+static int restart_replace(const char *newfile, const char *target, const char *backup) {
+    if (remove(backup) != 0 && errno != ENOENT) {
+        return WinExec(target, SW_SHOWNORMAL) > 31 ? 1 : 2;
+    }
+    if (rename(target, backup) != 0) {
+        return WinExec(target, SW_SHOWNORMAL) > 31 ? 1 : 2;
+    }
+    if (rename(newfile, target) != 0) {
+        if (rename(backup, target) != 0) return 2;
+        return WinExec(target, SW_SHOWNORMAL) > 31 ? 1 : 2;
+    }
+    if (WinExec(target, SW_SHOWNORMAL) > 31) return 0;
+    /* Preserve the failed replacement for inspection; restore the old app. */
+    if (rename(target, newfile) != 0 || rename(backup, target) != 0) return 2;
+    return WinExec(target, SW_SHOWNORMAL) > 31 ? 1 : 2;
+}
+
 int PASCAL WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR cmdline, int cmdShow) {
     DWORD start;
     const DWORD wait_ms = 10000UL;
     char newfile[144];
     char target[144];
     char backup[144];
+    char input[288];
+    char *args;
     char *p;
+    char logfile[160];
+    FILE *log;
+    int result;
+    size_t n;
 
     (void)hInst;
     (void)hPrevInst;
     (void)cmdShow;
 
     if (cmdline && cmdline[0]) {
-        while (*cmdline == ' ') cmdline++;
-        lstrcpyn(newfile, cmdline, sizeof(newfile));
-        p = newfile;
+        if (lstrlen(cmdline) >= sizeof(input)) return 2;
+        lstrcpyn(input, cmdline, sizeof(input));
+        args = input;
+        while (*args == ' ') args++;
+        p = args;
         while (*p && *p != ' ') p++;
+        n = (size_t)(p - args);
+        if (!n || n >= sizeof(newfile) - 4) return 2;
+        memcpy(newfile, args, n);
+        newfile[n] = '\0';
+        while (*p == ' ') p++;
         if (*p) {
-            *p++ = '\0';
-            while (*p == ' ') p++;
-            lstrcpyn(target, p, sizeof(target));
+            if (strlen(p) >= sizeof(target) - 4 || strpbrk(p, " \t\r\n")) return 2;
+            strcpy(target, p);
+            if (lstrcmpi(newfile, target) == 0) return 2;
         } else {
-            lstrcpyn(target, newfile, sizeof(target));
+            strcpy(target, newfile);
             newfile[0] = '\0';
         }
     } else {
-        lstrcpyn(target, "C:\\LLMWIN\\LLMAGENT.EXE", sizeof(target));
+        strcpy(target, "C:\\LLMWIN\\LLMAGENT.EXE");
         newfile[0] = '\0';
     }
+    strcpy(logfile, target);
+    p = strrchr(logfile, '\\');
+    strcpy(p ? p + 1 : logfile, "RESTART.LOG");
 
     /* Deliberately does NOT call GetModuleHandle()/GetModuleUsage() at
        all during this wait -- see the comment above for why querying
@@ -115,13 +152,17 @@ int PASCAL WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR cmdline, int cmdS
 
     if (newfile[0]) {
         backup_path_for_target(target, backup, sizeof(backup));
-        remove(backup);
-        rename(target, backup);
-        if (rename(newfile, target) != 0) {
-            rename(backup, target);
-        }
+        if (lstrcmpi(newfile, backup) == 0 || lstrcmpi(target, backup) == 0) return 2;
+        result = restart_replace(newfile, target, backup);
+    } else {
+        result = WinExec(target, SW_SHOWNORMAL) > 31 ? 0 : 2;
     }
-
-    WinExec(target, SW_SHOWNORMAL);
-    return 0;
+    log = fopen(logfile, "a");
+    if (log) {
+        fprintf(log, "%s\n", result == 0 ? "replacement/relaunch started (verify through agent)" :
+                result == 1 ? "update FAILED; old application launched" :
+                              "update FAILED; local recovery required");
+        fclose(log);
+    }
+    return result;
 }
