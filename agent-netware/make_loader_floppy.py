@@ -1,12 +1,12 @@
 """Build loader-update floppy for NetWare 3.12 (DOS partition, no client needed)."""
+import argparse
 from pathlib import Path
 
 from pyfatfs.PyFat import PyFat
 from pyfatfs.PyFatFS import PyFatFS
 
 root = Path(__file__).resolve().parent
-out = root / "loader312.flp"
-loader_dir = root / "vendor" / "312ptd" / "out" / "312PTD" / "NATIVE" / "LOADER"
+default_loader_dir = root / "vendor" / "312ptd" / "out" / "312PTD" / "NATIVE" / "LOADER"
 hello = root / "HELLO.NLM"
 
 FLOPPY_SIZE = 1474560
@@ -14,9 +14,9 @@ FLOPPY_SIZE = 1474560
 README = """NetWare 3.12 LOADER update (from 312PTD)
 =======================================
 
-WHY: Stock 3.12 loader mis-parses modern (format v4) NLMs and prints
-nonsense "missing symbol" lists (CODE, _TEXT, your own locals, etc.).
-This updated LOADER.EXE fixes that.
+Optional loader update from 312PTD. This does not replace the NLM import
+normalization performed by this project's build scripts. Updating the
+loader alone does not fix Watcom's padded import-name format.
 
 DO THIS FROM DOS (no NetWare client needed):
 
@@ -60,9 +60,16 @@ def patch_1440k_geometry(img_path: Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--loader-dir", type=Path, default=default_loader_dir,
+                        help="Directory containing locally supplied LOADER.EXE, LSWAP.EXE and LSWAP.NLM")
+    parser.add_argument("--output", type=Path, default=root / "loader312.flp",
+                        help="Output floppy image (default: agent-netware/loader312.flp)")
+    args = parser.parse_args()
+    loader_dir, out = args.loader_dir, args.output
     for name in ("LOADER.EXE", "LSWAP.EXE", "LSWAP.NLM"):
         if not (loader_dir / name).is_file():
-            raise SystemExit(f"missing {loader_dir / name} - extract 312PTD first")
+            raise SystemExit(f"missing {loader_dir / name} - extract 312PTD and pass --loader-dir")
 
     if out.exists():
         out.unlink()
