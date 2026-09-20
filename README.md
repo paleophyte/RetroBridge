@@ -18,6 +18,15 @@ text screenshots, and several desktop tools are platform-specific. See the
 [capability matrix and publication audit](docs/PUBLICATION_AUDIT.md) for
 the current limits, verified coverage, and outstanding issues.
 
+## License and build dependencies
+
+Original project code and documentation are [MIT licensed](LICENSE).
+Third-party SDKs, libraries, and guest software retain their own terms; see
+[licensing, provenance, and dependency setup](THIRD_PARTY.md). Apple and
+Novell SDK inputs are supplied locally and verified against a file manifest.
+They are not included in this repository or downloaded by the setup tool.
+Binary-release redistribution requirements are reviewed separately.
+
 ## Nomenclature
 
 This repo has three distinct layers:

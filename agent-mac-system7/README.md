@@ -219,6 +219,7 @@ Run `python tests/test_update.py` here for host-side failure injection.
 ## Build (Retro68 cross-toolchain, Linux host)
 
 ```bash
+python3 ../tools/prepare_dependencies.py --component mac-sdk --source-root /path/to/MacTCP-headers
 mkdir build && cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=/path/to/Retro68-build/toolchain/m68k-apple-macos/cmake/retro68.toolchain.cmake
 make
@@ -229,12 +230,14 @@ same set for `llm_updater`. `.bin` is the MacBinary-encoded form used
 for transfer (CD-ROM or `PUT`/`UPDATE`); `.dsk` is a flat HFS image
 `hfsutils`' `hmount`/`hcopy -m` can pull a `.bin` out of directly.
 
-`vendor/MacTCP.h` and `vendor/AddressXlation.h` are vendored from a real
-MacTCP 2.0.6 / Universal Interfaces 2.1 installation (Apple, 1995) —
-needed because Retro68's own "Multiversal" header reimplementation
-deliberately excludes MacTCP.h for licensing reasons. `vendor/AppleTalk.h`
-is a small stub written for this project (MacTCP.h only needs the
-`AddrBlock` type from Apple's real one). See `vendor/README.md`.
+`MacTCP.h` and `AddressXlation.h` must be supplied locally from the known
+MacTCP 2.0.6 / Universal Interfaces 2.1b1 SDK snapshot (Apple, 1995).
+Preparation installs verified copies in the ignored `../.deps/mac-sdk`
+directory. For an external location, prepare with `--destination /path/to/sdk`
+and configure with `-DMAC_TCP_SDK_DIR=/path/to/sdk`. Configuration checks
+both hashes and requires host Python 3. `vendor/AppleTalk.h` is a small
+project-written type stub. See [dependency provenance](../THIRD_PARTY.md)
+and `vendor/README.md`; the project MIT license does not cover Apple headers.
 
 ## Deploy
 
@@ -267,9 +270,10 @@ of `DRAG` is picked up again, QuicKeys is the only known working example of a
 macro tool ending a Finder tracking loop on this OS, and watching it do that is
 likely the fastest route to the answer.
 
-Removing it also shifts the heap, so any absolute address recorded in
-`QUICKEYS_CLICK_INVESTIGATION.md` is stale again. Re-find them with a host-side
-`pmemsave` dump plus `findsig.py` rather than trusting the written values.
+Removing it also shifts the heap, so recorded absolute addresses become
+stale. The public investigation file summarizes the findings; raw transcripts
+are private. `findsig.py dump.bin signatures.json` accepts user-supplied
+hex signatures if further local investigation is needed.
 
 ## Protocol surface
 
@@ -598,7 +602,7 @@ and caught the mechanism directly: QuicKeys writes the target point into
 whose `evtQWhere` is that same point, then a matching `mouseUp` about two
 ticks later. `MBState` is never written and journaling is never used.
 Synthetic clicks **are** possible; see
-`QUICKEYS_CLICK_INVESTIGATION.md` for the evidence and the recipe.
+`QUICKEYS_CLICK_INVESTIGATION.md` for the findings and provenance summary.
 
 The failures below are still accurate as records of what does not work on
 its own -- in particular technique 4 failed because it enqueued an event

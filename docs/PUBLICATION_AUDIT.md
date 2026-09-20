@@ -1,12 +1,13 @@
 # Publication audit — 2026-09-14
 
-Audited `0ce30d12c28e8187fd47f6f0ab79a9ed7efb53a1` plus the nine files
+Audited `d2ded316c69d96307fcfef0f9c3f665d1840ff34` plus the nine files
 already modified in the working tree. This is a source, documentation,
 build, and bounded live-behavior review, not a claim of exhaustive safety
 or compatibility. **History cleanup is complete; release review remains
 open.** Live-token rotations are complete for all 12 configured agent
-endpoints. Vendor redistribution questions and functional findings below
-still need remediation or explicit disposition.
+endpoints. Source licensing and vendor separation were completed on
+2026-09-20; binary redistribution conditions and remaining functional findings
+still need review or explicit disposition. See the provenance follow-up below.
 Commit references to reachable development history use the rewritten IDs.
 
 ## Secret and publication findings
@@ -35,13 +36,14 @@ Commit references to reachable development history use the rewritten IDs.
    rules were added and `git check-ignore` now confirms both deployment
    paths are ignored. No config rename or loader change is needed. No real
    machine inventory or private-key file was found among tracked paths.
-4. **Release ownership/provenance is incomplete.** No root license file
-   is tracked. Apple SDK headers/source and numerous Novell binaries,
-   patch installers, and SDK objects are tracked under `vendor/`.
-   `agent-mac-system7/vendor/README.md` itself notes licensing concerns
-   around the original MacTCP headers. Record the applicable distribution
-   terms and notices or replace these with user-supplied dependencies
-   before publishing. This audit did not establish redistribution rights.
+4. **Source licensing/vendor separation completed; binary review remains.**
+   The original project now has an MIT license. Apple SDK files, Novell
+   SDK/patch/utility payloads, and raw proprietary research excerpts were
+   removed from publication history and preserved privately. Builds verify
+   locally supplied SDK inputs. [THIRD_PARTY.md](../THIRD_PARTY.md) records
+   provenance, terms found, and unresolved redistribution questions; its
+   manifest identifies the removed files. This does not grant vendor
+   redistribution rights or clear every linked runtime for binary release.
    Lab addresses, usernames, VM setup paths, and author metadata also
    remain visible; those are disclosure choices, not credential findings.
 
@@ -293,7 +295,7 @@ found two unreachable commits. These two IDs identify recovery-archive
 objects, intentionally absent from the cleaned publication history:
 
 - `c1c11a381dcfff7d9396dca2e508df503548897d`: dropped WIP stash from
-  2026-09-06, based on `bb05f2a`.
+  2026-09-06, based on `eb63923`.
 - `d8d2f9fd9702cd83aac1434ccb8f6e5d055c3dd2`: that stash's index parent;
   its tree is unchanged from the stash base.
 
@@ -336,7 +338,7 @@ commands only; they do not verify updates, input, or file transfers.
 
 ## Follow-up: Finder Restart fix on 2026-09-14
 
-Commit `e25f658` enabled `isHighLevelEventAware` for PSKILL without
+Commit `3cf8d6d` enabled `isHighLevelEventAware` for PSKILL without
 adding incoming Apple-event dispatch. The agent discarded Finder's Quit
 request, preventing normal restart/shutdown from completing. The fix
 installs a Quit Application handler and dispatches high-level events from
@@ -399,11 +401,11 @@ The original checkout remains private and unchanged by the rewrite.
 
 The five work commits, using their rewritten public IDs, are:
 
-- `675e6570`: Improve Win16 idle handling and stage agent self-updates.
-- `6095c373`: Preserve previous Windows and OS/2 agent binaries after updates.
-- `bdd9c5e2`: Give the OS/2 floppy image a platform-specific filename.
-- `e4f797e8`: Handle Finder Quit events and clean up Mac agent resources.
-- `8e8b971c`: Document agent capabilities, audit findings, and Mac recovery fixes.
+- `b98dbbed`: Improve Win16 idle handling and stage agent self-updates.
+- `0a191b77`: Preserve previous Windows and OS/2 agent binaries after updates.
+- `ab03a215`: Give the OS/2 floppy image a platform-specific filename.
+- `be5d8fdf`: Handle Finder Quit events and clean up Mac agent resources.
+- `40ac5fa4`: Document agent capabilities, audit findings, and Mac recovery fixes.
 
 A separate clone was rewritten with git-filter-repo 2.47.0. Both the retired
 Mac token and the old shared example token were replaced in file content
@@ -1243,3 +1245,51 @@ visually checked. Configuration bytes remained unchanged and private
 executable/configuration backups were retained. The updater was unchanged.
 Wide displays were tested with synthetic PixMaps only; live capture remains
 subject to QuickDraw row-stride and available-memory limits.
+
+### Licensing and provenance follow-up (2026-09-20)
+
+The root MIT license covers original project work, with third-party scope
+explained in THIRD_PARTY.md. A file manifest records the former paths, sizes,
+and SHA-256 hashes of 102 removed vendor files. Only four of these are used
+by current builds: two Apple headers and the Novell prelude/import catalog.
+An offline preparation tool verifies those inputs before copying them into
+ignored dependency directories; CMake and all NetWare build entry points
+check them before compiling. External SDK paths are supported. The former
+NetWare fetch helper now stages an SDK supplied by the user without downloading.
+
+The Novell SDK's actual Developer License Agreement was located and its hash
+recorded. Its conditional product grants do not establish permission to mirror
+the whole SDK collection. Apple redistribution terms and the optional guest
+patch/utility package rights remain unestablished. These files are absent from
+the source publication, and no public vendor ZIP was uploaded. The original
+Git bundle and vendor/research archive were verified and retained privately.
+
+The raw QuicKeys handoff was replaced by a public findings/provenance summary;
+the diagnostic scanner now takes user-supplied signatures. The reverse-engineering
+origin of the Mac mouse implementation remains explicit. The unattributed
+DOS/NetWare screenshot glyph table was replaced, including in historical source
+snapshots, with a pinned, attributed public-domain font and documented bit-order
+conversion. Some character shapes changed. The current tables match exactly,
+and a rendered sample was visually checked.
+
+All 54 host tests passed, including local dependency preparation from package
+and preservation layouts, repeat checks, missing/corrupt input rejection before
+writing, and refusal to overwrite conflicting local files. Native Mac agent
+and updater, DOS, NetWare 3.12 agent/updater/proofs, and NetWare 4.x builds passed.
+Mac and NetWare builds also passed with external SDK paths containing spaces.
+Existing compiler/CMake/DOS linker warnings remain. These builds were not
+deployed; source licensing does not require a guest update.
+
+Publication history was rewritten with private commit maps retained for recovery.
+All 79 pre-existing commits were compared against the private backup: paths and
+contents differ only by the intended removals and the font substitution;
+authors, timestamps, and parent relationships are preserved. All 108 distinct
+removed payload blobs are absent from the publication object database. Exact
+matching against 19 known current/retired credentials found no hits across
+754 Git objects after the rewrite, and Git integrity checks passed. A fresh
+clone contained no SDK inputs, reported missing dependencies, then passed
+preparation/checks while remaining Git-clean.
+
+Compiled releases still require a review of the actual linked Novell objects,
+Watt-32 code, and compiler runtimes, with their applicable notices and terms.
+The source license is not a blanket license for those binaries or guest media.

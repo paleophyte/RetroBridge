@@ -13,8 +13,11 @@ Run `build.bat` in this directory with Open Watcom installed at `C:\watcom`.
 It produces `LLMAGENT.NLM`. Keep the repository's `common/` directory beside
 the agent directories because the source includes the shared timeout policy.
 
-Requires `..\vendor\imports\clib.imp` and `prelude.obj`; run
-`..\fetch_sdk.bat` to obtain the SDK inputs. The post-link import rewrite
+Requires verified local `clib.imp` and `prelude.obj`; run
+`..\fetch_sdk.bat "C:\path\to\extracted-sdk"` to prepare the inputs in
+`..\..\.deps\netware-sdk`, or set `NLM_SDK_DIR` for an external location.
+The helper performs no download; see [THIRD_PARTY.md](../../THIRD_PARTY.md).
+The post-link import rewrite
 uses `mcp-server\.venv\Scripts\python.exe` when available, otherwise
 `python` on PATH. Both NetWare build paths normalize Watcom's padded imports
 to classic Novell length-prefixed names. Leave the NLM header at version 4;

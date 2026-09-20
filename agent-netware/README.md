@@ -119,12 +119,21 @@ Trust model unchanged: cleartext token, lab/host-only network only.
 
 ## Build (Open Watcom on host)
 
-Needs `vendor/imports/clib.imp` and `vendor/imports/prelude.obj` (from the
-Novell CLIB NDK). Refresh with:
+Needs locally supplied `clib.imp` and `prelude.obj` from the known Novell
+CLIB NDK snapshot. From this directory, prepare an extracted SDK you are
+entitled to use:
 
 ```bat
-fetch_sdk.bat
+fetch_sdk.bat "C:\SDKs\novell-clib-devel-2007.10.02-1netware_windows"
 ```
+
+Despite its historical name, `fetch_sdk.bat` no longer downloads anything.
+It checks hashes and stages only these two files in `../.deps/netware-sdk`.
+Set `NLM_SDK_DIR` to use a different destination; all three build scripts
+check the inputs before compiling. Host Python 3 is required. See
+[licensing and provenance](../THIRD_PARTY.md) for the manifest, original
+package identification, and binary-release restrictions. Guest patch
+installers, CLIBAUX, and StuffKey are not included in this source repository.
 
 **NetWare 3.12 (default):**
 
@@ -205,8 +214,8 @@ Output capture may come later (console scrape); v1 is status-only.
 | `build.bat` / `llm_agent.lnk` | Watcom NetWare build |
 | `build_proof.bat` | Hello + sockping NLMs |
 | `vendor/nwsock.h` | Minimal CLIB socket / server prototypes |
-| `vendor/imports/clib.imp` | CLIB import list (from Novell NDK) |
-| `fetch_sdk.bat` | Download CLIB NDK zip + refresh `clib.imp` |
+| `../.deps/netware-sdk/clib.imp` | Locally supplied, verified CLIB import catalog (Novell NDK) |
+| `fetch_sdk.bat` | Verify and stage a locally supplied CLIB SDK; no download |
 | `LLMAGENT.INI.example` | Config template |
 | `_smoke_test.py` | Host-side capability check |
 | `_test_update.py` | Live UPDATE swap smoke |

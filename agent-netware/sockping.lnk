@@ -7,7 +7,6 @@ option version=1.0.0
 option copyright 'llm_agent netware proof'
 option screenname 'None'
 file _sockping.obj
-file vendor\imports\prelude.obj
 module clib
 import _StartNLM, _TerminateNLM, _SetupArgv
 import ConsolePrintf, ThreadSwitch, ThreadSwitchWithDelay, ioctl

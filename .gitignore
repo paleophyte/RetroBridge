@@ -120,6 +120,16 @@ mcp-server/screenshots/
 *.pyc
 .env*
 
+# Locally supplied SDK inputs; see THIRD_PARTY.md.
+/.deps/
+agent-mac-system7/vendor/MacTCP.h
+agent-mac-system7/vendor/AddressXlation.h
+agent-mac-system7/vendor/dnr.c
+agent-netware/vendor/imports/
+agent-netware/vendor/312ptd/
+agent-netware/vendor/clibaux/
+agent-netware/vendor/stuffkey/
+
 # agent-mac-system7: build output and per-guest state
 agent-mac-system7/build/
 agent-mac-system7/LLMAGENT.INI

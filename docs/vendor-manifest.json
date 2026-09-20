@@ -1,0 +1,852 @@
+{
+  "schema_version": 1,
+  "description": "Exact local dependency snapshots; hashes are identity checks, not upstream authenticity or redistribution permission. See THIRD_PARTY.md.",
+  "license_evidence": [
+    {
+      "component": "netware-sdk",
+      "package": "novell-clib-devel-2007.10.02-1netware_windows",
+      "path": "SDK_LICENSE",
+      "sha256": "d98cb5ab1926b9530e2aacac12d3c3b1c45917725019251271ece08d66eaac71",
+      "review": "Novell Developer License Agreement, September 22, 2004; conditional grants require file/product-specific review."
+    }
+  ],
+  "files": [
+    {
+      "former_path": "agent-mac-system7/vendor/AddressXlation.h",
+      "component": "mac-sdk",
+      "sha256": "52f1095c4e9a438f5d4c4459b03243b05628cf0d6d7437415ceabbab76a22eec",
+      "size": 13628,
+      "required_for_build": true,
+      "redistribution": "not-established",
+      "package_path": "AddressXlation.h",
+      "install_name": "AddressXlation.h"
+    },
+    {
+      "former_path": "agent-mac-system7/vendor/MacTCP.h",
+      "component": "mac-sdk",
+      "sha256": "c1cc546bd4d1b37c8c9a02b4f8eecc46530eace66d80e97365181f5f682e3056",
+      "size": 24701,
+      "required_for_build": true,
+      "redistribution": "not-established",
+      "package_path": "MacTCP.h",
+      "install_name": "MacTCP.h"
+    },
+    {
+      "former_path": "agent-mac-system7/vendor/dnr.c",
+      "component": "mac-sdk",
+      "sha256": "0bf51253096ffda641979b227718c1da16baf917a1594f0eb15515507133a2d2",
+      "size": 9599,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/312PTD.EXE",
+      "component": "netware-312ptd",
+      "sha256": "d1555714c2f5eaf691a0cc0200da022a5b558084ff4eabc39ed180276610f256",
+      "size": 168258,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/312PTD.TXT",
+      "component": "netware-312ptd",
+      "sha256": "a3130897ae694e021120228bd7ed58726614a2edbcecabc3e05a495dd8c58509",
+      "size": 6985,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD.TXT",
+      "component": "netware-312ptd",
+      "sha256": "a3130897ae694e021120228bd7ed58726614a2edbcecabc3e05a495dd8c58509",
+      "size": 6985,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/LOADER/LOADER.EXE",
+      "component": "netware-312ptd",
+      "sha256": "a7234c6e552cfd6aea22f2f25fbf0d63a44f049ec1ce7d4e35b1fa0827e37b41",
+      "size": 67440,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/LOADER/LSWAP.EXE",
+      "component": "netware-312ptd",
+      "sha256": "c9a205bc7760b3530d0f90d33a1e63ea1bd3863010f5854910f794d947046c72",
+      "size": 55597,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/LOADER/LSWAP.NLM",
+      "component": "netware-312ptd",
+      "sha256": "a951236ba7afaccbfdecae0881cabcdd27d48988d9110060dd0bfcf1d563d658",
+      "size": 46534,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/OTHER/AUTO/IPXSOCK.NLM",
+      "component": "netware-312ptd",
+      "sha256": "43b753ad74e7356aa1124eb32db82f65d6715c80461fb912b5fece782df8d1b4",
+      "size": 3971,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/OTHER/AUTO/NLICLEAR.NLM",
+      "component": "netware-312ptd",
+      "sha256": "31bcff07d639f4be17fccd820cec4855a3306ab502a07d3d4b899044478627b4",
+      "size": 4434,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/OTHER/AUTO/RTRTIME.NLM",
+      "component": "netware-312ptd",
+      "sha256": "94717356ac2030b7d0b4952adab3fe4b2a1fbe06df468fb30ae4f567257054c4",
+      "size": 2018,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/OTHER/AUTO/SERVHOPS.NLM",
+      "component": "netware-312ptd",
+      "sha256": "08d8c5691338ace9357b8f2ad8191fea4704c67909dbaa5c69045754df57d80a",
+      "size": 1891,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/OTHER/AUTO/SYNCTIME.NLM",
+      "component": "netware-312ptd",
+      "sha256": "563d316aec43e0a00f3c233412cb679fedffa6bded4337fe0c9df9fdeb2cf0e2",
+      "size": 1948,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/ADROUTFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "c30749e6edde53b47544b981a2aa1424968f4f0471e41d71a8e370234e09245b",
+      "size": 1309,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/AUDITFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "520baf7df2b0108603982a8578228b198a4e87ed3ef4a36b6e1b88bb87de0728",
+      "size": 1046,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/BCKTTSFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "097cbef39c510744a8dc7a8ab7b3ce1eb72eebd80a1264f7db24b5be393ce8d3",
+      "size": 1218,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/BHANDFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "1039e1d43c2678f27f3d920a8f67bcb081a4af5633f121d4386f44f8c561c46d",
+      "size": 972,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/CON0PBFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "5bc67aebc017c3fbb8a5d152a95d45a77370e7516d871787b56b98de3378c782",
+      "size": 1158,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/COPYFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "654ca7bd3d0d4ca90e5f8b8922e56df7fbd74ed40dce63fcde872e43fca332c6",
+      "size": 1738,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/CTRSTKFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "c2d9b23865f4ca82c2db13afe975fc68a130603478a640c8eb1ed80c99247d59",
+      "size": 972,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DAICCFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "6adeeb2a994e5da239f9ef5596034376d063d95500f09b3ffc5f661cc053e7b3",
+      "size": 1076,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DESLOTFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "035977cc59fb325d8f80622d6995852448b58a966eb92384c513e80a69fa8c16",
+      "size": 1114,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DFILTRFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "1da01fb21e426967981ae5f7ec1b0600adc4bf632180676413422e19bceb707c",
+      "size": 1054,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DHANDFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "d7432ea3bf9a3eb3c4e8675b524f96d08cb02ccdfe52e4e19763d4cd9187e2a2",
+      "size": 3650,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DIRSPCFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "611bd8e8a821513a6114773e019d836c8f891b4094784e25368ba6726eb1507a",
+      "size": 1212,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/DOSFNDFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "58c7c75587b9d0134ad033e86ba34a4fe755c5a1a46ab7350390ab2a4b24d68f",
+      "size": 4808,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAACCFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "cbb663252bcf7662dd34c84f78ad95eade5d33d521cebf2573d2c8c4e81796c2",
+      "size": 970,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAALLCFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "08b5b3ad15ffe95c677716d6dd035dde387605401dc316edc7aaa36fd58230a2",
+      "size": 1627,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EADATFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "a8d02c8f159ab9998588baab1e0749c9dc639ad23f7c61930acce80c64cfa969",
+      "size": 1181,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAFLTFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "d6984f67038d2e6a9bec1e3cbcc0a8f885f42d9c6e1c9326398c3002cba05dd2",
+      "size": 1309,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAREPLFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "559db1ccbd204bc44e6ef165acebe97a3980118772ae011cd8b4e2f235599a67",
+      "size": 1182,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EASUBFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "5af9a3fba00ce96ede5bd2ab80301858632b4be4756e1a50c2e7b64b4e17fd14",
+      "size": 965,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAWRITFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "73bb216048d23a787ca51a34f222222e63b7868ae5b91d4f53c9c3fb25611d8e",
+      "size": 1036,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EAWRNFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "f967ba1e2ee274b106e56be216c1ace6676950e03ccea1065cdc81d48f2502b3",
+      "size": 5308,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/ELEVFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "6fd5554d93fca03e39a1a798ecad9f156ed2f95958f04ae43cbd1476b173292e",
+      "size": 1717,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/EVNTRPFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "905dfb7c28f78f494c77442be3fbdd31e8865fc419d8e0711a5210a362d01fdc",
+      "size": 1008,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/GETNSPFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "7df260bbe8a5e80b867af1a6dc5d1f18caa06ae7e4284d63f1932ac065d17643",
+      "size": 1317,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/GLOCKFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "b0924fc389ece8700946760a5241717bfab9fb0e568d599afc070d89a1e429a2",
+      "size": 1088,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/GNSFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "4fd92a4c48032fc63597dc6ca5f9e68b1f5c8d62fc907894055856cd02027e6c",
+      "size": 1099,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/GTALLYFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "3f0b076335ecdddcacbf0d02452883009eecd93778e0adbfa96002373d453553",
+      "size": 1490,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/HFFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "6ca7bf8934c0620df4c02c5adb6bf38add265fd5506b0f5b6bf4158c29e54d47",
+      "size": 1054,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/IOHANDFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "f81e09425d24c01bf5ee61a304fa0281e7fa67b7ec7ea702649b88c91b3dbfc9",
+      "size": 1070,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/IPXRCVFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "be6f17c3fa52fe546bb9f637127fa2b4b951a0beb9081655036aa45ca8a72f46",
+      "size": 976,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/LSLUNBFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "23bf4394b77ccf2298974f083f92222f3329c6232da9cb8f9639ab1bbbedaa85",
+      "size": 1035,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/LSTECBFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "2c1224d526c36d04036f4157a64c73e4a7e6f4a143da2041888e6492e1a95053",
+      "size": 1302,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/MACNMFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "db3104b9503f5197f16bde26c86c1c9f7fd5dd75e4ca9352eaa7838aa020447b",
+      "size": 1086,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/MMACCFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "8f5c1bf16ce676fc1c796933bf400f1b0a779fd77f464b3d5c7084c7a6022161",
+      "size": 1006,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/MMHANDFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "582feca6b46faae10931850b65e2a97a31a4f06ef3eb45ac0cfea6e695fcb550",
+      "size": 3123,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/MMMIRRFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "38c44898b2316d51258225f8b1a77bd1fe62ee0eaca11a5431a4ca5ed95504f5",
+      "size": 1075,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/NCPCHKFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "195f304f4e69d1f1791266f7a7d70b31224e3d5f9dda3d33d8b8f21e6f6bf998",
+      "size": 1147,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/NCPXTNFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "9534acb2918bb40707c2543f5577b27da514475c7d98c65bd5286b60147c2e33",
+      "size": 1638,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/NPAPATCH.NLM",
+      "component": "netware-312ptd",
+      "sha256": "2ada302e378608dda7fcee8e766038d2b998db7e963c69f0fba34b769ebe5cab",
+      "size": 2516,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/PBWANFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "dbc754d3eaf06e8a13f529cd9065615c6d14e3ec19b20e68c110ac6721c1587d",
+      "size": 3028,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/PM312.NLM",
+      "component": "netware-312ptd",
+      "sha256": "168ce13001f47bc94016787e8a1bd4b70fe599fbe27668101feaf73e11511ed3",
+      "size": 14825,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/READQFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "315e0e8ca4178f659952cd6b3a1c8804d97f3388086bbfdc82a004840ada3bdc",
+      "size": 1612,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/REALMFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "b089733550957711d07b5a3e271d27526a8a714c58f640b476ec078c3ae265f9",
+      "size": 2920,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/REGOBJFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "1242efd5860ddc81fb16938b2f471bfb6fe6221baf96ef965475047f577f9aa1",
+      "size": 1035,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/RENDIRFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "d62e282ad1c384303306960fedf274b428244155213794d65cff6e14e68cb361",
+      "size": 1134,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/RKIELFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "cda453d30c394aa98052332eb699b3b1d81863a6c189681b78126ed64d45b415",
+      "size": 1044,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/RTCHGFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "c5cbc51a080fd547c2b31c56f36de545914195f32ce1529bab6f9f05977f55e6",
+      "size": 984,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SAPFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "157ff44199ef4d8fe10bb490415b02bf5e2b80fb060658389c43ba2b0ab022ca",
+      "size": 1970,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SEARCHFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "0e4738a6fb58322296f2b40329716c07733b1e1286133bb361a65675184c045b",
+      "size": 1145,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SHRRAMFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "00280164737dd35c7fe4431013c9531c904e0efab3d7715aa4d869c39d2d09a3",
+      "size": 3432,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SIGLOGFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "77400a29df3e9aca59c10688def0c428badb49d9b95d4f9260a3db1e614a6d64",
+      "size": 1159,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SPXDDFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "e2d5dfbc8fb217ebe25eee6946a07796cc37637fb778798626adfb0bbae0ee4f",
+      "size": 1148,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SPXFIX2.NLM",
+      "component": "netware-312ptd",
+      "sha256": "668fbda6c28248ebdafc4c87fffe0dec41b425000b18e55c2a3766381a035a24",
+      "size": 1035,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SPXNSFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "228f3c8eacde7bd2a0893bd79ebe7bac6d082392a35bea4fee9f222d7f8782bb",
+      "size": 1044,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/STDIRHFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "d1644bb8590b90c8d2160f8cf28aefc6f8f122255b58ffa8b0f981f9355cbfb9",
+      "size": 1115,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/SYNCMFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "c62f925c1224cc137c2c58a2054f006698dfc03891a84b6b406f24f326d64377",
+      "size": 1025,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/TRBUFFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "b6d820c326fc3e25f765525928d4f5d8b4c262484c847de35df5b698fa6a58f1",
+      "size": 1059,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/UNLDIRFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "c80a19aa210b7f9c6e32811474cbff2f04d35a60528e488e0d9f2b3c683b083a",
+      "size": 1971,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/UNLOADFX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "7227483e02b78d0dc3ef00894a630608d5747c832d85a9e90df802e6f43b9afc",
+      "size": 992,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/VOLMTFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "69ca59079ea4fde4c2f208eee2bf1f4ca35e1266140ae6c14e82acab15176a21",
+      "size": 1027,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/WRLENFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "755312dd9964ee5596e6206b2162c7e0681c6192b99fabc8b18d8bd22622091e",
+      "size": 1087,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/WSMSGFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "71e823c91387259653d078cb708c982ad5a0110d1824af9c74d86ed37ab8b25a",
+      "size": 1132,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/NATIVE/START/ZEROBFIX.NLM",
+      "component": "netware-312ptd",
+      "sha256": "e08ef0914a6150f236890ace2f452308e34f4f10c0350acd4de108b031daee9e",
+      "size": 1054,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/312ptd/out/312PTD/PATCH312.NLM",
+      "component": "netware-312ptd",
+      "sha256": "b7b51592365ab2e1ee22ca02922bd2556cbaf614394e91d722ba841ebe2e27eb",
+      "size": 17699,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/clibaux1.exe",
+      "component": "netware-clibaux",
+      "sha256": "8f3daf7dbc0bfcc985e55a36a67c455b4506da5a4cce48090005362cdc279bfe",
+      "size": 28171,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/lib312d.exe",
+      "component": "netware-clibaux",
+      "sha256": "a484b63eed380d66fa612b92d024f0a0935b97743c748de79e1d009b3e2e227c",
+      "size": 273268,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_aux/CLIBAUX.NLM",
+      "component": "netware-clibaux",
+      "sha256": "d3fe470874da792b249492366bb51a27698b5f9c2ea8acf93b0e4b99ef761c8b",
+      "size": 8809,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_aux/CLIBAUX1.TXT",
+      "component": "netware-clibaux",
+      "sha256": "e0ae23c7c7f01c25a7a5f54df9acbf76c70a7ca7397fe04b03394571ada199f0",
+      "size": 1923,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/A3112.NLM",
+      "component": "netware-clibaux",
+      "sha256": "d095142429d3a6fca4f61afd3395b500996009833b2141e47af95b87887215f2",
+      "size": 16478,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/AFTER311.NLM",
+      "component": "netware-clibaux",
+      "sha256": "0b2acac988ea74f042db2f8b5341053d8af8becb4cf9de75feeb5a5ff6e79ac1",
+      "size": 14952,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/CLIB.NLM",
+      "component": "netware-clibaux",
+      "sha256": "143c719d87aea8cf4796a5879c70a1d4f2edcc273103194597c34f18becbf8c4",
+      "size": 355394,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/CLIBAUX.NLM",
+      "component": "netware-clibaux",
+      "sha256": "bdaf97780867fb673ac8ed6834944ab36305a4825c08a73ecaba0bded3021802",
+      "size": 8717,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/LIB312D.TXT",
+      "component": "netware-clibaux",
+      "sha256": "1f5d66e42167fbda55f3e2b630fc22d75eaa8f9d0d3983fd9c9005abb1ec1f2c",
+      "size": 3590,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/MATHLIB.NLM",
+      "component": "netware-clibaux",
+      "sha256": "27dfbc0c33cbb41f662b84bd73aa53b03af76b16b95463be3186c9b270469c6d",
+      "size": 12458,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/MATHLIBC.NLM",
+      "component": "netware-clibaux",
+      "sha256": "c4688c30027d025e8926a21cfea1041d66fa090794a5339c9fbd4242299bdba8",
+      "size": 16832,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/NWSNUT.MSG",
+      "component": "netware-clibaux",
+      "sha256": "ba534a0c84f13f85498c9ddc19f49757dc59875bd671b212f8c1af954b4d75f0",
+      "size": 2984,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/clibaux/out_lib/NWSNUT.NLM",
+      "component": "netware-clibaux",
+      "sha256": "2e9a907e37b974af25ca34c15ec1052328e9018572c47b59091e3e34e7b37165",
+      "size": 175546,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/clib.imp",
+      "component": "netware-sdk",
+      "sha256": "9dab9485768af66e90556e43a4d38f1e2a4206f90fe20c4d0b36afa10f22fb2b",
+      "size": 35893,
+      "required_for_build": true,
+      "redistribution": "not-established",
+      "package_path": "imports/clib.imp",
+      "install_name": "clib.imp"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/clibpre.obj",
+      "component": "netware-sdk",
+      "sha256": "5337f6dac737a3c46fc78cce86edf45027aaab76084bbd677e50f941d93d13a3",
+      "size": 1216,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/nlmlib.imp",
+      "component": "netware-sdk",
+      "sha256": "e2b9eac00119b6ef9fcec3e8bf44128b49a1251325d84c5630b257ffbfddfedd",
+      "size": 16,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/nwpre.obj",
+      "component": "netware-sdk",
+      "sha256": "c836bb513270507ecdc8e5320dc18acf6e5faebbf1b11564c085c0f29f3ad66e",
+      "size": 817,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/prelude.obj",
+      "component": "netware-sdk",
+      "sha256": "474284b5f360aa6b312f4f3545d3ba5418b50e29cc02ac4bbd3b7055824b6baa",
+      "size": 805,
+      "required_for_build": true,
+      "redistribution": "not-established",
+      "package_path": "imports/prelude.obj",
+      "install_name": "prelude.obj"
+    },
+    {
+      "former_path": "agent-netware/vendor/imports/threads.imp",
+      "component": "netware-sdk",
+      "sha256": "5c8d0decd673ee9c7fbcd14e02afd97681cf93b3cc649507ade043af77353b8f",
+      "size": 17,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/stuffkey/CLIBAUX.NLM",
+      "component": "netware-stuffkey",
+      "sha256": "d3fe470874da792b249492366bb51a27698b5f9c2ea8acf93b0e4b99ef761c8b",
+      "size": 8809,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/stuffkey/STUFKEY5.TXT",
+      "component": "netware-stuffkey",
+      "sha256": "24a74a8f12a3af2eb62f2e262b22e1c1d4053ebd85ae7a20551d65a939e22592",
+      "size": 13062,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/stuffkey/out/STUFFKEY.NLM",
+      "component": "netware-stuffkey",
+      "sha256": "e77c703ccc7e6a6d494e9f8259695ee5fdc65d1c6314fa3cdd9ad27be52e72d4",
+      "size": 29809,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/stuffkey/out/stufkey5.txt",
+      "component": "netware-stuffkey",
+      "sha256": "24a74a8f12a3af2eb62f2e262b22e1c1d4053ebd85ae7a20551d65a939e22592",
+      "size": 13062,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    },
+    {
+      "former_path": "agent-netware/vendor/stuffkey/stufkey5.exe",
+      "component": "netware-stuffkey",
+      "sha256": "9c4095bdf6baae39beab4b44eff840551b54ea1f7abfc6f2d811def1b39b5ccb",
+      "size": 107269,
+      "required_for_build": false,
+      "redistribution": "not-established"
+    }
+  ],
+  "retained_third_party": [
+    {
+      "component": "ascii-font",
+      "files": [
+        "agent-dos/llm_agent.c:FONT8",
+        "agent-netware/font8.h:FONT8"
+      ],
+      "source": "https://github.com/dhepper/font8x8/blob/8e279d2d864e79128e96188a6b9526cfa3fbfef9/font8x8_basic.h",
+      "source_sha256": "49d8df366296b203ca3211bc0672cf2a762135bf12710735b6292756b19dffd5",
+      "upstream_license": "Public Domain",
+      "modifications": "Subset U+0020..U+007F; reverse bits in each byte for MSB-left rendering."
+    }
+  ]
+}
