@@ -1,5 +1,20 @@
 # Resident monitor experiment — not a production agent or TSR
 
+**Status: deferred after the feasibility experiment (2026-09-20).** This is
+not a prerequisite for source publication. The [DOS resident monitor design](../../docs/LONG_RUNNING_COMMANDS.md#dos-resident-monitor-feasibility)
+records the original TSR concept, the parent-resident prototype approach,
+and why a tiny shim that loads the full agent still needs safe DOS access,
+available conventional memory, and a single owner of network state.
+
+The source in this directory implements only the probe described below.
+No stay-resident installation, background command dispatcher, or safe child
+cancellation was implemented. Before resuming network work, isolate timer
+delivery with a minimal resident counter, explain the missing child-time
+callbacks, and reproduce the MS-DOS disk stall with the smallest possible
+test. Both DOS variants must pass before expanding the scope. A foreground
+run-and-resume design with persisted results remains an alternative proposal;
+it would restore remote access after the child exits, not during execution.
+
 `DOSPOLL.EXE` keeps a parent process in memory while fixed DOS children run.
 It tests Watt-32's existing timer poller and a tiny heartbeat callback before
 attempting a full resident agent. **The MS-DOS 6.22 disk test stalled and

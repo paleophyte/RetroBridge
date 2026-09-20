@@ -10,6 +10,42 @@ endpoints. Source licensing and vendor separation were completed on
 still need review or explicit disposition. See the provenance follow-up below.
 Commit references to reachable development history use the rewritten IDs.
 
+## Current release checklist (2026-09-20, after long-command work)
+
+The sections below retain the original findings and dated follow-ups. This
+checklist summarizes the remaining work; earlier tool counts and test counts
+describe those earlier checkpoints. The current bridge has 43 tools, and
+the latest host suite passed 81 tests. NetWare 4.11 was subsequently built
+and tested successfully; it is no longer awaiting a test guest.
+
+- **Final source-publication pass:** reconcile remaining universal Windows
+  wording in examples/tool descriptions, review intentional disclosure of lab
+  metadata, and repeat full-history secret and clean-clone checks at the exact
+  revision selected for publication. Earlier cleanup passed; subsequent
+  implementation commits received staged secret scans.
+- **Before distributing binaries:** record actual linked dependency/toolchain
+  revisions, resolve applicable distribution conditions, and collect notices
+  described in [THIRD_PARTY.md](../THIRD_PARTY.md). This is separate from the
+  completed MIT source licensing and vendor-history removal.
+- **Update follow-ups:** Mac and NetWare still lack the loaded-image identity
+  required for verified replacement. NetWare also has weaker updater recovery.
+  The generic NT updater assumes a service installation; Win7's interactive
+  installation required an explicit restart. Its new HKCU Run entry was read
+  back, but next-logon startup has not been tested.
+- **Documented platform limits:** Mac drag remains experimental; its disabled
+  clipboard/window operations remain unavailable. Keyboard input is ASCII
+  only, and DBCS/localized startup paths remain unverified. Broader native
+  capability negotiation and stock-OS/old-CPU compatibility are not certified.
+- **Execution limits:** Win32 cancellation covers the direct child only.
+  Win16/OS2 marker jobs lack cancellation and can grow output files without
+  a disk cap; registry/results recovery across agent restart remains limited.
+  Blocking legacy commands and OS calls can still occupy an agent. See
+  [long-running commands](LONG_RUNNING_COMMANDS.md) for supported behavior.
+- **Deferred DOS TSR:** the [concept and experiment report](../agent-dos/experimental/README.md)
+  preserve the design, implementation, live failures, recovery, and proposed
+  next investigation. Production DOS remains synchronous. Further TSR work
+  is explicitly separate from source publication.
+
 ## Secret and publication findings
 
 1. **Former Mac token removed from this publication history.** The original
