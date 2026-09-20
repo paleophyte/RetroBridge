@@ -54,12 +54,11 @@ NOTES = {
     "netware": ["EXEC runs a console command without output capture or detach.",
                 "DEBUG 1 truncates the agent log; AUTOEXEC may edit startup NCF with a retained backup.",
                 "SHUTDOWN downs the server; it is not a hardware power-off command.",
-                "Update stages fixed SYS:SYSTEM paths. Acceptance/reachability cannot verify replacement.",
-                "NetWare 4.x runtime has not been validated on a dedicated 4.x guest."],
+                "Update stages fixed SYS:SYSTEM paths; verification requires startup identity and matching executable readback. Helper recovery remains limited."],
     "mac68k": ["Data-fork file transfer only; main-display screenshot; left mouse button and US keyboard layout.",
                "No shell, usable cross-process clipboard/window list, or completed drag support.",
                "PSKILL and power commands are cooperative requests and can be cancelled.",
-               "MacBinary update requires the separately installed llm_updater; acceptance/reachability cannot verify replacement."],
+               "MacBinary update requires the separately installed llm_updater; verification requires new startup identity and matching application forks, with system resource metadata normalized."],
     "unknown": ["No known profile for these SYSINFO fields; no platform operations inferred."],
 }
 

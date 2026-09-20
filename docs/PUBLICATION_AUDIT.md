@@ -10,12 +10,12 @@ endpoints. Source licensing and vendor separation were completed on
 still need review or explicit disposition. See the provenance follow-up below.
 Commit references to reachable development history use the rewritten IDs.
 
-## Current release checklist (2026-09-20, after long-command work)
+## Current release checklist (2026-09-20, after update-verification work)
 
 The sections below retain the original findings and dated follow-ups. This
 checklist summarizes the remaining work; earlier tool counts and test counts
 describe those earlier checkpoints. The current bridge has 43 tools, and
-the latest host suite passed 81 tests. NetWare 4.11 was subsequently built
+the latest host suite passed 87 tests. NetWare 4.11 was subsequently built
 and tested successfully; it is no longer awaiting a test guest.
 
 - **Final source-publication pass:** reconcile remaining universal Windows
@@ -27,8 +27,8 @@ and tested successfully; it is no longer awaiting a test guest.
   revisions, resolve applicable distribution conditions, and collect notices
   described in [THIRD_PARTY.md](../THIRD_PARTY.md). This is separate from the
   completed MIT source licensing and vendor-history removal.
-- **Update follow-ups:** Mac and NetWare still lack the loaded-image identity
-  required for verified replacement. NetWare also has weaker updater recovery.
+- **Update follow-ups:** Mac and NetWare now support verified replacement
+  (see the final follow-up below). NetWare still has weaker updater recovery.
   The generic NT updater assumes a service installation; Win7's interactive
   installation required an explicit restart. Its new HKCU Run entry was read
   back, but next-logon startup has not been tested.
@@ -112,8 +112,8 @@ or error path was exercised. Per-port READMEs retain detailed restrictions.
 | OS/2 2.x | Shell plus detached session | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE, clipboard; no registry | List / kill | EXE helper |
 | OS/2 1.3 | Shell plus detached child | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE; no clipboard/registry | PSTAT parsing / kill | EXE helper plus SELFEXIT |
 | Win16 | DOS helper `EXEC`; WinExec detach, no real PID | PUT/GET; desktop BMP | Journal input unreliable; window/message/listbox primitives; no clipboard/registry | ToolHelp task handles | UPDATE + RESTART.EXE; staged update changes committed |
-| NetWare | Console `system()`; no output capture or detach | PUT/GET; selected console text BMP | StuffKey or console fallback; SCREENS; no GUI windows/clipboard | Unsupported | UPDATE.NLM via `legacy_netware_self_update`; replacement unverified |
-| Mac System 7 | No shell or detach | Data fork only; main-screen BMP | Left click/double-click, US keyboard; window/clipboard commands refuse; drag incomplete | List / request application quit | MacBinary `UPDATE <size>` via `legacy_mac_self_update`; replacement unverified |
+| NetWare | Console `system()`; no output capture or detach | PUT/GET; selected console text BMP | StuffKey or console fallback; SCREENS; no GUI windows/clipboard | Unsupported | UPDATE.NLM via `legacy_netware_self_update`; replacement verified by startup/file checks |
+| Mac System 7 | No shell or detach | Data fork only; main-screen BMP | Left click/double-click, US keyboard; window/clipboard commands refuse; drag incomplete | List / request application quit | MacBinary `UPDATE <size>` via `legacy_mac_self_update`; replacement verified by startup/fork checks |
 
 Power behavior also differs: Win32 and Mac implement reboot/shutdown;
 DOS and both OS/2 ports implement reboot but reject shutdown. Win16
@@ -236,10 +236,10 @@ does not implement reboot. These are not interchangeable “power off” tools.
 - **MCP coverage expanded (2026-09-20).** All listed gaps now have wrappers:
   Win16 WINMSG/POSTMSG/LBGETTEXT and WINLIST's parent argument; NetWare
   SCREENS/AUTOEXEC/DEBUG/UPDATE; OS/2 WINCLOSE; Mac DBLCLICK/MOUSEPOS and
-  MacBinary UPDATE. The bridge registers 38 tools, including advisory
+  MacBinary UPDATE. The bridge now registers 43 tools, including advisory
   SYSINFO-based capability profiles. Native capability negotiation and
   consistent loaded-image identity across all ports remain open. Mac/NetWare
-  update tools explicitly report replacement unverified. See
+  update tools now verify replacement when the new identity fields are present. See
   [MCP coverage](MCP_COVERAGE.md) for intentional exclusions and limits.
 - **Update verification corrected (2026-09-20).** Both bridge update tools
   now read back staged inputs and require a new startup identity, matching
@@ -1524,3 +1524,45 @@ dual-boot guest was returned to the verified Win16 build. Experimental files
 were removed. The probe is committed as reproducible experimental work, not
 a supported TSR or a fix for DOS's blocking EXEC. See its
 [scope, results, and recovery requirements](../agent-dos/experimental/README.md).
+
+
+### Mac and NetWare verified replacement (2026-09-20)
+
+Both bridge tools now wait by default for a new startup identity and matching
+startup/installed file fingerprints. `wait_for_agent=False` explicitly leaves
+replacement unverified. Input files are frozen before transfer; uncertain
+handoffs trigger verification without repeating the update. NetWare also
+checks its fixed target against the responding agent's loader-supplied path,
+reads back both staged inputs, and reads back the installed executable.
+It records CLIB uptime/NLM ID and hashes the loader path once before listening.
+A native probe confirmed full paths and correct hashes on 3.12 and 4.11.
+
+Mac SYSINFO records the Process Manager application location, startup ticks/PSN,
+and startup hashes for both forks. It computes fresh installed hashes for
+verification, including native read/size/close checks. The first live build
+correctly refused to verify: an independent disk-copy readback showed 44
+changed bytes, all within the resource fork's system-owned directory metadata.
+The resource fingerprint now explicitly advertises
+`sha256-zero-system-16-127-v1`, normalizing only those 112 reserved bytes.
+Header bounds are validated; layout, application-owned bytes, resource data,
+and map remain covered. The data fork uses ordinary SHA-256. These are
+startup-file identities, not signatures or live-memory attestation.
+
+All 87 root host tests and both Mac-specific tests passed. Added tests cover
+stale/missing identity, fork mismatches, changed location, changes during
+verification, immutable upload snapshots, uncertain handoffs without retry,
+and optional waiting. Production Mac hashing is fault-tested for failed open,
+size, read, short read, close, changing size, malformed layout, and the exact
+normalization boundary. The shared SHA implementation was factored into an
+incremental core; existing hash vectors still pass. Native Mac and both
+NetWare builds passed, as did Win32, Win16, and both OS/2 builds that share
+the hashing code. Existing Mac SDK/CMake warnings remain.
+
+Verified live updates passed on System 7.5.3, NetWare 3.12, and NetWare 4.11,
+including reinstalling the same build with a changed startup instance.
+Fresh MCP SDK 2.0.0 and 2.2.0 sessions each exposed 43 tools and passed verified
+Mac plus NetWare updates (3.12 with 2.0.0, 4.11 with 2.2.0). Configuration
+readbacks were unchanged. Temporary NetWare probe files were removed; private
+backups, readbacks, and logs were retained. The Mac updater and NetWare swap
+algorithm were not changed. NetWare's weaker rollback remains open; raw
+UPDATE acknowledgments and PING alone still do not verify replacement.

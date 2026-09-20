@@ -97,6 +97,7 @@
 
 #include "app_files.h"
 #include "config.h"
+#include "update_identity.h"
 
 #define RCV_BUFFER_SIZE 16384
 #define LINE_MAX_LEN    512
@@ -1712,7 +1713,8 @@ static void HandlePslist(void)
 
 static void HandleSysinfo(void)
 {
-    static char buf[512];
+    static char buf[1536];
+    char diskData[65], diskResource[65];
     int len = 0;
     char hdr[32];
     long sysVersion = 0;
@@ -1722,12 +1724,19 @@ static void HandleSysinfo(void)
 
     len += sprintf(buf + len, "os_family=mac68k\r\n");
 
-    /* Build stamp, so a live UPDATE can be verified as having actually taken
-     * effect. Without it a successful-looking update is indistinguishable from
-     * the old binary still running. */
+    /* Human-readable stamp only; verification uses startup and fork hashes. */
     len += sprintf(buf + len, "agent_build=%s %s\r\n", __DATE__, __TIME__);
     len += sprintf(buf + len, "agent_port=%u\r\n", (unsigned)gAgentPort);
     len += sprintf(buf + len, "config_location=application-folder\r\n");
+    len += sprintf(buf + len, "agent_resource_hash_mode=sha256-zero-system-16-127-v1\r\n");
+    MacForkSHA(&gApplicationSpec, 0, diskData);
+    MacForkSHA(&gApplicationSpec, 1, diskResource);
+    len += sprintf(buf + len, "agent_started=%s\r\nagent_location=%s\r\n",
+                   gMacStarted, gMacLocation);
+    len += sprintf(buf + len, "agent_data_sha256=%s\r\nagent_resource_sha256=%s\r\n",
+                   gMacDataSHA, gMacResourceSHA);
+    len += sprintf(buf + len, "disk_data_sha256=%s\r\ndisk_resource_sha256=%s\r\n",
+                   diskData, diskResource);
 
     err = Gestalt(gestaltSystemVersion, &sysVersion);
     if (err == noErr) {
@@ -2323,6 +2332,8 @@ int main(void)
                                 NewAEEventHandlerUPP(HandleQuitEvent),
                                 0, false);
     if (err != noErr) return 1;
+
+    MacUpdateIdentityInit();
 
     err = OpenMacTCP();
     if (err != noErr) {

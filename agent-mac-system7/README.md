@@ -246,8 +246,28 @@ reconnect and check `SYSINFO` and `UPDATER.LOG` after an update.
 Use `legacy_mac_self_update(machine, new_agent_local_path)` or
 `AgentClient.mac_update(path)` with the Retro68 `.bin`. The generic
 `legacy_self_update` tool is for Windows/OS2. The Mac tool validates the
-container before transfer and reports replacement **NOT verified**, because
-acceptance and reachability do not establish loaded-image identity.
+container before transfer and, by default, waits for a new startup instance
+at the same application location with matching startup and fresh installed
+fork hashes. Set `wait_for_agent=False` for acceptance only. Older replacement
+builds lacking the identity fields remain unverified; PING is insufficient.
+
+SYSINFO exposes `agent_started` (ticks and Process Serial Number), an opaque
+`agent_location` (volume reference, parent ID, hex filename), startup
+`agent_data_sha256`/`agent_resource_sha256`, and freshly computed
+`disk_data_sha256`/`disk_resource_sha256`. Failed native fork reads/closes
+leave the affected hash empty. Startup hashes never refresh during service.
+
+The resource hash advertises `agent_resource_hash_mode=sha256-zero-system-16-127-v1`.
+Only bytes 16..127 are replaced with zeros when hashing. Apple's
+[Inside Macintosh I, Resource File Format](https://mirrors.apple2.org.za/www.bitsavers.org/pdf/apple/mac/Inside_Macintosh_Vol_1_1984.pdf)
+identifies those 112 bytes as system directory metadata; System 7 changes
+them during the updater's file exchange. The layout header, application data
+at bytes 128..255, resource data, and map are still hashed. Bounds checks
+reject headers whose resource/map regions reach outside the fork or into
+that reserved area. The data fork uses ordinary SHA-256. This fingerprints
+the startup file, not live code memory or a cryptographic publisher signature.
+Fresh disk hashing adds file I/O to SYSINFO and can take longer on slow Macs.
+
 
 Both `PUT` and `UPDATE` reject failed writes, flushes, and closes, and drain
 the declared payload after local file errors so the next command remains

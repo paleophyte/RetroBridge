@@ -122,10 +122,22 @@ disconnect; reconnect and `PING`.
 
 `legacy_netware_self_update(machine, new_agent_local_path, update_nlm_local_path)`
 freezes and stages both local files and reads both back before sending UPDATE.
-It reports **replacement NOT verified**: the agent acknowledges before loading
-the helper and does not expose a loaded-image hash/startup identity. PING
-proves reachability only. Inspect UPDATE's console output and the installed
-NLM; retain an independent backup because the helper replaces its `.OLD` file.
+By default it waits for a new startup instance, matching startup SHA-256,
+installed NLM readback, and stable identity after readback. Set
+`wait_for_agent=False` for acceptance only. SYSINFO records `agent_exe`
+from the volume-qualified loader `argv[0]`, `agent_started` from CLIB uptime
+and GetNLMID, and `agent_sha256` computed once before listening. Missing or
+unreadable identity cannot verify; a different installation path fails bridge
+preflight because the helper still targets SYS:SYSTEM. Older replacement
+builds without these fields remain explicitly unverified. This fingerprints
+the startup file, not relocated code memory or a publisher signature.
+
+The agent still acknowledges before loading the helper. PING proves only
+reachability. A failed verification requires inspecting UPDATE's console and
+installed files, not blindly retrying the handoff. Retain an independent
+backup because the unchanged helper replaces its `.OLD` file and has weaker
+rollback than the Mac updater. Both 3.12 and 4.11 supplied full loader paths
+and passed native hashing and verified live updates.
 
 Trust model unchanged: cleartext token, lab/host-only network only.
 

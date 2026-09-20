@@ -355,6 +355,21 @@ class AgentClient:
             raise AgentInputError("window title must not be empty")
         self._simple_command(f"WINCLOSE {title}")
 
+    @staticmethod
+    def _macbinary_forks(data: bytes) -> tuple[bytes, bytes]:
+        """Validate a classic APPL container and return its unpadded forks."""
+        if not 128 <= len(data) <= 64 * 1024 * 1024:
+            raise AgentInputError("MacBinary update size outside configured limit")
+        dsize = int.from_bytes(data[83:87], "big")
+        rsize = int.from_bytes(data[87:91], "big")
+        expected = 128 + ((dsize + 127) & ~127) + ((rsize + 127) & ~127)
+        if (data[0] or not 1 <= data[1] <= 63 or data[65:69] != b"APPL"
+                or any(data[i] for i in (74, 82, 120, 121)) or rsize < 256
+                or dsize > 0x7FFFFF00 or rsize > 0x7FFFFF00 or len(data) != expected):
+            raise AgentInputError("expected a classic MacBinary APPL with complete padded forks")
+        roffset = 128 + ((dsize + 127) & ~127)
+        return data[128:128 + dsize], data[roffset:roffset + rsize]
+
     def mac_update(self, local_path: str | Path) -> int:
         """Mac: transfer one MacBinary application. OK accepts the handoff only.
 
@@ -367,13 +382,7 @@ class AgentClient:
         data = path.read_bytes()  # Freeze the bytes before sending the size.
         if not 128 <= len(data) <= min(self.max_response_bytes, 2147483647):
             raise AgentInputError("MacBinary update size outside configured limit")
-        dsize = int.from_bytes(data[83:87], "big")
-        rsize = int.from_bytes(data[87:91], "big")
-        expected = 128 + ((dsize + 127) & ~127) + ((rsize + 127) & ~127)
-        if (data[0] or not 1 <= data[1] <= 63 or data[65:69] != b"APPL"
-                or any(data[i] for i in (74, 82, 120, 121)) or rsize < 256
-                or dsize > 0x7FFFFF00 or rsize > 0x7FFFFF00 or len(data) != expected):
-            raise AgentInputError("expected a classic MacBinary APPL with complete padded forks")
+        self._macbinary_forks(data)
         with self._command_session(f"UPDATE {len(data)}") as sock:
             sock.sendall(data)
             reply = self._recv_line(sock)

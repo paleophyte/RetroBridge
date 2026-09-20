@@ -45,7 +45,7 @@ LDFLAGS := $(LDCOMMON) -lws2_32 -ladvapi32 -lgdi32 -luser32
 
 all: llm_agent.exe update.exe
 
-llm_agent.exe: llm_agent.c jobs.h ../common/session_timeout.h ../common/command_line.h ../common/update_identity.h
+llm_agent.exe: llm_agent.c jobs.h ../common/session_timeout.h ../common/command_line.h ../common/update_identity.h ../common/update_sha256.h
 	$(CC) $(CFLAGS) llm_agent.c -o llm_agent.exe $(LDFLAGS)
 
 # update.exe (see docs/ARCHITECTURE.md "Self-update") replaces a running
@@ -58,7 +58,7 @@ update.exe: update.c
 	$(CC) $(CFLAGS) update.c -o update.exe $(LDCOMMON) -ladvapi32
 
 # Optional native regression fixture; does not open an agent listener.
-exec_fixture.exe: tests/exec_fixture.c llm_agent.c ../common/session_timeout.h ../common/command_line.h ../common/update_identity.h
+exec_fixture.exe: tests/exec_fixture.c llm_agent.c ../common/session_timeout.h ../common/command_line.h ../common/update_identity.h ../common/update_sha256.h
 	$(CC) $(CFLAGS) tests/exec_fixture.c -o exec_fixture.exe $(LDFLAGS)
 
 clean:

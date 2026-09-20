@@ -48,26 +48,34 @@ mouse/keyboard injection remains unreliable; these wrappers do not repair it.
 
 ## Update result semantics
 
-The Windows/OS2 and Win16 update tools retain their existing startup-identity,
-SHA-256, and installed-file checks. The new Mac/NetWare tools deliberately
-report **replacement NOT verified**, even after an OK acknowledgment.
+All four update tools wait for verified replacement by default. Passing
+`wait_for_agent=False` reports acceptance only. A quiet settling interval
+precedes verification, and older replacement builds without identity fields
+remain explicitly unverified.
 
-The Mac client freezes the input bytes, validates the classic MacBinary APPL
-header and padded fork lengths, then sends one size-delimited transfer. It
-does not upload or replace `llm_updater`; deploy that companion separately.
-OK means the agent staged the bytes and requested helper launch. The helper
-performs its native fork verification and rollback procedure. Reconnect and
-inspect SYSINFO and UPDATER.LOG; the current agent does not expose a loaded
-resource-fork hash/startup identity sufficient for strong bridge verification.
+Windows/OS2, Win16, and NetWare require a new startup instance, the expected
+startup executable SHA-256, installed executable readback, and an unchanged
+identity after readback. NetWare uses the loader-supplied, volume-qualified
+NLM path; an unavailable path/hash cannot verify. Its tool freezes both
+inputs, reads back staged `SYS:SYSTEM\LLMAGENT.NEW` and `UPDATE.NLM`, then
+sends UPDATE. It never sends console UNLOAD. The helper's weaker recovery
+and replacement of its `.OLD` backup remain separate limitations.
 
-The NetWare tool freezes both local inputs, uploads them as
-`SYS:SYSTEM\LLMAGENT.NEW` and `SYS:SYSTEM\UPDATE.NLM`, and reads each back
-byte-for-byte before sending UPDATE. It never sends console UNLOAD. OK is
-sent before the native handler runs LOAD UPDATE, so it does not prove helper
-launch. Inspect the UPDATE console output and installed NLM after reconnecting;
-the current agent does not expose a loaded-image hash/startup identity.
-The existing helper replaces its `.OLD` backup and provides less recovery
-protection than the Mac updater. Keep independent backups for deployments.
+The Mac tool freezes and validates a classic MacBinary APPL, then compares
+both its forks against startup and fresh disk fingerprints from a new
+instance at the same application location. The resource hash uses explicit
+`sha256-zero-system-16-127-v1` semantics: bytes 16 through 127 are normalized
+to zero because System 7 writes directory metadata there during installation.
+The 16-byte layout header, application-owned area from byte 128 onward,
+resource data, and map remain covered. Header bounds are checked before
+normalization. The data fork uses ordinary SHA-256. See the
+[Mac update details](../agent-mac-system7/README.md).
+The separately installed `llm_updater` is not replaced by this tool.
+
+These are startup-file fingerprints, not memory-image attestation or code
+signatures. They detect an unchanged instance, wrong file, rollback, failed
+reads, and identity changes during verification under the existing trusted
+lab-agent model; they do not protect against a malicious guest.
 
 Neither tool automatically retries an uncertain update transfer/handoff.
 `legacy_wait_for_agent` only establishes reachability. It cannot turn

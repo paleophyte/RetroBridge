@@ -1183,3 +1183,16 @@ visible top-level window with a non-empty title. `CLIPSET <text>` sets
 the clipboard (pair with `KEY ctrl-v` to paste). `REGGET`/`REGSET` are the
 two commands with TAB-delimited arguments instead of space-delimited —
 see "Later additions" above for why.
+
+
+### Mac and NetWare update verification
+
+`legacy_mac_self_update` and `legacy_netware_self_update` now accept
+`wait_for_agent=True` (the default). NetWare uses the same startup hash and
+installed readback verification as Windows/OS2, with a loader-provided NLM
+path. Mac verifies a new Process Manager instance at the original application
+location plus startup and current disk hashes of both forks. Its resource
+hash explicitly normalizes only system-owned bytes 16..127; it still covers
+resource code/data, the map, layout header, and application-owned bytes.
+See [MCP coverage](MCP_COVERAGE.md#update-result-semantics) for the hash format,
+limits, migration from old agents, and remaining NetWare recovery limits.

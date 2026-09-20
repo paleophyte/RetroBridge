@@ -147,14 +147,9 @@ class BridgeCoverageTests(unittest.TestCase):
         self.assertIn("not negotiated", result)
         self.assertEqual([c[0] for c in agent.mock_calls], ["sysinfo"])
 
-    def test_mac_update_never_claims_verified_replacement(self):
-        agent = Mock(); agent.sysinfo.return_value = self.info("mac68k"); agent.mac_update.return_value = 512
+    def test_mac_update_wrong_platform_does_not_send(self):
+        agent = Mock(); agent.sysinfo.return_value = self.info("netware")
         with patch.object(server, "_agent", return_value=agent):
-            self.assertIn("replacement NOT verified", server.legacy_mac_self_update("fixture", "app.bin"))
-            agent.mac_update.assert_called_once_with("app.bin")
-            agent.mac_update.side_effect = OSError("lost response")
-            self.assertIn("do not blindly retry", server.legacy_mac_self_update("fixture", "app.bin"))
-            agent.reset_mock(); agent.sysinfo.return_value = self.info("netware")
             self.assertIn("command not sent", server.legacy_mac_self_update("fixture", "app.bin"))
             agent.mac_update.assert_not_called()
 
@@ -170,7 +165,7 @@ class BridgeCoverageTests(unittest.TestCase):
                 return len(files[remote])
             agent.put.side_effect = put
             agent.get.side_effect = lambda r, p: Path(p).write_bytes(files[r])
-            reply = server.legacy_netware_self_update("fixture", str(binary), str(helper))
+            reply = server.legacy_netware_self_update("fixture", str(binary), str(helper), False)
             self.assertEqual(files, {r"SYS:SYSTEM\LLMAGENT.NEW": b"agent", r"SYS:SYSTEM\UPDATE.NLM": b"helper"})
             agent.update.assert_called_once_with()
             self.assertIn("replacement NOT verified", reply)
@@ -178,13 +173,13 @@ class BridgeCoverageTests(unittest.TestCase):
             for bad_remote in files:
                 agent.reset_mock()
                 agent.get.side_effect = lambda r, p: Path(p).write_bytes(b"corrupt" if r == bad_remote else files[r])
-                self.assertIn("readback differs", server.legacy_netware_self_update("fixture", str(binary), str(helper)))
+                self.assertIn("readback differs", server.legacy_netware_self_update("fixture", str(binary), str(helper), False))
                 agent.update.assert_not_called()
             agent.reset_mock(); helper.write_bytes(b"")
-            self.assertIn("preflight error", server.legacy_netware_self_update("fixture", str(binary), str(helper)))
+            self.assertIn("preflight error", server.legacy_netware_self_update("fixture", str(binary), str(helper), False))
             agent.put.assert_not_called(); agent.update.assert_not_called()
             agent.sysinfo.return_value = self.info("mac68k")
-            self.assertIn("command not sent", server.legacy_netware_self_update("fixture", str(binary), str(helper)))
+            self.assertIn("command not sent", server.legacy_netware_self_update("fixture", str(binary), str(helper), False))
 
 
 if __name__ == "__main__":

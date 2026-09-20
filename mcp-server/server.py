@@ -972,20 +972,88 @@ def legacy_mouse_position(machine: str) -> str:
     return _platform_command(machine, ("mac68k",), "mouse_position")
 
 
+def _mac_resource_sha256(resource: bytes) -> str:
+    """Exclude only Resource Manager directory metadata, not application bytes."""
+    if len(resource) < 256:
+        raise ValueError("resource fork too short")
+    data, mapping, data_size, map_size = (int.from_bytes(resource[n:n + 4], "big") for n in (0, 4, 8, 12))
+    if (not 256 <= data <= len(resource) or not 256 <= mapping <= len(resource)
+            or data_size > len(resource) - data or map_size > len(resource) - mapping):
+        raise ValueError("resource fork header points outside its data/map areas")
+    return hashlib.sha256(resource[:16] + bytes(112) + resource[128:]).hexdigest()
+
+
+def _wait_for_mac_replacement(machine: str, before: dict[str, str],
+                              data_sha: str, resource_sha: str,
+                              timeout_seconds: int = 120, interval_seconds: int = 5,
+                              settle_seconds: int = 15) -> str:
+    """Compare startup and fresh installed-fork hashes on a stable new instance."""
+    time.sleep(max(0, settle_seconds))
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    last = "no response yet"
+    expected = {"agent_data_sha256": data_sha, "agent_resource_sha256": resource_sha,
+                "disk_data_sha256": data_sha, "disk_resource_sha256": resource_sha,
+                "agent_resource_hash_mode": "sha256-zero-system-16-127-v1"}
+    while time.monotonic() < deadline:
+        try:
+            agent = _agent(machine)
+            info = agent.sysinfo()
+            if info.get("os_family") != "mac68k":
+                last = "responding agent is not a Mac"
+            elif not info.get("agent_started") or info["agent_started"] == before.get("agent_started"):
+                last = "outgoing agent still responding or startup identity unavailable"
+            elif not info.get("agent_location") or (before.get("agent_location") and
+                                                     info["agent_location"] != before["agent_location"]):
+                last = "application location unavailable or changed"
+            elif any(info.get(key) != value for key, value in expected.items()):
+                last = "startup or installed application fork differs (wrong build, rollback, or unreadable fork)"
+            else:
+                confirm = agent.sysinfo()
+                if any(confirm.get(key) != info.get(key) for key in
+                       (*expected, "agent_started", "agent_location", "os_family")):
+                    last = "application identity or installed forks changed during verification"
+                else:
+                    return (f"update verified on {machine}: new startup identity and installed application "
+                            f"forks match SHA-256 data={data_sha} resource={resource_sha} "
+                            "(resource system metadata bytes 16..127 normalized)")
+        except (MachineConfigError, AgentAuthError, AgentProtocolError, OSError, ValueError) as e:
+            last = str(e)
+        time.sleep(max(1, interval_seconds))
+    return f"[update NOT verified] timed out on {machine}; last: {last}"
+
+
 @srv.tool()
-def legacy_mac_self_update(machine: str, new_agent_local_path: str) -> str:
+def legacy_mac_self_update(machine: str, new_agent_local_path: str, wait_for_agent: bool = True) -> str:
     """Mac: send a complete Retro68 MacBinary .bin via UPDATE <size>.
     Requires llm_agent and an already-installed llm_updater in the same folder.
     The companion updater must be upgraded separately. Validates the container
-    before transfer. OK accepts staging/helper launch only: this tool does NOT
-    verify replacement. Reconnect with legacy_wait_for_agent, inspect SYSINFO
-    and UPDATER.LOG; reachability alone does not establish installed identity."""
+    before transfer. By default, waits for a new startup identity and matching
+    startup/fresh installed SHA-256 values for BOTH forks at the same location.
+    Resource fingerprints normalize only system-owned metadata bytes 16..127.
+    Older replacement builds lacking identity remain unverified. Disabling the
+    wait reports acceptance only. No automatic retry of the update handoff."""
     try:
         agent = _agent(machine)
-        _require_profile(agent, ("mac68k",))
-        size = agent.mac_update(new_agent_local_path)
-        return (f"Mac update accepted on {machine}: {size} MacBinary bytes; "
-                "replacement NOT verified. Reconnect and inspect SYSINFO and UPDATER.LOG.")
+        before = _require_profile(agent, ("mac68k",))
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = Path(td) / "agent.bin"
+            source = Path(new_agent_local_path)
+            if not 128 <= source.stat().st_size <= 64 * 1024 * 1024:
+                raise ValueError("MacBinary update size outside configured limit")
+            payload = source.read_bytes()
+            data, resource = AgentClient._macbinary_forks(payload)
+            data_sha, resource_sha = hashlib.sha256(data).hexdigest(), _mac_resource_sha256(resource)
+            snapshot.write_bytes(payload)
+            try:
+                size = agent.mac_update(snapshot)
+                result = f"Mac update accepted on {machine}: {size} MacBinary bytes"
+            except (AgentProtocolError, OSError) as e:
+                result = f"Mac update handoff outcome unknown on {machine}: {e}; do not blindly retry"
+            if wait_for_agent:
+                return result + "; " + _wait_for_mac_replacement(machine, before, data_sha, resource_sha)
+            return result + "; replacement NOT verified (waiting disabled)"
+    except ValueError as e:
+        return f"[update preflight error] {e}"
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:
@@ -995,16 +1063,20 @@ def legacy_mac_self_update(machine: str, new_agent_local_path: str) -> str:
 
 
 @srv.tool()
-def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_nlm_local_path: str) -> str:
+def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_nlm_local_path: str,
+                              wait_for_agent: bool = True) -> str:
     """NetWare: stage LLMAGENT.NEW and UPDATE.NLM in SYS:SYSTEM, read both
     back byte-for-byte, then send UPDATE so the agent self-exits.
     Does not use console UNLOAD (which has abended on NetWare 3.12).
-    Acceptance does NOT verify replacement or even helper launch: inspect
-    the UPDATE console output and installed binary after reconnecting. This
-    tool cannot prove loaded-image identity on the current NetWare agent."""
+    By default, waits for a new startup identity, matching startup SHA-256,
+    and installed executable readback. Older replacement builds lacking
+    identity remain unverified. Acceptance alone does not verify helper launch.
+    The helper's existing recovery limitations remain; no handoff is retried."""
     try:
         agent = _agent(machine)
-        _require_profile(agent, ("netware",))
+        before = _require_profile(agent, ("netware",))
+        target = r"SYS:SYSTEM\LLMAGENT.NLM"
+        _check_update_target(before, target)
         with tempfile.TemporaryDirectory() as td:
             binary, helper, scratch = (Path(td) / n for n in ("agent.nlm", "helper.nlm", "readback"))
             binary.write_bytes(Path(new_agent_local_path).read_bytes())
@@ -1013,8 +1085,15 @@ def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_n
                 raise ValueError("NetWare update inputs must be nonempty and at most 64 MiB")
             _stage_verified(agent, binary, r"SYS:SYSTEM\LLMAGENT.NEW", scratch)
             _stage_verified(agent, helper, r"SYS:SYSTEM\UPDATE.NLM", scratch)
-            agent.update()
-        return f"NetWare update accepted on {machine}; replacement NOT verified. Reconnect and inspect updater results."
+            expected = hashlib.sha256(binary.read_bytes()).hexdigest()
+            try:
+                agent.update()
+                result = f"NetWare update accepted on {machine}"
+            except (AgentProtocolError, OSError) as e:
+                result = f"NetWare update handoff outcome unknown on {machine}: {e}; do not blindly retry"
+            if wait_for_agent:
+                return result + "; " + _wait_for_replaced_agent(machine, target, before.get("agent_started"), expected)
+            return result + "; replacement NOT verified (waiting disabled)"
     except ValueError as e:
         return f"[update preflight error] {e}"
     except (MachineConfigError, AgentAuthError) as e:

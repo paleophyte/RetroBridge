@@ -37,6 +37,7 @@
 #undef ferror
 
 #include "nwsock.h"
+#include "../common/update_identity.h"
 #include "font8.h"
 
 #define DEFAULT_PORT     2222
@@ -352,7 +353,7 @@ static int handle_get(const char *path) {
 }
 
 static int handle_sysinfo(void) {
-    static char buf[768];
+    static char buf[1280];
     int len = 0;
     char hdr[32];
     FILE_SERV_INFO si;
@@ -392,7 +393,9 @@ static int handle_sysinfo(void) {
     }
 
     len += sprintf(buf + len, "agent=llm_agent-netware\r\n");
-    len += sprintf(buf + len, "agent_build=keytype22\r\n");
+    len += sprintf(buf + len, "agent_build=%s %s\r\n", __DATE__, __TIME__);
+    len += sprintf(buf + len, "agent_exe=%s\r\nagent_started=%s\r\nagent_sha256=%s\r\n",
+                   g_update_exe, g_update_started, g_update_sha256);
     len += sprintf(buf + len, "stuffkey=%d\r\n", stuffkey_present());
     len += sprintf(buf + len, "clibaux=%d\r\n", file_exists_rb(CLIBAUX_NLM));
     len += sprintf(buf + len, "debug=%d\r\n", g_debug);
@@ -1646,8 +1649,11 @@ static int server_main(void) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    /* Only accept a volume-qualified loader path. Never guess SYS:SYSTEM
+       when the loader did not identify the running image. */
+    if (argc > 0 && argv && argv[0] && strchr(argv[0], ':') &&
+        !strpbrk(argv[0], "\r\n"))
+        update_identity_init(argv[0], (unsigned long)GetCurrentTicks(), (unsigned long)GetNLMID());
     AtUnload(on_unload);
     load_config();
     return server_main();
