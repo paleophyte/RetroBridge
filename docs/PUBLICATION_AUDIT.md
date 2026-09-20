@@ -138,12 +138,12 @@ does not implement reboot. These are not interchangeable “power off” tools.
   the later upload-fix deployment. The original cause remains unconfirmed;
   this is a successful retest, not proof of a specific root-cause fix. See
   the Windows 95 follow-up below.
-- **Win32 EXEC can silently fail to launch.** `run_exec` returns without
-  an error response when CreatePipe or CreateProcess fails, so clients wait
-  until their read timeout. This source defect remains open, but was not
-  proven to cause the original Windows 95 timeout. EXECDETACH has a separate
-  implementation that does return a launch error; that path passed live
-  failure/recovery checks on both Windows 95 clients.
+- **Fixed: Win32 EXEC silently failed to launch.** CreatePipe and
+  CreateProcessA failures now return a diagnostic LEN payload followed by
+  EXIT:-1, preserving the Windows error code across cleanup. The connection
+  remains usable after a complete error response. This was not proven to
+  cause the original Windows 95 timeout. EXECDETACH retains its separate ERR
+  response. See the EXEC launch-error follow-up below.
 - **Fixed: Win32 persistent sessions were misframed after errors.** All
   literal text replies and text headers now use `send_cstr`/`send_all`,
   eliminating the 34 remaining length mismatches after the upload fix.
@@ -1086,3 +1086,47 @@ The new address was authenticated and its binary/configuration compared
 before updating only that host field in the private inventory. The inactive
 DOS copy on the Win16 dual-boot disk was updated and read back; that guest
 stayed in Windows during this follow-up.
+
+### Win32 EXEC launch-error follow-up (2026-09-20)
+
+CreatePipe and CreateProcessA failures no longer return silently. The agent
+sends an ordinary LEN payload naming the failed API and numeric Windows
+error, followed by EXIT:-1. It does not include the requested command in
+the diagnostic. The CreateProcessA error is saved before closing either
+pipe handle so cleanup cannot replace the original error code. Existing
+clients already understand this framing; the shared client returns the
+diagnostic and nonzero exit code, and MCP displays them normally.
+
+The failure response uses checked sends. A successfully delivered response
+leaves the session usable for another command. A partial send instead fails
+the connection, preventing an EXIT or later command reply from being appended
+to an incomplete frame. A launch failure creates no child process. Errors
+reported by a successfully launched shell remain ordinary shell output and
+exit status, and EXECDETACH retains its separate ERR response.
+
+The full host suite passed 34 tests. Production-handler fault injection
+covered both failure points, several Windows errors including 32-bit bounds,
+cleanup that deliberately overwrites the last-error value, exact handle
+closure, subsequent commands, short sends, and disconnection at every byte
+boundary of the failure response. Successful binary output, nonzero child
+exit, and quiet-command heartbeats were also checked. Shared-client tests
+confirm that failure diagnostics return with exit_code=-1 without a protocol
+change.
+
+An optional native fixture, `agent-win32/tests/exec_fixture.c`, includes the
+production handler, injects a pipe-allocation error without exhausting guest
+resources, and triggers a real CreateProcessA failure using a nonexistent
+application. It collects wire output in memory, checks cleanup/error framing,
+and then runs a successful command through the same handler. This fixture
+passed on both Windows 95 guests, NT4, Windows 2000, XP, and Windows 7. It
+does not inject failures into the installed production agent or open a TCP
+listener. See the optional `exec_fixture.exe` Makefile target.
+
+The production build was deployed to all six Win32 endpoints. Full executable
+readback matched the new build and configuration bytes were preserved. Live
+checks passed pipelined EXEC/PING pairs, a shell-reported missing-command
+response followed by PING, shared-client EXEC, and binary-transfer/framing
+smoke tests. Temporary native fixtures and update helpers were removed;
+private executable/configuration backups were retained. This fix does not
+add a command-runtime limit or resolve arbitrary pipe/process API failures
+after a child has successfully started.

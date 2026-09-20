@@ -1051,7 +1051,7 @@ connection rather than inserting an error line into the promised payload.
 Treat connection closure before the declared byte count as a failed
 transfer. Reconnect for another command; do not treat a partial payload as
 a completed file. A complete SIZE:0 response is valid and keeps the session
-usable. These rules do not add a deadline for a connected slow reader.
+usable. See [network deadlines](NETWORK_TIMEOUTS.md) for stalled-reader limits.
 
 `EXEC` runs `cmd.exe /C <cmdline>` (or `command.com /C <cmdline>` on 9x)
 and streams combined stdout+stderr. There's no persisted shell state
@@ -1064,6 +1064,28 @@ If the client disconnects while `EXEC` is still running, the next output
 send or heartbeat send fails; the agent terminates its direct child and
 returns to the accept loop so one abandoned command cannot permanently
 consume the single connection slot.
+
+If Win32 cannot create its output pipe or launch the command interpreter,
+it sends a diagnostic such as `EXEC launch failed: CreateProcessA (Win32
+error 2)` in a normal LEN payload, followed by `EXIT:-1`. The diagnostic names
+the failed API and its Windows error code; it does not echo the command.
+The error is captured before handle cleanup can overwrite it. No child was
+started, and a successfully delivered error keeps the connection usable for
+another command. A disconnected peer instead fails the session through the
+normal checked-send path. An invalid command *inside* a successfully launched
+shell still returns that shell's output and exit code.
+
+This uses the existing EXEC framing; the Python client returns its diagnostic
+in `ExecResult.output` with `exit_code=-1`, and MCP displays both. No client
+protocol update is required. It does not add command cancellation or a total
+runtime limit, or change EXECDETACH's separate ERR response.
+
+`tests/test_win32_exec.py` fault-injects the production handler and socket
+helpers. `make exec_fixture.exe` in `agent-win32` builds an optional native
+fixture that injects a pipe error, triggers a real CreateProcessA failure
+using a nonexistent executable, and checks a subsequent successful EXEC.
+The fixture opens no listener and does not change agent configuration or OS
+executables.
 
 `EXECDETACH` launches a program directly — deliberately *not* through
 `cmd.exe`/`command.com` — and returns immediately after `CreateProcess`

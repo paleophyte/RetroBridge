@@ -16,6 +16,8 @@ Wire protocol, one connection = one session:
                        | "PING\\n" | "QUIT\\n" | "UPDATE\\n" | "AUTOEXEC\\n" | "DEBUG [0|1]\\n" | "SCREENS\\n"
     server -> client (EXEC): repeated "LEN:<n>\\n" + <n> raw bytes, then "EXIT:<code>\\n"
                              (LEN:0 with no bytes may appear as a heartbeat)
+                             Win32 pipe/shell launch failure: diagnostic LEN
+                             payload followed by EXIT:-1; no child started.
     server -> client (EXECDETACH): "OK pid=<pid>\\n" | "ERR:<msg>\\n"
     server -> client (PUT):  "OK\\n" | "ERR:<msg>\\n"
     server -> client (GET):  "SIZE:<n>\\n" + <n> raw bytes, or "ERR:<msg>\\n"

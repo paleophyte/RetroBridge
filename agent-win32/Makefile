@@ -57,7 +57,11 @@ llm_agent.exe: llm_agent.c ../common/session_timeout.h ../common/command_line.h
 update.exe: update.c
 	$(CC) $(CFLAGS) update.c -o update.exe $(LDCOMMON) -ladvapi32
 
+# Optional native regression fixture; does not open an agent listener.
+exec_fixture.exe: tests/exec_fixture.c llm_agent.c ../common/session_timeout.h ../common/command_line.h
+	$(CC) $(CFLAGS) tests/exec_fixture.c -o exec_fixture.exe $(LDFLAGS)
+
 clean:
-	rm -f llm_agent.exe update.exe
+	rm -f llm_agent.exe update.exe exec_fixture.exe
 
 .PHONY: all clean

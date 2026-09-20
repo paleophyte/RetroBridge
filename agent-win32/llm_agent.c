@@ -30,6 +30,8 @@
  *                            appear as a heartbeat during a long-running,
  *                            currently-quiet command - already valid
  *                            under this framing, treat as a no-op.
+ *                            Pipe/shell launch failures return a diagnostic
+ *                            LEN frame and EXIT:-1; no child was started.
  *   server -> client (EXECDETACH): "OK pid=<pid>\n" | "ERR:<msg>\n"
  *   client -> server (PUT):  <size> raw bytes immediately following the PUT line.
  *   server -> client (PUT):  "OK\n" | "ERR:<msg>\n"
@@ -282,6 +284,22 @@ static void build_shell_command(char *out, int outlen, const char *cmdline) {
     out[prefixLen + copyLen] = '\0';
 }
 
+/* Keep launch errors inside the existing EXEC framing. Do not echo the
+   command: it may contain credentials. Checked sends fail the whole session
+   if the peer disconnects partway through the diagnostic. */
+static int exec_launch_error(SOCKET s, const char *api, DWORD error) {
+    char message[128], header[32];
+    wsprintfA(message, "EXEC launch failed: %s (Win32 error %lu)\r\n",
+              api, (unsigned long)error);
+    wsprintfA(header, "LEN:%lu\n", (unsigned long)strlen(message));
+    if (send_cstr(s, header) < 0 ||
+        send_all(s, message, (int)strlen(message)) < 0) return -1;
+    /* send_cstr marks a failed socket even though this function always
+       reports failure to launch to its caller. */
+    send_cstr(s, "EXIT:-1\n");
+    return -1;
+}
+
 static int run_exec(SOCKET s, const char *cmdline) {
     SECURITY_ATTRIBUTES sa;
     HANDLE hReadPipe = NULL, hWritePipe = NULL;
@@ -290,6 +308,7 @@ static int run_exec(SOCKET s, const char *cmdline) {
     char full[LINE_MAX_LEN + 16];
     char buf[READ_CHUNK];
     DWORD exitCode = 1;
+    DWORD launchError;
     BOOL ok;
 
     ZeroMemory(&sa, sizeof(sa));
@@ -298,7 +317,7 @@ static int run_exec(SOCKET s, const char *cmdline) {
     sa.lpSecurityDescriptor = NULL;
 
     if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
-        return -1;
+        return exec_launch_error(s, "CreatePipe", GetLastError());
     }
     /* Read end must NOT be inherited, or the child holds it open and
        ReadFile below never sees EOF. Classic MSDN "redirected pipes" gotcha. */
@@ -322,11 +341,12 @@ static int run_exec(SOCKET s, const char *cmdline) {
 
     ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                          CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    launchError = ok ? 0 : GetLastError();
     CloseHandle(hWritePipe); /* parent's copy - child holds its own */
 
     if (!ok) {
         CloseHandle(hReadPipe);
-        return -1;
+        return exec_launch_error(s, "CreateProcessA", launchError);
     }
 
     /* Poll our direct child (cmd.exe/command.com) instead of blocking on

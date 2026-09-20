@@ -144,6 +144,18 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(self.client.put(self.src, "C:\\file"), len(data))
         self.assertEqual(sock.sent, [b"private-test-token\n", f"PUT C:\\file {len(data)}\n".encode(), data, b"QUIT\n"])
 
+    def test_exec_launch_failure_returns_diagnostic_and_exit(self):
+        for api, error in (("CreatePipe", 8), ("CreateProcessA", 2)):
+            message = f"EXEC launch failed: {api} (Win32 error {error})\r\n".encode()
+            sock = FakeSocket(b"OK\n" + f"LEN:{len(message)}\n".encode()
+                              + message + b"EXIT:-1\n")
+            with patch.object(socket, "create_connection", return_value=sock):
+                result = self.client.exec("echo hello")
+            self.assertEqual(result.output, message)
+            self.assertEqual(result.exit_code, -1)
+            self.assertEqual(sock.sent[-1], b"QUIT\n")
+            self.assertTrue(sock.closed)
+
     def test_invalid_sizes_on_all_payload_operations(self):
         client = AgentClient("test.invalid", 2222, "token", max_response_bytes=4)
         methods = [("get", ("x", self.dst)), ("screenshot", ()), ("screens", ()),
