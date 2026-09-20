@@ -405,3 +405,11 @@ report `SYS0562: The system detected lost data on disk`).
 Same as every other agent in this repo: cleartext pre-shared token,
 isolated lab/host-only network only. See
 [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) "Trust model".
+
+## EXEC lifetime follow-up
+
+EXEC now uses an invocation-specific `LXxxxxxx` output directory. Files left
+by a timed-out or interrupted invocation are retained for recovery and never
+reused by a later EXEC. Missing output does not cause automatic reexecution.
+See [long-running commands](../docs/LONG_RUNNING_COMMANDS.md) for wait/status
+semantics, retained-file cleanup, and live verification.

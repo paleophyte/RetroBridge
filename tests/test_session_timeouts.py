@@ -110,7 +110,7 @@ def compile_run(source):
                        ['-std=c99', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-function', '-Wno-unused-variable',
                         str(c), '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True, timeout=10)
+        subprocess.run([str(exe)], check=True, timeout=10, cwd=directory)
 
 
 class SessionTimeoutTests(unittest.TestCase):

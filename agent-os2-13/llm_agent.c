@@ -322,24 +322,27 @@ static void minimize_self(void) {
  * fails with SYS0032 ("being used by another process"), visible on the
  * agent's own console. Same underlying slow-release pattern already hit
  * during self-update testing (see docs/ARCHITECTURE.md), just here it's
- * consecutive EXEC calls instead of a rename. Fixed with a small rotating
- * pool of temp names instead of one fixed name, so back-to-back EXEC
- * calls (exactly what an LLM harness driving this agent would do) don't
- * collide even if OS/2 hasn't let go of the previous one yet.
+ * consecutive EXEC calls instead of a rename. Each invocation now reserves
+ * a separate directory, including across restart; stale output cannot be
+ * reused. An output-open failure never repeats the command.
  */
-#define EXEC_TMP_SLOTS 8
-static unsigned g_exec_slot = 0;
+#include "../common/exec_spool.h"
 
 static int run_exec(const char *cmdline) {
     FILE *f;
     int rc;
     size_t n;
-    char hdr[32];
+    char hdr[128];
+    char spool[148];
 
-    sprintf(g_tmppath, "LLMOUT%u.TMP", g_exec_slot);
-    g_exec_slot = (g_exec_slot + 1) % EXEC_TMP_SLOTS;
+    if (exec_spool_create(g_exedir, spool, sizeof(spool)) < 0) {
+        send_cstr("ERR:cannot reserve EXEC output directory\n");
+        return -1;
+    }
+    sprintf(g_tmppath, "%s\\OUT.TMP", spool);
 
     if (strlen(cmdline) + strlen(g_tmppath) + 24 >= sizeof(g_cmd)) {
+        rmdir(spool);
         send_cstr("ERR:command too long (use a .CMD)\n");
         return -1;
     }
@@ -348,26 +351,23 @@ static int run_exec(const char *cmdline) {
 
     f = fopen(g_tmppath, "rb");
     if (!f) {
-        /* Fallback without nested quotes (some CMD builds dislike them). */
-        sprintf(g_cmd, "CMD.EXE /C %s > %s", cmdline, g_tmppath);
-        rc = system(g_cmd);
-        f = fopen(g_tmppath, "rb");
-    }
-    if (!f) {
-        sprintf(hdr, "LEN:0\nEXIT:%d\n", rc);
+        sprintf(hdr, "ERR:command executed (status %d); output unavailable; not retried\n", rc);
         send_cstr(hdr);
-        return 0;
+        rmdir(spool);
+        return -1;
     }
     while ((n = fread(g_iobuf, 1, sizeof(g_iobuf), f)) > 0) {
         sprintf(hdr, "LEN:%u\n", (unsigned)n);
         if (send_cstr(hdr) < 0 || send_all(g_iobuf, (int)n) < 0) {
             fclose(f);
             remove(g_tmppath);
+            rmdir(spool);
             return -1;
         }
     }
     fclose(f);
     remove(g_tmppath);
+    rmdir(spool);
     sprintf(hdr, "EXIT:%d\n", rc);
     send_cstr(hdr);
     return 0;

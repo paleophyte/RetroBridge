@@ -31,6 +31,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <process.h>
+#include "../common/exec_spool.h"
 
 /*
  * DosQProcStatus (DOSCALLS.154): undocumented OS/2 2.x process table dump.
@@ -132,7 +133,6 @@ static unsigned short local_htons(unsigned short x) {
 #define DEFAULT_PORT     2222
 #define LINE_MAX_LEN     512
 #define READ_CHUNK       4096
-#define OUT_TMP          "EXEC_OUT.TMP"
 #define PID_FILE         "AGENT.PID"
 #define ERR_NOSUP        "ERR:not supported on OS/2\n"
 #define OS2_CMD_EXE      "C:\\OS2\\CMD.EXE"
@@ -408,36 +408,43 @@ static int run_exec_detach(const char *cmdline) {
 }
 
 #define OS2_CMD_EXE      "C:\\OS2\\CMD.EXE"
-#define EXEC_CMD_NAME    "LLMEXEC.CMD"
-#define EXEC_DONE_NAME   "LLMDONE.FLG"
 
 static int run_exec(const char *cmdline) {
     FILE *f;
     int exit_code = 0;
     size_t n;
     char hdr[80];
-    char inputs[64];
-    char cmdpath[160];
-    char donepath[160];
+    char inputs[224];
+    char spool[148];
+    char cmdpath[208];
+    char donepath[208];
     char obj[128];
     STARTDATA sd;
     ULONG sess_id = 0;
     PID pid = 0;
     APIRET arc;
-    int i;
+    int completed = 0;
+    unsigned long deadline, last_heartbeat;
     char *dir = g_exedir[0] ? g_exedir : "C:\\llmagent";
 
-    sprintf(g_tmppath, "%s\\%s", dir, OUT_TMP);
-    sprintf(cmdpath, "%s\\%s", dir, EXEC_CMD_NAME);
-    sprintf(donepath, "%s\\%s", dir, EXEC_DONE_NAME);
+    if (exec_spool_create(dir, spool, sizeof(spool)) < 0) {
+        send_cstr("ERR:cannot reserve EXEC output directory\n");
+        return -1;
+    }
+    if (strlen(spool) + 9 >= sizeof(g_tmppath)) {
+        rmdir(spool);
+        send_cstr("ERR:EXEC installation path too long\n");
+        return -1;
+    }
+    sprintf(g_tmppath, "%s\\OUT.TMP", spool);
+    sprintf(cmdpath, "%s\\RUN.CMD", spool);
+    sprintf(donepath, "%s\\DONE.FLG", spool);
 
     if (strlen(cmdline) + strlen(g_tmppath) + 32 >= 1000) {
+        rmdir(spool);
         send_cstr("ERR:command too long (use a .CMD)\n");
         return -1;
     }
-
-    remove(g_tmppath);
-    remove(donepath);
 
     /*
      * DosExecPgm/system() are unreliable after DosStartSession relaunch.
@@ -447,12 +454,21 @@ static int run_exec(const char *cmdline) {
      */
     f = fopen(cmdpath, "wb");
     if (!f) {
-        send_cstr("ERR:cannot write LLMEXEC.CMD\n");
+        rmdir(spool);
+        send_cstr("ERR:cannot write EXEC script\n");
         return -1;
     }
     fprintf(f, "%s > %s\r\n", cmdline, g_tmppath);
     fprintf(f, "echo done > %s\r\n", donepath);
-    fclose(f);
+    {
+        int failed = fflush(f) != 0 || ferror(f);
+        if (fclose(f) != 0) failed = 1;
+        if (failed) {
+            remove(cmdpath); rmdir(spool);
+            send_cstr("ERR:cannot finish EXEC script; nothing launched\n");
+            return -1;
+        }
+    }
 
     sprintf(inputs, " /C %s", cmdpath);
 
@@ -474,39 +490,56 @@ static int run_exec(const char *cmdline) {
 
     arc = DosStartSession(&sd, &sess_id, &pid);
     if (arc != 0) {
+        remove(cmdpath); rmdir(spool);
         sprintf(hdr, "ERR:DosStartSession EXEC rc=%lu\n", (unsigned long)arc);
         send_cstr(hdr);
         return -1;
     }
 
-    for (i = 0; i < 600; i++) { /* ~60s */
+    deadline = NET_DEADLINE(60);
+    last_heartbeat = network_ticks();
+    for (;;) {
         f = fopen(donepath, "rb");
         if (f) {
             fclose(f);
             DosSleep(150);
+            completed = 1;
             break;
         }
+        if (NET_EXPIRED(deadline)) break;
         DosSleep(100);
+        if (network_ticks() - last_heartbeat >= 5000UL) {
+            if (send_cstr("LEN:0\n") < 0) return -1;
+            last_heartbeat = network_ticks();
+        }
     }
-    /* Leave LLMEXEC.CMD for diagnosis if output missing; always clear done. */
+    if (!completed) {
+        char reply[256];
+        sprintf(reply, "ERR:still running or completion unknown after 60s; not cancelled; output retained at %s\n", g_tmppath);
+        send_cstr(reply);
+        return -1;
+    }
     remove(donepath);
+    remove(cmdpath);
 
     f = fopen(g_tmppath, "rb");
     if (!f) {
-        sprintf(hdr, "LEN:0\nEXIT:%d\n", exit_code);
-        send_cstr(hdr);
-        return 0;
+        send_cstr("ERR:command ended; output unavailable; not retried\n");
+        rmdir(spool);
+        return -1;
     }
     while ((n = fread(g_iobuf, 1, sizeof(g_iobuf), f)) > 0) {
         sprintf(hdr, "LEN:%u\n", (unsigned)n);
         if (send_cstr(hdr) < 0 || send_all(g_iobuf, (int)n) < 0) {
             fclose(f);
             remove(g_tmppath);
+            rmdir(spool);
             return -1;
         }
     }
     fclose(f);
     remove(g_tmppath);
+    rmdir(spool);
     sprintf(hdr, "EXIT:%d\n", exit_code);
     send_cstr(hdr);
     return 0;

@@ -121,3 +121,11 @@ from agent_client import AgentClient
 Watcom’s PM headers are 32-bit-only (`os2.h` errors on `_M_I86`). Desktop
 capture needs `WinGetScreenPS` / `GpiBitBlt`, so the agent is LX + SO32DLL
 rather than 16-bit TCPIPDLL.
+
+## EXEC lifetime follow-up
+
+EXEC now uses an invocation-specific `LXxxxxxx` output directory. Files left
+by a timed-out or interrupted invocation are retained for recovery and never
+reused by a later EXEC. Missing output does not cause automatic reexecution.
+See [long-running commands](../docs/LONG_RUNNING_COMMANDS.md) for wait/status
+semantics, retained-file cleanup, and live verification.

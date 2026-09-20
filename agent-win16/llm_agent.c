@@ -63,6 +63,7 @@
 #include <string.h>
 #include <dos.h>
 #include <errno.h>
+#include "../common/exec_spool.h"
 
 #define _EXPORT __export
 
@@ -298,6 +299,7 @@ static void get_local_ip(char *out, int outlen) {
 
 static int run_exec(const char *cmdline) {
     FILE *f;
+    char spool[164];
     char outpath[176];
     UINT hi;
     long n;
@@ -308,7 +310,17 @@ static int run_exec(const char *cmdline) {
         return -1;
     }
 
-    sprintf(outpath, "%s\\LLMOUT.TMP", g_exedir);
+    if (exec_spool_create(g_exedir, spool, sizeof(spool)) < 0) {
+        send_cstr("ERR:cannot reserve EXEC output directory\r\n");
+        return -1;
+    }
+    sprintf(outpath, "%s\\OUT.TMP", spool);
+    if (strlen(g_exedir) + strlen(outpath) + strlen(cmdline) + 13 >= sizeof(g_cmd) ||
+        strlen(outpath) + strlen(cmdline) + 1 > 126) {
+        rmdir(spool);
+        send_cstr("ERR:command too long for DOS helper; use a short batch filename\n");
+        return -1;
+    }
 
     /* Do NOT build "COMSPEC /c <cmd> > outpath" and hand it to WinExec --
        on this box, ANY secondary COMMAND.COM /c invocation whose command
@@ -337,17 +349,25 @@ static int run_exec(const char *cmdline) {
        foreground is safe now and is what actually works. */
     hi = WinExec(g_cmd, SW_SHOWNORMAL);
     if (hi <= 32) {
+        rmdir(spool);
         send_cstr("ERR:WinExec failed\r\n");
         return -1;
     }
     {
         DWORD start = GetTickCount();
+        DWORD last_heartbeat = start;
         const DWORD max_exec_wait_ms = 30000UL;
         while (GetModuleUsage((HINSTANCE)hi) > 0) {
             MSG msg;
             if ((GetTickCount() - start) >= max_exec_wait_ms) {
-                send_cstr("ERR:still running after 30s -- use EXECDETACH for long-lived/GUI programs\r\n");
+                char reply[256];
+                sprintf(reply, "ERR:still running after 30s; not cancelled; output retained at %s\r\n", outpath);
+                send_cstr(reply);
                 return -1;
+            }
+            if (GetTickCount() - last_heartbeat >= 5000UL) {
+                if (send_cstr("LEN:0\n") < 0) return -1;
+                last_heartbeat = GetTickCount();
             }
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&msg);
@@ -359,12 +379,14 @@ static int run_exec(const char *cmdline) {
 
     f = fopen(outpath, "rb");
     if (!f) {
-        send_cstr("LEN:0\nEXIT:0\n");
-        return 0;
+        send_cstr("ERR:command ended; output unavailable; not retried\n");
+        rmdir(spool);
+        return -1;
     }
     n = (long)fread(g_execbuf, 1, EXEC_CAP - 1, f);
     fclose(f);
     remove(outpath);
+    rmdir(spool);
     if (n < 0) n = 0;
 
     sprintf(hdr, "LEN:%ld\n", n);

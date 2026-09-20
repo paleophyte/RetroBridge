@@ -185,9 +185,9 @@ does not implement reboot. These are not interchangeable “power off” tools.
   no total runtime cap. An authenticated client making continued progress
   can also retain the server; fairness and minimum transfer rates remain
   separate work.
-  A subsequent source review found Win16 output-file reuse after timeout,
-  OS/2 2.x false success and shared-file reuse after its wait expires, and
-  OS/2 1.3 implicit command reexecution when its output file cannot be opened.
+  **Execution-hazard follow-up fixed:** Win16/OS2 now isolate invocation
+  files, OS/2 2.x reports wait expiry as uncertain rather than successful,
+  and OS/2 1.3 never reruns a command because output cannot be opened.
   See [long-running commands](LONG_RUNNING_COMMANDS.md) for the findings,
   proposed job interface, platform limits, and verification requirements.
 - **Text conversion fixed; localized-system limits remain (2026-09-20).**

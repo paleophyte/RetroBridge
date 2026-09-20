@@ -1,11 +1,11 @@
 # Long-running commands: findings and implementation proposal
 
 Source review against `86cf91b`, 2026-09-20. This document records current
-behavior and a proposed implementation; background job commands are not yet
-implemented. The encoding changes in that commit do not change execution
+findings and a proposed implementation. The execution-hazard follow-up
+below has since been implemented and live-tested. The encoding changes in that commit do not change execution
 lifetime or cancellation.
 
-## Current behavior
+## Original findings (before the execution-hazard fixes below)
 
 | Agent | EXEC behavior | Consequence for long-running work |
 |---|---|---|
@@ -140,3 +140,38 @@ and return to the parent, and restore interrupt vectors on every normal
 exit. Programs that disable interrupts or retain unsafe DOS/driver contexts
 can still starve a monitor. Keep the current installed agent and boot path
 until those experiments establish what can be supported reliably.
+
+## Execution-hazard fixes and verification (2026-09-20)
+
+Win16 and both OS/2 agents now reserve an invocation-specific directory using
+atomic directory creation (`LX` plus six hex digits), skipping old directories
+even after restart. A timed-out child's output cannot be reused by another
+command. Win16's 30-second and OS/2 2.x's 60-second waits emit heartbeats and
+report not-cancelled/uncertain completion on expiry. OS/2 uses its system clock
+rather than counting sleeps. OS/2 1.3 never retries a command because its output
+file cannot be opened; it reports the failure with the returned command status.
+Completed Win16/OS2 2.x EXEC still uses synthetic status zero: observing
+completion does not establish the underlying command's exit status.
+
+Completed invocations remove their known files/directory. Timed-out or
+connection-interrupted invocations retain their files for recovery. Inspect
+and remove those directories only after confirming the child has stopped.
+These retained files are not bounded background-job logs, and no automatic
+orphan deletion is performed. Win16 rejects command tails that cannot fit
+REDIR's DOS invocation rather than silently truncating them.
+
+All three targets built with Open Watcom. Host tests inject wait expiry,
+launch failure, disconnect, preexisting spool directories, and OS/2 1.3
+missing output. They verify single execution, no false completion, heartbeats,
+and separation from the next command. Compiled tests run in temporary
+working directories. All 73 host tests passed at this stage.
+
+Verified deployment preserved configuration and checked startup/executable
+hashes on Win16, OS/2 1.3, and two newer OS/2 guests. A native test child ran
+40 seconds on Win16 and 70 seconds on both newer OS/2 guests. The waits ended
+with explicit unfinished results at 30.0 / 60.1 / 60.2 seconds. A second EXEC
+completed while the first child still ran, and the first child's retained
+output subsequently contained its own start/end markers, without the second
+command's text. The initial OS/2 sleep-count loop exceeded its intended
+60-second deadline; the system-clock version fixed that live discrepancy.
+An OS/2 1.3 test child preserved exit status 7. Test files were removed.

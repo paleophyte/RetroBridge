@@ -536,3 +536,11 @@ of whatever was actually free in that WFW session at the time).
 | `build.bat` | Open Watcom build (`-bt=windows`, Winsock 1.1, emits a `.map`) |
 | `make_floppy.py` | Builds `llm_agent_win16.flp` with 8.3 names |
 | `LLMAGENT.INI.example` | `port=` / `token=` (guest name: `LLMAGENT.INI`) |
+
+## EXEC lifetime follow-up
+
+EXEC now uses an invocation-specific `LXxxxxxx` output directory. Files left
+by a timed-out or interrupted invocation are retained for recovery and never
+reused by a later EXEC. Missing output does not cause automatic reexecution.
+See [long-running commands](../docs/LONG_RUNNING_COMMANDS.md) for wait/status
+semantics, retained-file cleanup, and live verification.
