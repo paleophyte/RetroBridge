@@ -297,6 +297,65 @@ class AgentClient:
         self._numbers(x=x, y=y, button=button)
         self._simple_command(f"CLICK {x} {y} {button}")
 
+    def double_click(self, x: int, y: int, button: int = 1) -> None:
+        """Mac: native double-click delivery (only the left button exists)."""
+        self._numbers(x=x, y=y, button=button)
+        if button != 1 or not (-32768 <= x <= 32767 and -32768 <= y <= 32767):
+            raise AgentInputError("Mac double-click needs signed 16-bit coordinates and button=1")
+        self._simple_command(f"DBLCLICK {x} {y} {button}")
+
+    def mouse_position(self) -> dict[str, int]:
+        """Mac: global cursor coordinates and current button state."""
+        with self._command_session("MOUSEPOS") as sock:
+            header = self._recv_line(sock)
+            if not header.startswith("SIZE:"):
+                raise AgentProtocolError(f"unexpected MOUSEPOS response: {header!r}")
+            data = self._recv_exact(sock, self._size(header[5:]), self.max_response_bytes)
+            values: dict[str, int] = {}
+            for line in data.decode("ascii", "replace").splitlines():
+                key, sep, value = line.partition("=")
+                if not sep or key not in ("x", "y", "button") or key in values:
+                    raise AgentProtocolError("invalid MOUSEPOS fields")
+                values[key] = self._integer(value, signed=key != "button", maximum=1 if key == "button" else 32767)
+                if key != "button" and values[key] < -32768:
+                    raise AgentProtocolError("MOUSEPOS coordinate outside signed 16-bit range")
+            if set(values) != {"x", "y", "button"}:
+                raise AgentProtocolError("incomplete MOUSEPOS response")
+            return values
+
+    def winclose(self, title: str) -> None:
+        """OS/2: request close/cancel for all case-insensitive exact title matches."""
+        self._field(title, "title")
+        if not title.strip():
+            raise AgentInputError("window title must not be empty")
+        self._simple_command(f"WINCLOSE {title}")
+
+    def mac_update(self, local_path: str | Path) -> int:
+        """Mac: transfer one MacBinary application. OK accepts the handoff only.
+
+        The installed companion updater is not replaced. This is deliberately
+        separate from the bare UPDATE command used by Win16 and NetWare.
+        """
+        path = Path(local_path)
+        if not 128 <= path.stat().st_size <= min(self.max_response_bytes, 2147483647):
+            raise AgentInputError("MacBinary update size outside configured limit")
+        data = path.read_bytes()  # Freeze the bytes before sending the size.
+        if not 128 <= len(data) <= min(self.max_response_bytes, 2147483647):
+            raise AgentInputError("MacBinary update size outside configured limit")
+        dsize = int.from_bytes(data[83:87], "big")
+        rsize = int.from_bytes(data[87:91], "big")
+        expected = 128 + ((dsize + 127) & ~127) + ((rsize + 127) & ~127)
+        if (data[0] or not 1 <= data[1] <= 63 or data[65:69] != b"APPL"
+                or any(data[i] for i in (74, 82, 120, 121)) or rsize < 256
+                or dsize > 0x7FFFFF00 or rsize > 0x7FFFFF00 or len(data) != expected):
+            raise AgentInputError("expected a classic MacBinary APPL with complete padded forks")
+        with self._command_session(f"UPDATE {len(data)}") as sock:
+            sock.sendall(data)
+            reply = self._recv_line(sock)
+            if reply != "OK":
+                raise AgentProtocolError(reply or "connection closed before UPDATE acknowledgment")
+        return len(data)
+
     def key(self, *keyspecs: str) -> None:
         """Send one or more keys. NetWare batches them in a single StuffKey run."""
         parts: list[str] = []

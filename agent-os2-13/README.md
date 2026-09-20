@@ -7,6 +7,11 @@ itself; it speaks the **same** token-authed TCP wire protocol, so
 [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through the repo's
 `legacy_*` MCP tools with no protocol fork.
 
+`legacy_winclose(machine, title)` exposes the native WINCLOSE operation:
+close/cancel requests to all exact title matches, ignoring case. Apps may
+prompt or refuse; acknowledgment does not prove closure. See
+[MCP coverage](../docs/MCP_COVERAGE.md) and `legacy_capabilities` for limits.
+
 This is a genuinely separate build, not a recompile of `../agent-os2` for a
 smaller target: **OS/2 1.3 has no 32-bit kernel at all** (that arrived with
 2.0), so everything here is 16-bit NE, built with Open Watcom's `os21x`

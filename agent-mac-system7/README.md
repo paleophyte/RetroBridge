@@ -70,9 +70,12 @@ windows or clipboard. `CLICK`/`DBLCLICK`/`KEY`/`TYPE` are implemented;
 the command summary above describes their current limits. The investigation
 below includes superseded experiments, not additional current restrictions.
 
-The MCP bridge exposes only part of this surface: `DBLCLICK`, `MOUSEPOS`,
-and the Mac-specific `UPDATE <size>` transfer need a custom protocol client.
-Generic `AgentClient.update()` sends a bare `UPDATE` and does not work here.
+The MCP bridge exposes `DBLCLICK` as `legacy_double_click`, `MOUSEPOS` as
+`legacy_mouse_position`, and the Mac-specific `UPDATE <size>` transfer as
+`legacy_mac_self_update`. The shared client has corresponding `double_click`,
+`mouse_position`, and `mac_update` methods. Generic `AgentClient.update()`
+sends a bare `UPDATE` and does not work here. `legacy_capabilities` describes
+platform coverage and limits without probing mutating commands.
 See the [publication audit](../docs/PUBLICATION_AUDIT.md) for additional
 update and file-transfer limits. Update prepares a separate application and
 retains the previous version for rollback; both the agent and companion
@@ -240,10 +243,11 @@ Manager accepted launching `llm_updater`. The agent then requests normal
 cleanup/exit. A missing helper or failed helper launch returns `ERR` and
 keeps the agent running. The reply does not confirm successful replacement;
 reconnect and check `SYSINFO` and `UPDATER.LOG` after an update.
-Not yet wired into `agent_client.py`'s generic `update()`/`legacy_self_update` bridge tool;
-driving it today means opening the socket directly (see
-`mcp-server/agent_client.py`'s wire-protocol docstring for the frame
-shapes GET/PUT already use, which UPDATE's staging step follows).
+Use `legacy_mac_self_update(machine, new_agent_local_path)` or
+`AgentClient.mac_update(path)` with the Retro68 `.bin`. The generic
+`legacy_self_update` tool is for Windows/OS2. The Mac tool validates the
+container before transfer and reports replacement **NOT verified**, because
+acceptance and reachability do not establish loaded-image identity.
 
 Both `PUT` and `UPDATE` reject failed writes, flushes, and closes, and drain
 the declared payload after local file errors so the next command remains

@@ -1,6 +1,6 @@
 """MCP bridge/server exposing shell exec + file transfer + screenshot +
 input injection on legacy Windows boxes (WFW 3.11, 95/98/ME/NT4/2000/XP),
-FreeDOS, OS/2 (1.3 and 2.11), and NetWare to an LLM tool-calling client.
+FreeDOS, OS/2 (1.3 and 2.11), NetWare, and classic Mac System 7 to an LLM client.
 
 Supports multiple legacy machines from one bridge process: each is a
 section in machines.ini (see machines.ini.example), and every tool takes
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import ntpath
 import os
 import tempfile
@@ -41,6 +42,7 @@ from mcp.server.mcpserver import Image, MCPServer
 from PIL import Image as PILImage
 
 from agent_client import AgentAuthError, AgentClient, AgentProtocolError
+from capabilities import describe as describe_capabilities, profile_for
 from machines import MachineConfig, MachineConfigError, load_machines
 
 MACHINES_FILE = Path(
@@ -73,11 +75,13 @@ srv = MCPServer(
         "Windows 95/98/ME/NT4/2000/XP, Windows for Workgroups 3.11 "
         "(agent-win16), FreeDOS (agent-dos), OS/2 2.x "
         "(agent-os2), OS/2 1.3 (agent-os2-13, a separate 16-bit build), "
-        "and NetWare 3.12+ (agent-netware). "
+        "NetWare 3.12+ (agent-netware), and classic Mac System 7 (agent-mac-system7). "
         "Run shell commands, transfer files, take screenshots, "
         "and send keyboard input. Every tool takes a `machine` argument "
         "naming which configured machine to target - call "
         "legacy_list_machines first if you don't already know the name. "
+        "Call legacy_capabilities for SYSINFO-based platform tools and limitations; "
+        "this is advisory, not negotiated support for an arbitrary installed build. "
         "Use legacy_screenshot before legacy_click/legacy_key when you "
         "don't already know current on-screen coordinates. FreeDOS agents "
         "support ping/exec/upload/download/sysinfo/reboot plus text-mode "
@@ -139,9 +143,10 @@ def legacy_list_machines() -> str:
 
 @srv.tool()
 def legacy_exec(machine: str, command: str) -> str:
-    """Run a command line on the named legacy machine via cmd.exe /C and
-    return combined stdout+stderr plus the exit code. One-shot per call
-    (no persisted shell state / working directory across calls)."""
+    """Run a command using the target platform's shell/console command handler.
+    Returns captured output and exit status where supported; NetWare provides
+    no output capture, and Mac has no shell. One-shot per call with no persisted
+    shell state. Synchronous commands can occupy a single-client agent."""
     try:
         result = _agent(machine).exec(command)
     except (MachineConfigError, AgentAuthError) as e:
@@ -470,12 +475,19 @@ def legacy_shutdown(machine: str, confirm: bool = False) -> str:
 
 
 @srv.tool()
-def legacy_winlist(machine: str) -> str:
+def legacy_winlist(machine: str, parent_hwnd: int | None = None) -> str:
     """List visible top-level windows (handle, position/size, class,
     title) on the named legacy machine. Use this to find dialogs/buttons
-    by title instead of screenshotting and guessing pixel coordinates."""
+    by title instead of screenshotting and guessing pixel coordinates.
+    Win16 only: parent_hwnd lists immediate child controls, with titles
+    formatted as '<control id>:<text>'. Omit it for top-level windows."""
     try:
-        windows = _agent(machine).winlist()
+        agent = _agent(machine)
+        if parent_hwnd is not None:
+            _require_profile(agent, ("win16",))
+            windows = agent.winlist(parent_hwnd)
+        else:
+            windows = agent.winlist()
     except (MachineConfigError, AgentAuthError) as e:
         return f"[auth/config error] {e}"
     except AgentProtocolError as e:
@@ -816,6 +828,171 @@ def legacy_win16_self_update(
         msg += "\n" + _wait_for_replaced_agent(
             machine, remote_target, before.get("agent_started"), expected)
     return msg
+
+
+def _require_profile(agent: AgentClient, profiles: tuple[str, ...]) -> dict[str, str]:
+    info = agent.sysinfo()
+    profile = profile_for(info)
+    if profile not in profiles:
+        raise AgentProtocolError(
+            f"tool requires {' / '.join(profiles)}; SYSINFO identifies {profile}; command not sent")
+    return info
+
+
+def _platform_command(machine: str, profiles: tuple[str, ...], method: str, *args) -> str:
+    """Keep platform guards/error reporting consistent for extension tools."""
+    try:
+        agent = _agent(machine)
+        _require_profile(agent, profiles)
+        result = getattr(agent, method)(*args)
+        return "OK (request accepted)" if result is None else json.dumps(result, ensure_ascii=True)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol/input error] {e}"
+    except OSError as e:
+        return f"[connection/file error] {e}"
+
+
+@srv.tool()
+def legacy_capabilities(machine: str) -> str:
+    """Read SYSINFO and report advisory tool coverage and platform limits.
+    Does not probe mutating commands. Profiles describe this source tree;
+    older/custom builds may differ. Unknown platforms get no inferred support."""
+    try:
+        return json.dumps(describe_capabilities(_agent(machine).sysinfo()), indent=2)
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol error] {e}"
+    except OSError as e:
+        return f"[connection error] {e}"
+
+
+@srv.tool()
+def legacy_winmsg(machine: str, hwnd: int, msg: int, wparam: int = 0, lparam: int = 0) -> str:
+    """Win16: synchronous SendMessage; returns numeric LRESULT.
+    Use handles from legacy_winlist. Only scalar parameters are transferred;
+    strings/buffers/pointers are not marshalled. Use Win16 message constants;
+    control-message numbers can differ from Win32. A modal dialog can block the
+    agent; use legacy_postmsg for actions that may open one."""
+    return _platform_command(machine, ("win16",), "winmsg", hwnd, msg, wparam, lparam)
+
+
+@srv.tool()
+def legacy_postmsg(machine: str, hwnd: int, msg: int, wparam: int = 0, lparam: int = 0) -> str:
+    """Win16: queue PostMessage without waiting for the UI to process it.
+    Win16 message constants and scalar parameters only; no pointer/buffer
+    marshalling. Suitable for actions that may open modal dialogs. OK means
+    queued, not that the UI action finished."""
+    return _platform_command(machine, ("win16",), "postmsg", hwnd, msg, wparam, lparam)
+
+
+@srv.tool()
+def legacy_lbgettext(machine: str, hwnd: int, index: int) -> str:
+    """Win16: read one zero-based item from a string-backed LISTBOX.
+    Use WINLIST children to find the control. Does not select an item.
+    Owner-drawn controls without LBS_HASSTRINGS and text over 32767 bytes
+    are rejected by the agent."""
+    return _platform_command(machine, ("win16",), "lbgettext", hwnd, index)
+
+
+@srv.tool()
+def legacy_winclose(machine: str, title: str) -> str:
+    """OS/2 1.3/2.x: request close/cancel for ALL exact title matches,
+    ignoring case. Use legacy_winlist first. Apps can prompt or refuse;
+    OK acknowledges posting the requests, not completed closure."""
+    return _platform_command(machine, ("os2", "os2-13"), "winclose", title)
+
+
+@srv.tool()
+def legacy_screens(machine: str) -> str:
+    """NetWare: list CLIB screens as [id, displayed, name] rows.
+    This lists screens; it does not switch the active console screen."""
+    return _platform_command(machine, ("netware",), "screens")
+
+
+@srv.tool()
+def legacy_autoexec(machine: str) -> str:
+    """NetWare: check/add CLIBAUX and LLMAGENT startup loads in AUTOEXEC.NCF.
+    May edit SYS:SYSTEM\\AUTOEXEC.NCF, retaining LLMAUTO.BAK. Ambiguous or
+    reversed entries fail without editing. Does not interpret other NCF files
+    or prove a successful boot. Existing recovery files can block a new edit."""
+    return _platform_command(machine, ("netware",), "autoexec")
+
+
+@srv.tool()
+def legacy_debug(machine: str, enabled: bool | None = None) -> str:
+    """NetWare: query logging (omit enabled), enable it, or disable it.
+    Enabling TRUNCATES SYS:SYSTEM\\LLMAGENT.LOG. Download an existing log
+    before enabling if needed; download the new log before disabling."""
+    return _platform_command(machine, ("netware",), "debug", enabled)
+
+
+@srv.tool()
+def legacy_double_click(machine: str, x: int, y: int, button: int = 1) -> str:
+    """Mac: double-click at global screen coordinates; only button=1 exists.
+    Inspect a current screenshot first. Uses the agent's DBLCLICK command."""
+    return _platform_command(machine, ("mac68k",), "double_click", x, y, button)
+
+
+@srv.tool()
+def legacy_mouse_position(machine: str) -> str:
+    """Mac: read global x/y coordinates and button state (0=released, 1=down)."""
+    return _platform_command(machine, ("mac68k",), "mouse_position")
+
+
+@srv.tool()
+def legacy_mac_self_update(machine: str, new_agent_local_path: str) -> str:
+    """Mac: send a complete Retro68 MacBinary .bin via UPDATE <size>.
+    Requires llm_agent and an already-installed llm_updater in the same folder.
+    The companion updater must be upgraded separately. Validates the container
+    before transfer. OK accepts staging/helper launch only: this tool does NOT
+    verify replacement. Reconnect with legacy_wait_for_agent, inspect SYSINFO
+    and UPDATER.LOG; reachability alone does not establish installed identity."""
+    try:
+        agent = _agent(machine)
+        _require_profile(agent, ("mac68k",))
+        size = agent.mac_update(new_agent_local_path)
+        return (f"Mac update accepted on {machine}: {size} MacBinary bytes; "
+                "replacement NOT verified. Reconnect and inspect SYSINFO and UPDATER.LOG.")
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol/input error] {e}; replacement NOT verified"
+    except OSError as e:
+        return f"[connection/file error] {e}; replacement NOT verified; do not blindly retry an uncertain handoff"
+
+
+@srv.tool()
+def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_nlm_local_path: str) -> str:
+    """NetWare: stage LLMAGENT.NEW and UPDATE.NLM in SYS:SYSTEM, read both
+    back byte-for-byte, then send UPDATE so the agent self-exits.
+    Does not use console UNLOAD (which has abended on NetWare 3.12).
+    Acceptance does NOT verify replacement or even helper launch: inspect
+    the UPDATE console output and installed binary after reconnecting. This
+    tool cannot prove loaded-image identity on the current NetWare agent."""
+    try:
+        agent = _agent(machine)
+        _require_profile(agent, ("netware",))
+        with tempfile.TemporaryDirectory() as td:
+            binary, helper, scratch = (Path(td) / n for n in ("agent.nlm", "helper.nlm", "readback"))
+            binary.write_bytes(Path(new_agent_local_path).read_bytes())
+            helper.write_bytes(Path(update_nlm_local_path).read_bytes())
+            if any(not 0 < p.stat().st_size <= 64 * 1024 * 1024 for p in (binary, helper)):
+                raise ValueError("NetWare update inputs must be nonempty and at most 64 MiB")
+            _stage_verified(agent, binary, r"SYS:SYSTEM\LLMAGENT.NEW", scratch)
+            _stage_verified(agent, helper, r"SYS:SYSTEM\UPDATE.NLM", scratch)
+            agent.update()
+        return f"NetWare update accepted on {machine}; replacement NOT verified. Reconnect and inspect updater results."
+    except ValueError as e:
+        return f"[update preflight error] {e}"
+    except (MachineConfigError, AgentAuthError) as e:
+        return f"[auth/config error] {e}"
+    except AgentProtocolError as e:
+        return f"[protocol/input error] {e}; replacement NOT verified"
+    except OSError as e:
+        return f"[connection/file error] {e}; replacement NOT verified; do not blindly retry an uncertain handoff"
 
 
 if __name__ == "__main__":

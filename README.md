@@ -256,6 +256,9 @@ naming the `machines.ini` section to target (call `legacy_list_machines`
 first if you don't remember the exact name):
 
 - `legacy_list_machines`
+- `legacy_capabilities` — read `SYSINFO` and return advisory platform tools
+  and limitations. This describes current source coverage, not negotiated
+  support for every installed build. See [MCP coverage](docs/MCP_COVERAGE.md).
 - `legacy_exec`, `legacy_exec_detach`, `legacy_ping` — run a command,
   launch a command without waiting, check connectivity. Use
   `legacy_exec_detach` for GUI apps and long-running helpers.
@@ -267,7 +270,17 @@ first if you don't remember the exact name):
 - `legacy_ps`, `legacy_kill` — list/terminate processes by PID
 - `legacy_sysinfo` — OS version, memory, disk space, computer name
 - `legacy_winlist` — visible top-level windows (title/class/position),
-  useful for finding dialogs/buttons without screenshot-guessing
+  useful for finding dialogs/buttons without screenshot-guessing; Win16
+  also accepts `parent_hwnd` to inspect immediate child controls
+- `legacy_winmsg`, `legacy_postmsg`, `legacy_lbgettext` — Win16 scalar
+  window messages and listbox text. Use Win16 constants; prefer queued
+  `postmsg` for actions that could open a modal dialog.
+- `legacy_winclose` — OS/2 close/cancel requests for all exact title matches
+- `legacy_screens`, `legacy_autoexec`, `legacy_debug` — NetWare console
+  screens, startup-load maintenance, and logging. `autoexec` can edit the
+  startup file; enabling debug truncates the existing agent log.
+- `legacy_double_click`, `legacy_mouse_position` — Mac double-click and
+  cursor/button-state queries
 - `legacy_clipboard_set` — set the clipboard (pair with
   `legacy_key(machine, 'ctrl-v')` to paste — more reliable than
   `legacy_type` for exact strings like product keys)
@@ -294,6 +307,11 @@ first if you don't remember the exact name):
   through Win16's staged `UPDATE` flow. Replacement builds without identity
   fields report **not verified**; disabling the wait reports acceptance only. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update).
+- `legacy_mac_self_update` — sends a MacBinary `.bin` to the installed
+  companion updater; `legacy_netware_self_update` — stages and reads back
+  the NLM and helper before `UPDATE`. Both report **replacement NOT verified**:
+  these agents lack the loaded-image identity needed for the verification
+  above. Acceptance or a subsequent PING does not prove replacement.
 
 `legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not
 unlock a locked/secure-desktop screen — that's Windows intentionally

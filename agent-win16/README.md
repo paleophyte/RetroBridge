@@ -28,6 +28,13 @@ so [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through th
 
 Everything else (`CLIPSET`, `REG*`) returns `ERR:not supported on Windows 3.11`.
 
+The MCP bridge exposes `legacy_winlist(..., parent_hwnd=...)`, `legacy_winmsg`,
+`legacy_postmsg`, and `legacy_lbgettext` for these window/control operations.
+Use Win16 message constants, which can differ from Win32. Only scalar message
+parameters are passed; pointer-bearing messages are not marshalled. Prefer
+queued `legacy_postmsg` for actions that might open a modal dialog. See
+[MCP coverage](../docs/MCP_COVERAGE.md) and `legacy_capabilities` for limits.
+
 ### UPDATE: self-update without a full REBOOT
 
 Do **not** `PUT` a new `LLMAGENT.EXE` over the running one. Windows 3.1

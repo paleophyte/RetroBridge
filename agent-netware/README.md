@@ -27,6 +27,11 @@ header).
 
 Everything else returns `ERR:not supported on NetWare`.
 
+MCP tools now expose the platform extensions: `legacy_screens`,
+`legacy_autoexec`, `legacy_debug`, and `legacy_netware_self_update`.
+`legacy_capabilities` returns advisory coverage from SYSINFO. See
+[MCP coverage](../docs/MCP_COVERAGE.md) for arguments and limitations.
+
 Console logging is quiet by default. Prefer `DEBUG 1` over editing the INI for
 short sessions: enable → exercise → `GET SYS:SYSTEM\LLMAGENT.LOG` → `DEBUG 0`.
 Boot-time `debug=1` in `SYS:SYSTEM\LLMAGENT.INI` still works. Do **not** leave the
@@ -114,6 +119,13 @@ has abended on this 3.12 lab box.
 
 `UPDATE.NLM` waits for the agent to exit, replaces it, then runs `LOAD LLMAGENT`. Expect a brief
 disconnect; reconnect and `PING`.
+
+`legacy_netware_self_update(machine, new_agent_local_path, update_nlm_local_path)`
+freezes and stages both local files and reads both back before sending UPDATE.
+It reports **replacement NOT verified**: the agent acknowledges before loading
+the helper and does not expose a loaded-image hash/startup identity. PING
+proves reachability only. Inspect UPDATE's console output and the installed
+NLM; retain an independent backup because the helper replaces its `.OLD` file.
 
 Trust model unchanged: cleartext token, lab/host-only network only.
 

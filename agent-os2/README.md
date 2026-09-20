@@ -6,6 +6,11 @@ it speaks the **same** token-authed TCP wire protocol as FreeDOS/Windows, so
 [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through the repo's
 `legacy_*` MCP tools with no protocol fork.
 
+`legacy_winclose(machine, title)` exposes the native WINCLOSE operation:
+close/cancel requests to all exact title matches, ignoring case. Apps may
+prompt or refuse; acknowledgment does not prove closure. See
+[MCP coverage](../docs/MCP_COVERAGE.md) and `legacy_capabilities` for limits.
+
 Uses IBM **SO32DLL** / **TCP32DLL** (Socket/MPTS) and PM (`PMWIN`/`PMGPI`) for
 desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 `LIBPATH`.

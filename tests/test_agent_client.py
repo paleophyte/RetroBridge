@@ -56,7 +56,7 @@ class ClientTests(unittest.TestCase):
             for method, args in (
                 ("exec", (bad,)), ("exec_detach", (bad,)),
                 ("get", (bad, self.dst)), ("put", (self.src, bad)),
-                ("key", (bad,)), ("type_text", (bad,)), ("clipboard_set", (bad,))):
+                ("key", (bad,)), ("type_text", (bad,)), ("clipboard_set", (bad,)), ("winclose", (bad,))):
                 with self.subTest(method=method, bad=repr(bad)):
                     self.reject(method, *args)
 
@@ -70,7 +70,7 @@ class ClientTests(unittest.TestCase):
                         self.reject(method, *args)
 
     def test_numbers_are_not_string_interpolation_channels(self):
-        for method, args in (("click", [1, 2, 1]), ("pskill", [12]),
+        for method, args in (("click", [1, 2, 1]), ("double_click", [1, 2, 1]), ("pskill", [12]),
                               ("winlist", [12]), ("winmsg", [1, 2, 3, 4]),
                               ("postmsg", [1, 2, 3, 4]), ("lbgettext", [1, 2])):
             for index in range(len(args)):
@@ -108,6 +108,9 @@ class ClientTests(unittest.TestCase):
             ("get", ("C:\\space name", self.dst), b"GET C:\\space name\n", b"SIZE:3\n\x00\r\n"),
             ("screenshot", (), b"SCREENSHOT\n", b"SIZE:0\n"),
             ("click", (1, 2), b"CLICK 1 2 1\n", b"OK\n"),
+            ("double_click", (1, 2), b"DBLCLICK 1 2 1\n", b"OK\n"),
+            ("winclose", ("Settings",), b"WINCLOSE Settings\n", b"OK\n"),
+            ("mouse_position", (), b"MOUSEPOS\n", b"SIZE:23\nx=-2\r\ny=123\r\nbutton=0\r\n"),
             ("key", ("down,up", "enter"), b"KEY down up enter\n", b"OK\n"),
             ("type_text", ("text",), b"TYPE text\n", b"OK\n"),
             ("clipboard_set", ("text",), b"CLIPSET text\n", b"OK\n"),
@@ -160,7 +163,7 @@ class ClientTests(unittest.TestCase):
         client = AgentClient("test.invalid", 2222, "token", max_response_bytes=4)
         methods = [("get", ("x", self.dst)), ("screenshot", ()), ("screens", ()),
                    ("pslist", ()), ("sysinfo", ()), ("winlist", ()),
-                   ("reg_get", ("HKLM", "Software", "X"))]
+                   ("reg_get", ("HKLM", "Software", "X")), ("mouse_position", ())]
         self.dst.write_bytes(b"preserve")
         for method, args in methods:
             for size in (b"-1", b"+1", b" 1", b"1x", b"5", b"9" * 5000):

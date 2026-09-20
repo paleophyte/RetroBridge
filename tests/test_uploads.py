@@ -256,7 +256,9 @@ class UploadTests(unittest.TestCase):
 '''.replace("OPEN_ARGS", '"23"' if update else '"sample.bin 23"').replace("CALL", call)
                         main = main.replace("EXTRA_CHECKS", extra)
                         cfile = root / "upload.c"
-                        exe = root / ("upload.exe" if os.name == "nt" else "upload")
+                        # Windows scanners may briefly retain a just-run image.
+                        # Each case gets its own executable rather than relinking it.
+                        exe = root / (f"upload-{port}-{int(update)}" + (".exe" if os.name == "nt" else ""))
                         cfile.write_text(STUBS + handler + main, encoding="utf-8")
                         compiler = shlex.split(os.environ.get("CC", "gcc"))
                         subprocess.run(compiler + ["-std=c99", "-Wall", "-Wextra", "-Werror",

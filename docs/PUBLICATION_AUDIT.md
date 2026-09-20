@@ -76,8 +76,8 @@ or error path was exercised. Per-port READMEs retain detailed restrictions.
 | OS/2 2.x | Shell plus detached session | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE, clipboard; no registry | List / kill | EXE helper |
 | OS/2 1.3 | Shell plus detached child | PUT/GET; PM desktop BMP | PM input, WINLIST/WINCLOSE; no clipboard/registry | PSTAT parsing / kill | EXE helper plus SELFEXIT |
 | Win16 | DOS helper `EXEC`; WinExec detach, no real PID | PUT/GET; desktop BMP | Journal input unreliable; window/message/listbox primitives; no clipboard/registry | ToolHelp task handles | UPDATE + RESTART.EXE; staged update changes committed |
-| NetWare | Console `system()`; no output capture or detach | PUT/GET; selected console text BMP | StuffKey or console fallback; SCREENS; no GUI windows/clipboard | Unsupported | UPDATE.NLM; no dedicated MCP wrapper |
-| Mac System 7 | No shell or detach | Data fork only; main-screen BMP | Left click/double-click, US keyboard; window/clipboard commands refuse; drag incomplete | List / request application quit | MacBinary `UPDATE <size>`; no MCP wrapper |
+| NetWare | Console `system()`; no output capture or detach | PUT/GET; selected console text BMP | StuffKey or console fallback; SCREENS; no GUI windows/clipboard | Unsupported | UPDATE.NLM via `legacy_netware_self_update`; replacement unverified |
+| Mac System 7 | No shell or detach | Data fork only; main-screen BMP | Left click/double-click, US keyboard; window/clipboard commands refuse; drag incomplete | List / request application quit | MacBinary `UPDATE <size>` via `legacy_mac_self_update`; replacement unverified |
 
 Power behavior also differs: Win32 and Mac implement reboot/shutdown;
 DOS and both OS/2 ports implement reboot but reject shutdown. Win16
@@ -191,13 +191,14 @@ does not implement reboot. These are not interchangeable “power off” tools.
   localized systems. The client-framing fix now rejects non-ASCII tokens
   instead of silently dropping bytes; the earlier inventory fix disabled
   ConfigParser interpolation so percent characters remain literal.
-- **Some implemented commands are unreachable through MCP.** The bridge
-  registers 26 tools, but provides no tools for Win16 WINMSG/POSTMSG/
-  LBGETTEXT or WINLIST's parent argument; NetWare SCREENS/AUTOEXEC/DEBUG/
-  UPDATE; OS/2 WINCLOSE; or Mac DBLCLICK/MOUSEPOS/MacBinary UPDATE. Some
-  have `AgentClient` methods, others require a custom wire client. A shared
-  protocol does not imply complete MCP coverage. There is no capability
-  negotiation command or consistent build identifier across all ports.
+- **MCP coverage expanded (2026-09-20).** All listed gaps now have wrappers:
+  Win16 WINMSG/POSTMSG/LBGETTEXT and WINLIST's parent argument; NetWare
+  SCREENS/AUTOEXEC/DEBUG/UPDATE; OS/2 WINCLOSE; Mac DBLCLICK/MOUSEPOS and
+  MacBinary UPDATE. The bridge registers 38 tools, including advisory
+  SYSINFO-based capability profiles. Native capability negotiation and
+  consistent loaded-image identity across all ports remain open. Mac/NetWare
+  update tools explicitly report replacement unverified. See
+  [MCP coverage](MCP_COVERAGE.md) for intentional exclusions and limits.
 - **Update verification corrected (2026-09-20).** Both bridge update tools
   now read back staged inputs and require a new startup identity, matching
   startup SHA-256, and matching installed executable. Win16 checks helper
@@ -1341,3 +1342,58 @@ SCREENSHOT followed by PONG passed. Private configuration and disk backups
 were retained. Volume renaming, a second physical volume, and live startup
 with invalid configuration were not exercised; invalid configuration and
 native API failure paths were covered by host fault injection.
+
+### MCP coverage follow-up (2026-09-20)
+
+The bridge now registers 38 tools, up from 26. New wrappers cover Win16
+WINMSG/POSTMSG/LBGETTEXT, OS/2 WINCLOSE, NetWare SCREENS/AUTOEXEC/DEBUG and
+staged UPDATE, and Mac DBLCLICK/MOUSEPOS/MacBinary UPDATE. WINLIST now accepts
+Win16's optional parent handle. New platform-specific tools check SYSINFO
+before sending their operation. `legacy_capabilities` reports advisory source
+coverage, platform restrictions, and a selected subset of reported identity;
+it is not wire-level capability negotiation or installed-build verification.
+Unknown profiles do not acquire inferred capabilities, and NT autologon tools
+are omitted for 9x. See [MCP coverage](MCP_COVERAGE.md) for intentional omissions.
+
+Mac update validates the local container and uses the size-delimited binary
+protocol; it does not replace the companion updater. NetWare update freezes
+both inputs and checks uploaded bytes by readback before bare UPDATE. Neither
+claims verified replacement: Mac and NetWare currently lack the loaded-image
+identity needed for the stronger Windows/OS2 verification. Existing verified
+update tools remain unchanged. NetWare's native updater still overwrites its
+single `.OLD` backup and reports through console output, with weaker recovery
+than the Mac helper; the wrapper does not change that behavior.
+
+All 62 host tests passed, including platform guards, parent-handle routing,
+capability/registration consistency, unknown profiles, malformed/truncated
+mouse-position replies, exact MacBinary transfer framing, invalid containers,
+send/disconnect failures, NetWare input snapshots, corruption of either staged
+file, and refusal to claim replacement verification. A transient Windows file
+lock affected an existing upload test that repeatedly relinked the same EXE;
+using a distinct executable per case resolved it. Fresh MCP stdio sessions
+using SDK 2.0.0 and 2.2.0 discovered all 38 tools and accepted the new schemas.
+
+Live SYSINFO-based profiles succeeded on all 14 connected agents. Through
+fresh MCP sessions, Win16 top-level/child enumeration and synchronous/queued
+WM_NULL passed. A temporary native listbox fixture returned complete text of
+0, 1, 159, 160, 161 and 4096 bytes; string-backed owner-drawn reads succeeded,
+opaque owner-data reads were rejected, and scalar LB_GETCOUNT used the Win16
+constant WM_USER+12. POSTMSG closed the fixture, and its executable/report
+were removed. Win32 control-message numbers are not interchangeable with
+Win16; this distinction is documented.
+
+Both NetWare guests returned console screens and debug status; AUTOEXEC
+reported `present` and the complete NCF bytes remained unchanged. WINCLOSE
+on three OS/2 guests returned the expected no-match error for a unique test
+title and continued answering PING. No user window was closed. On the Mac,
+mouse position, a double-click on empty desktop, screenshot/PING, and wrong-
+platform rejection passed. The MCP Mac update tool transferred the already
+deployed build and reported acceptance without verification; after the helper
+ran, the process list changed, its log recorded exchange/retained recovery,
+staging was gone, and the original INI was unchanged.
+
+NetWare update orchestration/failure paths were host-tested without restarting
+either live NetWare server. OS/2 successful window closure and enabling debug
+were not repeated live; forwarding/error/query paths and host routing tests
+cover those wrappers. Native agent behavior, non-ASCII conversion, execution
+occupancy, and stronger cross-platform identity/negotiation remain separate work.
