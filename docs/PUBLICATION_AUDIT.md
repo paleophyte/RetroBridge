@@ -1327,7 +1327,12 @@ GET/PUT readbacks passed, and self-update from that folder completed: both
 forks verified, the prior application was retained, the new process served
 requests, and staging was removed. The test used Ubuntu as the client because
 Windows-to-guest connections on 2233 timed out; Ubuntu could reach that port.
-The network restriction was not changed.
+The network restriction was not changed. Follow-up inspection confirmed that
+the Ubuntu host's FORWARD policy is DROP, with DOCKER-USER rules installed by
+its active/enabled `retro-mac-forwarding.service` allowing only TCP 2222
+between the control PC and Mac. The helper's inbound destination-port and
+established-reply source-port rules must also change if the agent port changes;
+this deployment dependency is now documented in the Mac README.
 
 The original folder and exact token-only INI bytes were restored, and the
 temporary transfer file was removed. Startup Items launch, authentication

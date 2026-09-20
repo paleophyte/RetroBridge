@@ -134,6 +134,26 @@ A renamed agent can serve other commands but rejects `UPDATE`, draining
 its payload without modifying a sibling application. Upgrade **both**
 binaries to obtain the location handling described here.
 
+### QEMU bridge on an Ubuntu host with Docker
+
+A working MacTCP configuration does not guarantee that another computer can
+reach the guest. On the tested Ubuntu host, the QEMU TAP interface and physical
+NIC share a bridge, but bridged packets also traverse Docker's forwarding
+firewall. The `FORWARD` policy is DROP. An installation-specific
+`retro-mac-forwarding.service` runs `/usr/local/sbin/retro-mac-forwarding` to
+allow the control PC to reach the guest on TCP 2222 through `DOCKER-USER`,
+with a matching rule for established replies. Locally generated Ubuntu
+connections can succeed even when connections from the control PC time out.
+
+For that installation, changing the listening port requires matching changes
+to the Mac INI, the client's `exec_port`, and **both** the destination-port and
+reply source-port rules in the host helper. Stop the forwarding service before
+editing the helper so it removes the old rules, then start it with the new
+rules and verify a connection from the actual control PC. Keep the existing
+source/destination and interface restrictions. The helper is local deployment
+configuration, not a repository component; other hosts may use a different
+firewall arrangement. The tested installation remains on 2222.
+
 ## Screenshot limits
 
 `SCREENSHOT` captures the main display and streams complete rows in chunks,
