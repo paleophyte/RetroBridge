@@ -386,7 +386,10 @@ class AgentClient:
         self._simple_command("UPDATE")
 
     def autoexec(self) -> str:
-        """Ensure NetWare AUTOEXEC.NCF loads the agent (and CLIBAUX).
+        """Check/add explicit NetWare startup loads, CLIBAUX before LLMAGENT.
+
+        Ambiguous or reversed entries and I/O failures raise AgentProtocolError.
+        This is a bounded NCF edit/check, not a guarantee of a successful boot.
 
         Returns the OK payload (e.g. 'autoexec=added' or 'autoexec=present').
         Other platforms may return ERR.

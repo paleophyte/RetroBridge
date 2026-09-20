@@ -33,7 +33,7 @@
 
 /* Watcom's macro inspects its private FILE layout. The 3.12 build uses
  * Novell CLIB FILEs instead, so use the runtime function at the ABI boundary.
- * The nw4 build resolves the function in its own Watcom runtime. */
+ * Both builds resolve this function in Novell CLIB. */
 #undef ferror
 
 #include "nwsock.h"
@@ -55,6 +55,9 @@
 #define SKDUMP_LOG       "SYS:SYSTEM\\MD.TXT"
 #define AUTOEXEC_NCF     "SYS:SYSTEM\\AUTOEXEC.NCF"
 #define AUTOEXEC_MAX     8192
+#define AUTOEXEC_NEW     "SYS:SYSTEM\\LLMAUTO.NEW"
+#define AUTOEXEC_BAK     "SYS:SYSTEM\\LLMAUTO.BAK"
+#include "autoexec.h"
 /* CreateScreen flags (nwconio.h) â€” must not steal the operator console. */
 #define NW_DONT_AUTO_ACTIVATE  0x01
 #define NW_DONT_SWITCH_SCREEN  0x02
@@ -1402,89 +1405,70 @@ static int handle_update(void) {
     return 0;
 }
 
-/*
- * AUTOEXEC â€” ensure SYS:SYSTEM\AUTOEXEC.NCF loads LLMAGENT after TCP is up.
- * Idempotent. Also loads CLIBAUX (StuffKey dependency on 3.12).
- */
-static int buf_has_token_ci(const char *buf, int n, const char *token) {
-    int tlen = (int)strlen(token);
-    int i, j;
-    for (i = 0; i + tlen <= n; i++) {
-        for (j = 0; j < tlen; j++) {
-            char a = buf[i + j];
-            char b = token[j];
-            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
-            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
-            if (a != b) break;
-        }
-        if (j == tlen) return 1;
-    }
-    return 0;
+/* AUTOEXEC edits only recognized, unconditional loads; see autoexec.h. */
+static int autoexec_read(const char *path, char *buf, int *n) {
+    FILE *f = fopen(path, "rb");
+    int failed;
+    if (!f) return -1;
+    *n = (int)fread(buf, 1, AUTOEXEC_MAX, f);
+    failed = ferror(f);
+    if (fclose(f) != 0) failed = 1;
+    if (failed) return -1;
+    return *n == AUTOEXEC_MAX ? -2 : 0;
 }
 
 static int handle_autoexec(void) {
-    static char buf[AUTOEXEC_MAX];
+    static char original[AUTOEXEC_MAX], updated[AUTOEXEC_MAX];
     FILE *f;
-    long n;
-    int has_agent;
-    int has_clibaux;
-    char reply[64];
+    int n, planned, check, result, failed;
+    const char *reply;
 
-    f = fopen(AUTOEXEC_NCF, "rb");
-    if (!f) {
-        send_cstr("ERR:cannot open SYS:SYSTEM\\AUTOEXEC.NCF\n");
-        return -1;
+    result = autoexec_read(AUTOEXEC_NCF, original, &n);
+    if (result) return send_cstr(result == -2 ? "ERR:AUTOEXEC.NCF too large\n" :
+                                "ERR:cannot completely read/close AUTOEXEC.NCF\n");
+    result = autoexec_plan(original, n, updated, AUTOEXEC_MAX - 1, &planned);
+    if (result == 0) return send_cstr("OK autoexec=present\n");
+    if (result < 0) {
+        if (result == -2) reply = "ERR:AUTOEXEC ambiguous/duplicate/optional/unload entries; review manually\n";
+        else if (result == -3) reply = "ERR:AUTOEXEC dependency order; CLIBAUX and network setup must precede LLMAGENT\n";
+        else if (result == -4) reply = "ERR:AUTOEXEC.NCF too large\n";
+        else reply = "ERR:AUTOEXEC malformed text or command; review manually\n";
+        return send_cstr(reply);
     }
-    n = (long)fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    if (n < 0) n = 0;
-    buf[n] = '\0';
-
-    has_agent = buf_has_token_ci(buf, (int)n, "llmagent");
-    has_clibaux = buf_has_token_ci(buf, (int)n, "clibaux");
-
-    if (has_agent && has_clibaux) {
-        send_cstr("OK autoexec=present\n");
-        return 0;
+    /* Do not overwrite recovery artifacts from an interrupted transaction.
+       A later edit needs the retained backup moved aside by the operator. */
+    if (file_exists_rb(AUTOEXEC_NEW) || file_exists_rb(AUTOEXEC_BAK))
+        return send_cstr("ERR:AUTOEXEC recovery files exist; review LLMAUTO.NEW/BAK\n");
+    f = fopen(AUTOEXEC_NEW, "wb");
+    if (!f) return send_cstr("ERR:cannot stage AUTOEXEC update\n");
+    failed = (int)fwrite(updated, 1, (size_t)planned, f) != planned;
+    if (fflush(f) != 0 || ferror(f)) failed = 1;
+    if (fclose(f) != 0) failed = 1;
+    if (!failed) {
+        if (autoexec_read(AUTOEXEC_NEW, original, &check) != 0 || check != planned)
+            failed = 1;
+        else {
+            int i;
+            for (i = 0; i < planned; i++) if (original[i] != updated[i]) { failed = 1; break; }
+        }
     }
-
-    while (n > 0 && (buf[n - 1] == ' ' || buf[n - 1] == '\t' ||
-                     buf[n - 1] == '\n' || buf[n - 1] == '\r'))
-        n--;
-    buf[n] = '\0';
-
-    if (n + 96 >= (long)sizeof(buf)) {
-        send_cstr("ERR:AUTOEXEC.NCF too large\n");
-        return -1;
+    if (failed) {
+        remove(AUTOEXEC_NEW);
+        return send_cstr("ERR:AUTOEXEC staging write/flush/close/readback failed; original unchanged\n");
     }
-
-    n += sprintf(buf + n, "\r\nREM llm_agent (AUTOEXEC command)\r\n");
-    if (!has_clibaux)
-        n += sprintf(buf + n, "LOAD CLIBAUX\r\n");
-    if (!has_agent)
-        n += sprintf(buf + n, "LOAD LLMAGENT\r\n");
-
-    f = fopen(AUTOEXEC_NCF, "wb");
-    if (!f) {
-        send_cstr("ERR:cannot write SYS:SYSTEM\\AUTOEXEC.NCF\n");
-        return -1;
+    if (rename(AUTOEXEC_NCF, AUTOEXEC_BAK) != 0) {
+        remove(AUTOEXEC_NEW);
+        return send_cstr("ERR:cannot back up AUTOEXEC.NCF; original unchanged\n");
     }
-    if ((long)fwrite(buf, 1, (size_t)n, f) != n) {
-        fclose(f);
-        send_cstr("ERR:short write AUTOEXEC.NCF\n");
-        return -1;
+    if (rename(AUTOEXEC_NEW, AUTOEXEC_NCF) != 0) {
+        if (rename(AUTOEXEC_BAK, AUTOEXEC_NCF) != 0)
+            return send_cstr("ERR:AUTOEXEC restore failed; recover LLMAUTO.BAK locally\n");
+        remove(AUTOEXEC_NEW);
+        return send_cstr("ERR:AUTOEXEC install failed; original restored\n");
     }
-    fclose(f);
-
-    if (g_debug)
-        debug_puts("LLMAGENT: AUTOEXEC updated\r\n");
-    if (!has_agent && !has_clibaux)
-        sprintf(reply, "OK autoexec=added\n");
-    else if (!has_agent)
-        sprintf(reply, "OK autoexec=added-llmagent\n");
-    else
-        sprintf(reply, "OK autoexec=added-clibaux\n");
-    return send_cstr(reply);
+    if (g_debug) debug_puts("LLMAGENT: AUTOEXEC updated; backup LLMAUTO.BAK\r\n");
+    return send_cstr(result == 1 ? "OK autoexec=added\n" :
+                     result == 2 ? "OK autoexec=added-llmagent\n" : "OK autoexec=added-clibaux\n");
 }
 
 /*

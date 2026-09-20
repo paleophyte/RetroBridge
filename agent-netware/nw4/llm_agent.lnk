@@ -17,6 +17,7 @@ import socket, bind, listen, accept, send, recv, close, setsockopt
 import memset, memcpy, strcmp, strlen, strncmp, strncpy, strpbrk, strrchr, strstr
 import atoi, atol, sprintf, fprintf
 import GetCurrentTicks, ferror
+import rename, remove
 import fopen, fclose, fflush, fgets, fread, fwrite, fseek, ftell, fputs
 import GetServerInformation, GetVolumeInfoWithNumber
 import CreateScreen, CopyFromScreenMemory

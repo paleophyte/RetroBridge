@@ -202,10 +202,13 @@ does not implement reboot. These are not interchangeable “power off” tools.
   launch and swap results and attempts rollback on launch failure. Builds
   without startup identity explicitly remain unverified. See the follow-up
   validation entry below and the architecture's Self-update section.
-- **NetWare AUTOEXEC detection is only a substring search.** A comment
-  mentioning `llmagent` or `clibaux` satisfies `buf_has_token_ci`; this can
-  report `present` without an active LOAD command. It also does not verify
-  dependency ordering. Parse active commands before claiming persistence.
+- **NetWare AUTOEXEC corrected (2026-09-20).** Exact, explicit LOAD commands
+  replace substring detection. Dependency order is checked, missing CLIBAUX
+  is inserted before an existing agent load, and ambiguous/reversed entries
+  return ERR without editing. Complete reads and a checked staged replacement
+  with retained backup also prevent false success and direct truncation on I/O
+  failures. This remains a bounded NCF check, not proof of a successful boot;
+  see the NetWare README and follow-up validation below.
 - **Mac installation is partly hardcoded.** Port is fixed at 2222, and
   the token fallback path names `MacOS:Desktop Folder:LLMAGENT`. The update
   path uses the current directory. Different volume/folder names and
@@ -1174,3 +1177,40 @@ signature or attestation of loaded memory. These checks assume the trusted
 lab agent and no concurrent external file replacement. The Win32 disassembly
 comparison found no added SIMD instructions; six SSE2 instructions in the
 preexisting CRT `__matherr` routine remain outside this change.
+
+### NetWare AUTOEXEC follow-up (2026-09-20)
+
+The substring detector is replaced by a bounded, line-oriented NCF planner.
+Only exact explicit LOADs count, case-insensitively, with optional `.NLM`,
+paths, and quoted module paths. Comment lines and similarly named modules do
+not satisfy the check. Missing loads are appended in dependency order; a
+missing CLIBAUX load is inserted before an existing LLMAGENT load. Existing
+bytes and arguments are preserved. Reversed/duplicate loads, relevant UNLOADs,
+optional loads, and recognized ambiguous forms return ERR without mutation.
+Explicit TCPIP loads or BIND IP commands after LLMAGENT also fail the check.
+
+The handler now rejects incomplete/oversized reads, malformed text, and
+oversized output. Changes are staged to LLMAUTO.NEW, checked through write,
+flush, close, and exact readback, then installed through a backup-and-rename
+sequence. LLMAUTO.BAK is retained for recovery. A failed install attempts to
+restore the original; a failed restore reports the recovery file. Existing
+recovery files block edits until reviewed, while an already-correct NCF can
+still return present without rewriting anything. Neither arbitrary NCF control
+flow nor recursively invoked scripts are evaluated, so present describes the
+supported startup entries rather than proving a successful reboot/network.
+
+All 49 host tests passed. New production-code tests cover comment and name
+false positives, case/path/extension forms, missing dependencies, ordering,
+duplicates, optional and unload commands, malformed/NUL/EOF input, bounded
+file sizes, preservation, repeated calls, read/write/flush/close/readback
+failures, backup/install failures, and successful/failed rollback. Both native
+NLM builds passed with Novell CLIB and normalized imports.
+
+A scratch-file native fixture using the production planner and handler passed
+on NetWare 3.12 and 4.11, exercising actual file insertion, backup/replacement,
+idempotence, path parsing, and rejection of reversed/optional loads. It never
+edited or executed the real boot script. Updated agents were deployed through
+staged UPDATE; complete binary and INI readback matched. Repeated real AUTOEXEC
+commands returned present, and the real NCF bytes remained unchanged on both
+guests. Temporary fixture files were removed; private backups and the existing
+4.11 LLMAUTO.BAK recovery file were retained. No reboot was needed or tested.

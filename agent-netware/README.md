@@ -17,7 +17,7 @@ header).
 | `EXEC` | `system()` (console-style). **No stdout capture** — replies `LEN:0` + `EXIT:rc` |
 | `PUT` / `GET` | File transfer (NetWare paths, e.g. `SYS:SYSTEM\FOO.TXT`) |
 | `SYSINFO` | `os_family=netware`, server name/version, SYS: volume space |
-| `AUTOEXEC` | Ensure `AUTOEXEC.NCF` has `LOAD CLIBAUX` + `LOAD LLMAGENT` |
+| `AUTOEXEC` | Check explicit startup loads and CLIBAUX-before-LLMAGENT order; safely add missing loads |
 | `SCREENSHOT` | Best-scoring console text cells → 24-bit BMP |
 | `KEY` / `TYPE` | Via **StuffKey** when `STUFFKEY.NLM` is present (INSTALL/NWSNUT). Else CLIB `ungetch` (console only) |
 | `SCREENS` | List CLIB screens (`id`, displayed flag, name) for INSTALL discovery |
@@ -61,9 +61,45 @@ chars (`/s` avoid flashing targets, `/r` restore the operator screen).
 AUTOEXEC
 ```
 
-Idempotent: appends `LOAD CLIBAUX` + `LOAD LLMAGENT` to
-`SYS:SYSTEM\AUTOEXEC.NCF` if missing (after existing TCP setup). Replies
-`OK autoexec=added` or `OK autoexec=present`.
+The command parses complete lines in `SYS:SYSTEM\AUTOEXEC.NCF`, rather than
+searching for module names anywhere in the file. Only explicit, unconditional
+`LOAD` commands with an exact CLIBAUX or LLMAGENT module name count. Matching
+ignores case and accepts an optional `.NLM` extension, a volume/directory path,
+or a quoted module path. Leading whitespace and `REM`, `#`, and `;` comment
+lines are handled; comments and similarly named modules do not count.
+
+If both loads are missing, it appends CLIBAUX followed by LLMAGENT. If only
+LLMAGENT is missing, it appends that load. If only CLIBAUX is missing, it
+inserts its load immediately before the existing LLMAGENT line. Existing
+bytes, arguments, whitespace, and line endings are preserved; inserted lines
+use CRLF, before a terminal DOS EOF byte if present.
+
+Replies are `OK autoexec=present`, `OK autoexec=added`,
+`OK autoexec=added-llmagent`, or `OK autoexec=added-clibaux`.
+Reversed dependency order, duplicate loads, relevant UNLOAD commands, optional
+`?` loads, implicit module commands, and recognized ambiguous LOAD wrappers
+return `ERR` for manual review without changing the file. A directly listed
+`LOAD TCPIP` or `BIND IP` after LLMAGENT also returns an ordering error.
+
+Before editing, the agent reads the complete file and rejects read/close
+errors, embedded control bytes, malformed parsed commands, and input or output
+larger than 8,191 bytes. It writes `SYS:SYSTEM\LLMAUTO.NEW`, checks write,
+flush, close, and byte-for-byte readback, then renames the original to
+`SYS:SYSTEM\LLMAUTO.BAK` and installs the staged file. Installation failure
+attempts to restore the original; a failed restore reports the backup path for
+local recovery. The successful backup is retained. Existing recovery files
+block a **new edit** until reviewed and moved aside; an already-correct file
+still returns `present` without writing anything.
+
+This checks the supported commands in this file; it does not execute or follow
+other NCF files, interpret arbitrary control flow, check installed module
+versions, or prove that TCP/IP will work on the next boot. In particular,
+network setup delegated to INETCFG/another NCF is outside this check. Changes
+assume no concurrent external editor. The backup-and-rename sequence provides
+recovery from reported I/O errors, not an atomic transaction across power loss.
+
+Syntax references: Novell's [NCF command ordering and optional commands](https://www.novell.com/documentation/nw6p/sos__enu/data/hxcnlm3b.html)
+and [comment markers](https://support.novell.com/techcenter/articles/ann20000301.html).
 
 ### Remote update
 
