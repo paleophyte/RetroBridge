@@ -54,7 +54,7 @@ NOTES = {
     "netware": ["EXEC runs a console command without output capture or detach.",
                 "DEBUG 1 truncates the agent log; AUTOEXEC may edit startup NCF with a retained backup.",
                 "SHUTDOWN downs the server; it is not a hardware power-off command.",
-                "Update stages fixed SYS:SYSTEM paths; verification requires startup identity and matching executable readback. Helper recovery remains limited."],
+                "Update stages fixed SYS:SYSTEM paths; verification requires startup identity and matching executable readback. Protocol-2 helpers retain backups and roll back exited candidates; unresolved or loaded/unready candidates require operator recovery."],
     "mac68k": ["Data-fork file transfer only; main-display screenshot; left mouse button and US keyboard layout.",
                "No shell, usable cross-process clipboard/window list, or completed drag support.",
                "PSKILL and power commands are cooperative requests and can be cancelled.",

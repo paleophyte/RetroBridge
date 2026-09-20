@@ -19,7 +19,7 @@
  *           CreateScreen bind of System Console/Install â€” that GPFs on UNLOAD).
  * SCREENS: list ScanScreens names (SIZE: text) for menu discovery.
  * SHUTDOWN: OK then DownFileServer(1) (force down â€” lab use).
- * UPDATE: OK then LOAD UPDATE (expects SYS:SYSTEM\LLMAGENT.NEW + UPDATE.NLM).
+ * UPDATE: prepare protocol-2 helper, acknowledge, then self-exit for a recoverable swap.
  * AUTOEXEC: ensure SYS:SYSTEM\AUTOEXEC.NCF has LOAD CLIBAUX + LOAD LLMAGENT.
  * DEBUG: DEBUG / DEBUG 0 / DEBUG 1 â€” runtime verbose flag; when on, also
  *        appends to SYS:SYSTEM\LLMAGENT.LOG (truncated on DEBUG 1).
@@ -38,6 +38,7 @@
 
 #include "nwsock.h"
 #include "../common/update_identity.h"
+#include "update_state.h"
 #include "font8.h"
 
 #define DEFAULT_PORT     2222
@@ -354,6 +355,7 @@ static int handle_get(const char *path) {
 
 static int handle_sysinfo(void) {
     static char buf[1280];
+    char last_update[192];
     int len = 0;
     char hdr[32];
     FILE_SERV_INFO si;
@@ -396,6 +398,11 @@ static int handle_sysinfo(void) {
     len += sprintf(buf + len, "agent_build=%s %s\r\n", __DATE__, __TIME__);
     len += sprintf(buf + len, "agent_exe=%s\r\nagent_started=%s\r\nagent_sha256=%s\r\n",
                    g_update_exe, g_update_started, g_update_sha256);
+    len += sprintf(buf + len, "update_protocol=2\r\nupdate_state=%s\r\n",
+                   FindNLMHandle("UPDATE.NLM") ? "busy" :
+                   (nw_path_state(NW_WORK) == 0 ? "idle" : "recovery-required"));
+    if (nw_read_text(NW_LAST, last_update, sizeof(last_update)) >= 0 && !strpbrk(last_update, "\r\n"))
+        len += sprintf(buf + len, "update_last=%s\r\n", last_update);
     len += sprintf(buf + len, "stuffkey=%d\r\n", stuffkey_present());
     len += sprintf(buf + len, "clibaux=%d\r\n", file_exists_rb(CLIBAUX_NLM));
     len += sprintf(buf + len, "debug=%d\r\n", g_debug);
@@ -1366,44 +1373,42 @@ static int handle_shutdown(void) {
     return 0;
 }
 
-/* Remote update: LOAD UPDATE.NLM which unloads us, swaps .NEW -> .NLM, reloads. */
+/* Prepare the helper while still serving; only self-exit after its checked
+   readiness-to-swap record matches the current and staged fingerprints. */
 static int handle_update(void) {
-    FILE *f = fopen("SYS:SYSTEM\\LLMAGENT.NEW", "rb");
-    if (!f) {
-        send_cstr("ERR:missing SYS:SYSTEM\\LLMAGENT.NEW\n");
-        return -1;
+    char wanted[65], current[65], prepared[132], expected[132];
+    int i, prepared_ok = 0;
+    unsigned long started;
+    if (!nw_is_target(g_update_exe) || strlen(g_update_sha256) != 64) {
+        send_cstr("ERR:update requires identified SYS:SYSTEM agent\n"); return -1;
     }
-    fclose(f);
-    f = fopen("SYS:SYSTEM\\UPDATE.NLM", "rb");
-    if (!f) {
-        send_cstr("ERR:missing SYS:SYSTEM\\UPDATE.NLM\n");
-        return -1;
+    if (FindNLMHandle("UPDATE.NLM") || nw_path_state(NW_WORK) != 0) {
+        send_cstr("ERR:updater busy or unresolved SYS:SYSTEM\\LLMUPD recovery\n"); return -1;
     }
-    fclose(f);
-    debug_puts("LLMAGENT: UPDATE â€” LOAD UPDATE then self-exit\r\n");
+    if (nw_hash(NW_AGENT, current) || strcmp(current, g_update_sha256) || nw_hash(NW_STAGE, wanted)) {
+        send_cstr("ERR:update source unreadable or installed file differs from startup\n"); return -1;
+    }
+    if (!nw_helper_supported()) {
+        send_cstr("ERR:update requires readable protocol-2 UPDATE.NLM; agent retained\n"); return -1;
+    }
+    sprintf(expected, "%s\n%s\n", current, wanted);
+    system("LOAD SYS:SYSTEM\\UPDATE.NLM");
+    started = (unsigned long)GetCurrentTicks();
+    for (i = 0; i < 80 && (((unsigned long)GetCurrentTicks() - started) & 0xffffffffUL) < 144UL; i++) {
+        if (FindNLMHandle("UPDATE.NLM") &&
+            nw_read_text(NW_PREPARED, prepared, sizeof(prepared)) == 130 && !strcmp(prepared, expected)) { prepared_ok = 1; break; }
+        delay(100); ThreadSwitchWithDelay();
+    }
+    if (!prepared_ok) {
+        send_cstr("ERR:updater did not prepare; agent retained; inspect SYS:SYSTEM\\LLMUPD\n"); return -1;
+    }
     if (send_cstr("OK\n") < 0) return -1;
-    /*
-     * Console "UNLOAD LLMAGENT" has repeatedly GPF'd on 3.12 (Console
-     * Command Process). Instead: allow unload check, drop sockets, start
-     * UPDATE, then exit() so the module tears down without a console UNLOAD.
-     */
     g_allow_unload = 1;
     g_running = 0;
-    if (g_client >= 0) {
-        close(g_client);
-        g_client = -1;
-    }
-    if (g_listen >= 0) {
-        close(g_listen);
-        g_listen = -1;
-    }
-    /*
-     * Do NOT DestroyScreen here â€” GPF/abend on 3.12 during UPDATE.
-     * Screen was created with AUTO_DESTROY_SCREEN so exit() should not
-     * block on "Press any key to close screen".
-     */
+    if (g_client >= 0) { close(g_client); g_client = -1; }
+    if (g_listen >= 0) { close(g_listen); g_listen = -1; }
+    /* Do not DestroyScreen or use console UNLOAD: both have abended on 3.12. */
     g_our_screen = -1;
-    system("LOAD UPDATE");
     exit(0);
     return 0;
 }
@@ -1610,6 +1615,8 @@ static int server_main(void) {
         g_listen = -1;
         return 1;
     }
+
+    if (g_token[0]) nw_publish_ready();
 
     ConsolePrintf("LLMAGENT: listening on port %u\r\n", (unsigned)g_port);
     if (g_debug) {

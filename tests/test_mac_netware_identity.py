@@ -125,7 +125,7 @@ class MacNetwareIdentityTests(unittest.TestCase):
         self.agent.get.side_effect = lambda r, p: Path(p).write_bytes(files[r])
         with tempfile.TemporaryDirectory() as td:
             binary, helper = Path(td) / "agent", Path(td) / "helper"
-            binary.write_bytes(b"agent"); helper.write_bytes(b"helper")
+            binary.write_bytes(b"agent"); helper.write_bytes(b"helper RETRO_NW_UPDATE_PROTOCOL_2")
             for failure in (None, OSError("lost ack"), AgentProtocolError("incomplete response")):
                 self.agent.update.reset_mock()
                 self.agent.update.side_effect = failure

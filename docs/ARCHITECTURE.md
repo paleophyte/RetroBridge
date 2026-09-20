@@ -1195,4 +1195,7 @@ location plus startup and current disk hashes of both forks. Its resource
 hash explicitly normalizes only system-owned bytes 16..127; it still covers
 resource code/data, the map, layout header, and application-owned bytes.
 See [MCP coverage](MCP_COVERAGE.md#update-result-semantics) for the hash format,
-limits, migration from old agents, and remaining NetWare recovery limits.
+limits and migration from old agents. NetWare protocol-2 helpers retain per-
+attempt backups, verify listener readiness, and restore an exited/failed
+candidate. They preserve unresolved work for operator recovery and never
+force UNLOAD; see the [NetWare recovery procedure](../agent-netware/README.md#recovery-files-and-status).

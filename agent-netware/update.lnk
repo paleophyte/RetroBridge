@@ -10,5 +10,7 @@ file update.obj
 module clib
 import _StartNLM, _TerminateNLM, _SetupArgv
 import ConsolePrintf, ThreadSwitchWithDelay, delay, system
-import fopen, fclose, rename, remove
+import fopen, fclose, rename, remove, fflush, fread, fwrite, ferror, fseek, ftell
+import memcpy, memset, memcmp, strcmp, strcpy, strlen, sprintf
+import FindNLMHandle, GetCurrentTicks, access, mkdir, __get_errno_ptr
 name UPDATE

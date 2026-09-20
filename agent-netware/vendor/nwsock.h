@@ -81,6 +81,9 @@ int recv(int s, char *msg, int len, int flags);
 int setsockopt(int s, int level, int name, char *val, int len);
 int close(int fd);
 int shutdown(int s, int how);
+unsigned int FindNLMHandle(char *moduleName); /* CLIB, filename including .NLM */
+int access(const char *path, int mode);
+int mkdir(const char *path); /* CLIB has one argument, unlike LibC/POSIX */
 int GetNLMID(void); /* CLIB current module identity, 3.11+ */
 long GetCurrentTicks(void); /* CLIB uptime, approximately 18 ticks/second */
 int ioctl(int fd, int command, ...);

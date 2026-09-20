@@ -58,8 +58,10 @@ startup executable SHA-256, installed executable readback, and an unchanged
 identity after readback. NetWare uses the loader-supplied, volume-qualified
 NLM path; an unavailable path/hash cannot verify. Its tool freezes both
 inputs, reads back staged `SYS:SYSTEM\LLMAGENT.NEW` and `UPDATE.NLM`, then
-sends UPDATE. It never sends console UNLOAD. The helper's weaker recovery
-and replacement of its `.OLD` backup remain separate limitations.
+sends UPDATE. It never sends console UNLOAD. The protocol-2 helper preserves per-attempt backups and rolls back a failed
+startup when the candidate has exited. An unresolved recovery directory blocks
+staging; a loaded, unready candidate is left for operator recovery. See the
+[NetWare recovery procedure](../agent-netware/README.md#recovery-files-and-status).
 
 The Mac tool freezes and validates a classic MacBinary APPL, then compares
 both its forks against startup and fresh disk fingerprints from a new

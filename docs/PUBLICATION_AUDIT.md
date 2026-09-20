@@ -15,7 +15,7 @@ Commit references to reachable development history use the rewritten IDs.
 The sections below retain the original findings and dated follow-ups. This
 checklist summarizes the remaining work; earlier tool counts and test counts
 describe those earlier checkpoints. The current bridge has 43 tools, and
-the latest host suite passed 87 tests. NetWare 4.11 was subsequently built
+the latest host suite passed 90 tests. NetWare 4.11 was subsequently built
 and tested successfully; it is no longer awaiting a test guest.
 
 - **Final source-publication pass:** reconcile remaining universal Windows
@@ -28,7 +28,8 @@ and tested successfully; it is no longer awaiting a test guest.
   described in [THIRD_PARTY.md](../THIRD_PARTY.md). This is separate from the
   completed MIT source licensing and vendor-history removal.
 - **Update follow-ups:** Mac and NetWare now support verified replacement
-  (see the final follow-up below). NetWare still has weaker updater recovery.
+  and NetWare has retained-backup rollback for exited/failed candidates.
+  Loaded, unready candidates still require operator recovery; see the follow-ups.
   The generic NT updater assumes a service installation; Win7's interactive
   installation required an explicit restart. Its new HKCU Run entry was read
   back, but next-logon startup has not been tested.
@@ -1566,3 +1567,53 @@ readbacks were unchanged. Temporary NetWare probe files were removed; private
 backups, readbacks, and logs were retained. The Mac updater and NetWare swap
 algorithm were not changed. NetWare's weaker rollback remains open; raw
 UPDATE acknowledgments and PING alone still do not verify replacement.
+
+
+### NetWare rollback and recovery (2026-09-20)
+
+The agent and UPDATE.NLM now use preparation/readiness protocol 2. Before
+self-exiting, the agent requires a compatible helper and a checked preparation
+record matching its startup file and staged image. Failed helper preparation
+or a failed acknowledgment leaves the original agent running. The helper
+uses CLIB FindNLMHandle instead of a writable-file heuristic and never forces
+UNLOAD. A replacement announces readiness only after loading a nonempty token
+and successfully opening its listener; the bridge retains its independent
+instance/hash/readback verification.
+
+Each attempt exclusively reserves SYS:SYSTEM\LLMUPD, writes a plan and log,
+rechecks inputs, and retains the original as OLD.NLM before installation.
+A failed/exited candidate is retained as BAD.NLM, and a checked restoration
+copy replaces it without consuming OLD.NLM. Successful updates and confirmed
+rollbacks archive their complete work directory under a separately reserved
+LUxxxxxx\RESULT directory. Existing archives and legacy LLMAGENT.OLD are
+never overwritten. SYSINFO exposes update state and the latest result/archive;
+the bridge blocks staging while recovery is unresolved and reports completed
+rollback distinctly from successful replacement.
+
+Loaded-but-unready candidates, failed restoration, and incomplete archival
+leave recovery files and block further updates. The README now includes an
+operator recovery procedure. This does not promise automatic recovery from
+power loss, hung CLIB calls, or a kernel abend, and it does not force a loaded
+candidate out. Retained backup directories require deliberate manual pruning.
+
+All 90 host tests passed. The compiled production updater fixture covers 22
+transaction/fault cases: backup preservation, name collisions, unresolved work,
+file errors, changed/damaged staging, failed swap/restore operations, rejected
+startup, an unready loaded candidate, and failed archival. Seven native-handler
+cases cover helper launch/preparation failure, mismatched preparation, blocked
+recovery, incompatible helper, failed acknowledgment, and successful self-exit.
+Bridge tests cover preflight guards, matching completed rollback, stale records,
+and recovery that remains uncleared after executable verification.
+
+Both native builds passed. Small live probes on 3.12 and 4.11 confirmed CLIB
+module lookup, absent-path errors, exclusive directory creation, and directory
+archival. Both agents and the helper were deployed and verified, preserving
+configuration and legacy backups. A valid test NLM that immediately exits at
+startup then exercised real rollback on both guests: previous executable bytes
+were restored, a new original-agent instance authenticated, OLD.NLM and BAD.NLM
+matched their intended files, and the bridge reported rollback. A subsequent
+normal update succeeded on each guest without altering the retained rollback
+backup. These workflows passed through fresh MCP SDK 2.0.0 (3.12) and 2.2.0
+(4.11) sessions. Temporary probes were removed; private evidence/backups and
+intentional guest recovery archives remain. Physical disk errors, power loss,
+and forcibly recovering an unresponsive loaded candidate were not induced live.

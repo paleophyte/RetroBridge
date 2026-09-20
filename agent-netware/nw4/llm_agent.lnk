@@ -10,6 +10,7 @@ option screenname 'None'
 option check=llm_agent_check
 file llm_agent.obj
 module clib
+import FindNLMHandle, access, __get_errno_ptr, memcmp
 import GetNLMID, strcpy, strchr
 import _StartNLM, _TerminateNLM, _SetupArgv
 import ConsolePrintf, ThreadSwitch, ThreadSwitchWithDelay, ioctl, system, AtUnload

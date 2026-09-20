@@ -157,7 +157,7 @@ class BridgeCoverageTests(unittest.TestCase):
         agent = Mock(); agent.sysinfo.return_value = self.info("netware")
         with tempfile.TemporaryDirectory() as td, patch.object(server, "_agent", return_value=agent):
             binary, helper = Path(td) / "agent", Path(td) / "helper"
-            binary.write_bytes(b"agent"); helper.write_bytes(b"helper")
+            binary.write_bytes(b"agent"); helper.write_bytes(b"helper RETRO_NW_UPDATE_PROTOCOL_2")
             files = {}
             def put(local, remote):
                 files[remote] = Path(local).read_bytes()
@@ -166,11 +166,12 @@ class BridgeCoverageTests(unittest.TestCase):
             agent.put.side_effect = put
             agent.get.side_effect = lambda r, p: Path(p).write_bytes(files[r])
             reply = server.legacy_netware_self_update("fixture", str(binary), str(helper), False)
-            self.assertEqual(files, {r"SYS:SYSTEM\LLMAGENT.NEW": b"agent", r"SYS:SYSTEM\UPDATE.NLM": b"helper"})
+            self.assertEqual(files, {r"SYS:SYSTEM\LLMAGENT.NEW": b"agent", r"SYS:SYSTEM\UPDATE.NLM": b"helper RETRO_NW_UPDATE_PROTOCOL_2"})
             agent.update.assert_called_once_with()
             self.assertIn("replacement NOT verified", reply)
             self.assertEqual([c[0] for c in agent.mock_calls], ["sysinfo", "put", "get", "put", "get", "update"])
             for bad_remote in files:
+                helper.write_bytes(b"helper RETRO_NW_UPDATE_PROTOCOL_2")
                 agent.reset_mock()
                 agent.get.side_effect = lambda r, p: Path(p).write_bytes(b"corrupt" if r == bad_remote else files[r])
                 self.assertIn("readback differs", server.legacy_netware_self_update("fixture", str(binary), str(helper), False))

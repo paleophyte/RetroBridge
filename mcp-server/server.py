@@ -695,6 +695,11 @@ def _wait_for_replaced_agent(
                 if not started or started == old_started:
                     last = "outgoing agent still responding or startup identity unavailable"
                 elif info.get("agent_sha256") != expected_sha256:
+                    last_update = info.get("update_last", "").split(" ", 2)
+                    if (info.get("os_family") == "netware" and info.get("update_state") == "idle"
+                            and len(last_update) == 3 and last_update[:2] == ["rolled-back", expected_sha256]):
+                        return (f"[update NOT verified] NetWare restored the previous executable on {machine}; "
+                                f"recovery records: {last_update[2]}")
                     last = "startup executable hash differs (wrong build or rollback)"
                 elif not info.get("agent_exe"):
                     last = "startup executable path unavailable"
@@ -1071,10 +1076,14 @@ def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_n
     By default, waits for a new startup identity, matching startup SHA-256,
     and installed executable readback. Older replacement builds lacking
     identity remain unverified. Acceptance alone does not verify helper launch.
-    The helper's existing recovery limitations remain; no handoff is retried."""
+    Requires a protocol-2 helper; unresolved recovery blocks staging. Failed
+    startup rolls back only after the candidate exits; a loaded/unready NLM
+    requires operator recovery. Backups are retained. No handoff is retried."""
     try:
         agent = _agent(machine)
         before = _require_profile(agent, ("netware",))
+        if before.get("update_protocol") == "2" and before.get("update_state") != "idle":
+            raise ValueError("NetWare updater busy or recovery unresolved; inspect SYS:SYSTEM\\LLMUPD before staging")
         target = r"SYS:SYSTEM\LLMAGENT.NLM"
         _check_update_target(before, target)
         with tempfile.TemporaryDirectory() as td:
@@ -1083,6 +1092,8 @@ def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_n
             helper.write_bytes(Path(update_nlm_local_path).read_bytes())
             if any(not 0 < p.stat().st_size <= 64 * 1024 * 1024 for p in (binary, helper)):
                 raise ValueError("NetWare update inputs must be nonempty and at most 64 MiB")
+            if b"RETRO_NW_UPDATE_PROTOCOL_2" not in helper.read_bytes():
+                raise ValueError("NetWare updates require a protocol-2 UPDATE.NLM helper")
             _stage_verified(agent, binary, r"SYS:SYSTEM\LLMAGENT.NEW", scratch)
             _stage_verified(agent, helper, r"SYS:SYSTEM\UPDATE.NLM", scratch)
             expected = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -1092,7 +1103,22 @@ def legacy_netware_self_update(machine: str, new_agent_local_path: str, update_n
             except (AgentProtocolError, OSError) as e:
                 result = f"NetWare update handoff outcome unknown on {machine}: {e}; do not blindly retry"
             if wait_for_agent:
-                return result + "; " + _wait_for_replaced_agent(machine, target, before.get("agent_started"), expected)
+                verification = _wait_for_replaced_agent(machine, target, before.get("agent_started"), expected)
+                if "update verified on" in verification:
+                    info = {}
+                    try:
+                        for _ in range(10):
+                            info = _agent(machine).sysinfo()
+                            if info.get("update_state") != "busy":
+                                break
+                            time.sleep(1)
+                    except (AgentProtocolError, OSError):
+                        info = {}
+                    if info.get("update_protocol") != "2" or info.get("update_state") != "idle":
+                        verification += "; updater recovery NOT cleared; inspect SYS:SYSTEM\\LLMUPD before retrying"
+                    else:
+                        verification += "; recovery records: " + info.get("update_last", "unavailable")
+                return result + "; " + verification
             return result + "; replacement NOT verified (waiting disabled)"
     except ValueError as e:
         return f"[update preflight error] {e}"

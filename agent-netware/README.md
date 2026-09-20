@@ -22,7 +22,7 @@ header).
 | `KEY` / `TYPE` | Via **StuffKey** when `STUFFKEY.NLM` is present (INSTALL/NWSNUT). Else CLIB `ungetch` (console only) |
 | `SCREENS` | List CLIB screens (`id`, displayed flag, name) for INSTALL discovery |
 | `SHUTDOWN` | `OK` then `DownFileServer(1)` (force down — lab only) |
-| `UPDATE` | `OK` then `LOAD UPDATE` (needs `LLMAGENT.NEW` + `UPDATE.NLM` on SYS:SYSTEM) |
+| `UPDATE` | Prepare protocol-2 helper, then `OK` and self-exit; retained backups and startup-aware rollback |
 | `DEBUG` / `DEBUG 0` / `DEBUG 1` | Runtime verbose toggle; `DEBUG 1` truncates `SYS:SYSTEM\LLMAGENT.LOG` |
 
 Everything else returns `ERR:not supported on NetWare`.
@@ -109,35 +109,107 @@ and [comment markers](https://support.novell.com/techcenter/articles/ann20000301
 ### Remote update
 
 ```text
-PUT SYS:SYSTEM\UPDATE.NLM     (once)
+PUT SYS:SYSTEM\UPDATE.NLM     (current protocol-2 helper)
 PUT SYS:SYSTEM\LLMAGENT.NEW    (new agent build)
-UPDATE                         (agent command — or console: LOAD UPDATE)
+UPDATE                         (agent command)
 ```
 
 Prefer agent `UPDATE` (self-exit) over console `UNLOAD LLMAGENT` — the latter
 has abended on this 3.12 lab box.
+Console `LOAD SYS:SYSTEM\UPDATE.NLM` is also available when the agent is
+already stopped. It does not stop a running agent; it waits and aborts if the
+old module remains loaded.
 
-`UPDATE.NLM` waits for the agent to exit, replaces it, then runs `LOAD LLMAGENT`. Expect a brief
-disconnect; reconnect and `PING`.
+Use a current **protocol-2 `UPDATE.NLM`**, built alongside the agent. The
+bridge and current agent reject an older helper before launching it. The
+embedded `RETRO_NW_UPDATE_PROTOCOL_2` marker identifies compatibility; it is
+not a signature or authenticity check. During migration, an older agent can
+still hand off to the new helper and a new agent.
 
 `legacy_netware_self_update(machine, new_agent_local_path, update_nlm_local_path)`
-freezes and stages both local files and reads both back before sending UPDATE.
-By default it waits for a new startup instance, matching startup SHA-256,
-installed NLM readback, and stable identity after readback. Set
-`wait_for_agent=False` for acceptance only. SYSINFO records `agent_exe`
-from the volume-qualified loader `argv[0]`, `agent_started` from CLIB uptime
-and GetNLMID, and `agent_sha256` computed once before listening. Missing or
-unreadable identity cannot verify; a different installation path fails bridge
-preflight because the helper still targets SYS:SYSTEM. Older replacement
-builds without these fields remain explicitly unverified. This fingerprints
-the startup file, not relocated code memory or a publisher signature.
+freezes both inputs, verifies both staging readbacks, and waits by default for
+a new startup instance, matching startup SHA-256, and installed NLM readback.
+Set `wait_for_agent=False` for acceptance only. SYSINFO's loader-provided
+`agent_exe`, immutable `agent_sha256`, and uptime/NLM-ID `agent_started`
+fingerprint the startup file, not live relocated code or a publisher signature.
+A different installation path fails preflight: the updater targets SYS:SYSTEM.
 
-The agent still acknowledges before loading the helper. PING proves only
-reachability. A failed verification requires inspecting UPDATE's console and
-installed files, not blindly retrying the handoff. Retain an independent
-backup because the unchanged helper replaces its `.OLD` file and has weaker
-rollback than the Mac updater. Both 3.12 and 4.11 supplied full loader paths
-and passed native hashing and verified live updates.
+The agent launches the helper while keeping its listener available. It checks
+the helper's preparation record against the current and staged fingerprints
+before replying OK and self-exiting. Missing/incompatible helpers or failed
+preparation leave the original agent running. A lost acknowledgment does not
+cause an automatic retry. The helper waits for the outgoing NLM to leave the
+loaded-module list, rechecks both files, then moves the installed executable
+to its reserved backup before installing the staged NLM.
+
+The replacement writes a checked readiness receipt after loading a nonempty
+token and successfully opening its listener. The helper checks that receipt
+against the expected startup hash and confirms the NLM is loaded. The bridge
+still independently verifies authentication, instance, hash, and installed
+bytes; a readiness receipt alone is not end-to-end connectivity verification.
+The preparation wait is about eight seconds and each module-exit/readiness
+wait about 30 seconds, measured with CLIB ticks. Blocking filesystem/loader
+calls can exceed these bounds; these are not watchdogs for a hung server.
+
+If the candidate exits or fails to load, the helper preserves it as `BAD.NLM`,
+verifies a separate restoration copy, restores the previous executable, and
+loads it. `OLD.NLM` is retained even after rollback. A matching readiness
+receipt confirms the restored agent. If the candidate remains loaded without
+readiness, or a required recovery operation fails, the helper stops with
+recovery required. It never UNLOADs a candidate or renames a known loaded
+module. An older restored agent without the receipt protocol can be reachable
+but still require manual review.
+
+### Recovery files and status
+
+Each attempt reserves `SYS:SYSTEM\LLMUPD` exclusively. A preexisting directory
+blocks another attempt; it is never overwritten or automatically removed.
+The directory contains:
+
+- `PLAN.TXT`: target, backup/archive locations, and old/new SHA-256 values.
+- `LOG.TXT`: progress and failure messages; also written to the console.
+- `OLD.NLM`: retained previous executable after the first successful rename.
+- `BAD.NLM`: rejected installed candidate, when it could safely be moved.
+- `RESTORE.NLM`: restoration copy if recovery was interrupted or failed.
+- `EXPECT.TXT`, `PREPARED.TXT`, `READY.TXT`: bounded preparation/startup records.
+- `RESULT.TXT`: final outcome when that record could be written.
+
+Completed updates, confirmed rollbacks, and pre-swap aborts move this directory
+to `SYS:SYSTEM\LUxxxxxx\RESULT`, using a newly reserved archive directory.
+No existing archive or legacy `LLMAGENT.OLD` is deleted. Archives accumulate;
+review and prune them manually when their backups are no longer needed.
+`SYS:SYSTEM\LLMUPD.RES` records the latest outcome, intended new hash, and
+archive path. If final archival fails, the live `LLMUPD` directory remains
+and is authoritative even if that pointer names the intended destination.
+
+SYSINFO advertises `update_protocol=2`, `update_state=idle|busy|recovery-required`,
+and, when available, `update_last`. The bridge refuses staging while recovery
+is unresolved, reports a confirmed rollback explicitly, and distinguishes a
+verified executable from incomplete helper cleanup. A raw OK or PING is not
+proof of successful replacement.
+
+### Manual recovery after interruption
+
+1. Inspect the console and `update_state`. Let an active helper finish. Preserve
+   `LLMUPD`, its logs, and any archive named by `PLAN.TXT`/`update_last` before
+   changing files. Do not remove the directory merely to bypass the guard.
+2. Establish whether LLMAGENT is still loaded. If a candidate is loaded but
+   unusable, arrange a controlled server shutdown/restart through the normal
+   operator procedure; do not use console UNLOAD to force this agent out.
+3. With the helper and agent stopped, use a NetWare client or file-maintenance
+   utility to preserve any current candidate and restore a **copy** of the
+   verified `OLD.NLM` to `SYS:SYSTEM\LLMAGENT.NLM`. Compare its SHA-256 with
+   `old_sha256` in `PLAN.TXT`. Keep the original backup and configuration.
+4. Archive the entire unresolved `LLMUPD` directory under a new unused name
+   once the file state is understood. Then `LOAD SYS:SYSTEM\LLMAGENT.NLM`
+   and verify SYSINFO, authentication, installed bytes, and configuration.
+   Restoring a file alone does not establish that the right agent is running.
+
+Checked writes, flushes, closes, and readbacks handle reported I/O errors;
+this is not an atomic transaction across power loss or an NLM-induced kernel
+abend. No automatic garbage collection or forced recovery from a loaded,
+unresponsive candidate is provided.
+
 
 Trust model unchanged: cleartext token, lab/host-only network only.
 
