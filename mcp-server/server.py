@@ -69,7 +69,7 @@ def _machine(name: str) -> MachineConfig:
 
 
 srv = MCPServer(
-    "retro-ssh-server",
+    "RetroBridge",
     instructions=(
         "MCP tools for driving legacy machines through small target agents "
         "on an isolated lab network: "

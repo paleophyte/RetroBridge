@@ -1,6 +1,8 @@
-# retro-ssh-server
+# RetroBridge
 
-A toolchain for giving an LLM tool-calling client hands-on access to legacy
+**Remote control and automation for vintage computers.**
+
+Native agents and an MCP bridge give modern tools and LLM clients hands-on access to legacy
 machines — Windows for Workgroups 3.11, Windows 95/98/ME/NT4/2000/XP,
 FreeDOS, OS/2, NetWare, and classic Mac OS (System 7) — on an isolated lab network: run shell commands,
 transfer files, take screenshots, send mouse/keyboard input.
@@ -27,6 +29,11 @@ Novell SDK inputs are supplied locally and verified against a file manifest.
 They are not included in this repository or downloaded by the setup tool.
 This checkout is prepared for **source publication**. Compiled releases still
 have the per-platform requirements in [the binary release review](docs/BINARY_RELEASE.md).
+
+Previously developed as `retro-ssh-server`. Existing `llm_agent` binaries,
+`legacy_*` tool names, and `LEGACY_MACHINES_FILE` settings remain compatible.
+You can keep an existing `~/.retro-ssh-server/machines.ini`; the new name does
+not require moving or regenerating your private inventory.
 
 ## Nomenclature
 
@@ -248,7 +255,7 @@ agent reads `token=` and optional `port=` (default 2222) from `LLMAGENT.INI`
 beside its executable; see [Mac configuration](agent-mac-system7/README.md#installation-and-configuration).
 
 **Put your real `machines.ini` outside the repo**, e.g.
-`~/.retro-ssh-server/machines.ini`, and point `LEGACY_MACHINES_FILE` at
+`~/.retrobridge/machines.ini`, and point `LEGACY_MACHINES_FILE` at
 it (rather than the in-repo default of `mcp-server/machines.ini`). This isn't
 just tidiness — anything under `mcp-server/` is fair game for scratch/test
 files during development on this repo itself, and a real config sitting
@@ -263,11 +270,11 @@ server:
 ```json
 {
   "mcpServers": {
-    "retro-ssh-server": {
-      "command": "C:\\path\\to\\retro-ssh-server\\mcp-server\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\retro-ssh-server\\mcp-server\\server.py"],
+    "RetroBridge": {
+      "command": "C:\\path\\to\\RetroBridge\\mcp-server\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\RetroBridge\\mcp-server\\server.py"],
       "env": {
-        "LEGACY_MACHINES_FILE": "C:\\Users\\you\\.retro-ssh-server\\machines.ini"
+        "LEGACY_MACHINES_FILE": "C:\\Users\\you\\.retrobridge\\machines.ini"
       }
     }
   }

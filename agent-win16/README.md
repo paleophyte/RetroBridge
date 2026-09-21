@@ -454,7 +454,7 @@ ships its own Win16 SDK headers/import libs (`%WATCOM%\H\WIN`,
 `%WATCOM%\LIB286\WIN\winsock.lib`).
 
 ```bat
-cd C:\src\retro-ssh-server\agent-win16
+cd C:\src\RetroBridge\agent-win16
 build.bat
 ```
 

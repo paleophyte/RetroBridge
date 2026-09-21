@@ -72,7 +72,7 @@ that remote will be replaced. This preparation does not push or create a release
 For an optional source ZIP, choose an output path outside the checkout:
 
 ```text
-git archive --format=zip --prefix=retro-ssh-server/ --output=<source-zip-path> HEAD
+git archive --format=zip --prefix=RetroBridge/ --output=<source-zip-path> HEAD
 ```
 
 List the resulting ZIP and check its contents against `git ls-tree -r HEAD`.

@@ -60,7 +60,7 @@ You should get `%WATT_ROOT%\lib\wattcpwl.lib` and `%WATT_ROOT%\inc\sys\watcom.er
 ### 2. Build this agent
 
 ```bat
-cd C:\src\retro-ssh-server\agent-dos
+cd C:\src\RetroBridge\agent-dos
 set "WATT32=C:\src\Watt-32"
 build.bat
 ```
