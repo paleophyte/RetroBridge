@@ -1682,3 +1682,44 @@ recorded outside the candidate so writing its own hash cannot change it. No
 remote was configured and no GitHub push or compiled release was performed.
 Follow [PUBLICATION.md](PUBLICATION.md) when publishing; keep binary-release
 requirements and documented functional limitations separate from source readiness.
+
+
+## Follow-up: agent screenshot gallery and Win16 input (2026-09-21)
+
+Preparing the screenshot gallery exposed two live failures. Neither is hidden
+by using hypervisor captures: gallery images are produced by the native agents.
+
+- NetWare 3.12/4.11 returned black BMPs despite populated consoles. The code
+  confused ScanScreens OS IDs with CLIB handles, interpreted negative IDs as
+  missing screens, and counted spaces as successful content. Capture now
+  converts IDs, rejects blank/failed copies, prefers the displayed/console
+  screen, preserves the Install/StuffKey route, and restores I/O context.
+  SCREENS no longer treats a display-query error as true. Arbitrary numeric
+  GetScreenInfo probes, which can abend, were removed.
+- Win16 journal callbacks lacked MakeProcInstance for their EXE data segment.
+  Supplying the thunk fixes the reproduced dialog-click timeout. Printable
+  text now uses guest keyboard mapping, including spaces/punctuation, validates
+  before injection, and batches long requests without silent truncation. Mouse
+  buttons now use the shared 1=left, 2=middle, 3=right numbering.
+- Live WFW 3.11 checks passed for dialog clicking, named keys, mixed-case text,
+  punctuation/spaces, and all 216 characters of a multi-batch TYPE request
+  (checked with WM_GETTEXTLENGTH). Both NetWare guests produced nonblank,
+  visually reviewed screenshots through SCREENSHOT. Each updated guest's
+  startup identity, executable hash/readback and unchanged configuration were
+  verified. Host tests cover handle conversion, negative IDs, empty/error
+  captures, screen choice/restoration, hook/thunk cleanup, timeout, text
+  validation/batching and mouse-button mapping. All 95 host/fixture tests and
+  the 43-tool MCP stdio smoke passed.
+- The first 3.12 deployment hit listen failures for both the candidate and
+  restored old executable. The updater preserved the originals and entered
+  recovery-required. A normal DOWN/EXIT/SERVER cycle restored the old agent;
+  its executable/configuration were verified, recovery records downloaded and
+  archived intact, then the fixed build deployed successfully. Listener setup
+  now enables nonblocking polling after listen and logs listen errno. The
+  exact old-stack failure mechanism is not established; this is not a promise
+  of automatic recovery from all NetWare TCP/IP faults. See the manual
+  recovery procedure before retrying a failed update.
+
+Coverage remains limited to these running lab installations. Ubuntu is an
+inventory-only host, and the dual-boot MS-DOS 6.22 guest was captured while
+running WFW; neither is represented as an additional agent screenshot.

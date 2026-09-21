@@ -288,7 +288,8 @@ def legacy_screenshot_file(machine: str, local_path: str, image_format: str = "p
 def legacy_click(machine: str, x: int, y: int, button: int = 1) -> str:
     """Move the mouse to (x, y) in screen coordinates on the named legacy
     machine and click. button: 1=left, 2=middle, 3=right. Mac supports left
-    only; DOS/NetWare have no CLICK. Win16 journal injection is unreliable."""
+    only; DOS/NetWare have no CLICK. Win16 needs the corrected instance-thunk
+    build; journal input has a bounded wait and can fail in modal workflows."""
     try:
         _agent(machine).click(x, y, button)
     except (MachineConfigError, AgentAuthError) as e:

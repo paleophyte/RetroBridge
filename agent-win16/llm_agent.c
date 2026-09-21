@@ -38,14 +38,9 @@
  * system-wide, and a hook that never returns control freezes input for
  * the whole VM until a hard reset. Every caller goes through
  * run_journal_events(), which guarantees UnhookWindowsHookEx() runs no
- * matter what. KNOWN ISSUE: in practice this has repeatedly failed to
- * deliver queued events within the wait deadline and has caused an
- * unrelated foreground app to close -- root cause not yet found (no
- * debugger access, header-only documentation). Treat KEY/TYPE/CLICK as
- * unreliable until that's understood; prefer WINLIST+WINMSG (below)
- * wherever the target window's hwnd can be discovered, since SendMessage
- * only ever touches the one window named, with none of the journal
- * hook's system-wide reach or its failure modes.
+ * matter what. EXE hook callbacks use MakeProcInstance so foreign tasks
+ * see this instance's data. Keep playback bounded and prefer targeted
+ * POSTMSG controls for modal workflows. See README.md for live-test scope.
  *
  * WINLIST/WINMSG are the safer alternative for driving a *known* window:
  * WINLIST (EnumWindows/EnumChildWindows) is pure read-only
@@ -115,8 +110,8 @@ static int g_winlist_len;
 
 #define MAX_EVENTS 256
 static EVENTMSG g_events[MAX_EVENTS];
-static int g_event_count = 0;
-static int g_event_pos = 0;
+static volatile int g_event_count = 0;
+static volatile int g_event_pos = 0;
 static HHOOK g_hook = NULL;
 
 /* A custom WSASetBlockingHook()-installed hook (GetMessage()-based,
@@ -994,54 +989,24 @@ static void push_key(unsigned vk, unsigned scan, int extended) {
     push_event(WM_KEYUP, vk, base | KF_UP | KF_REPEAT);
 }
 
-/* Physical-key scan codes for ASCII 0..127 -- identical table to
-   agent-dos/llm_agent.c's scan_for_ascii (same PC hardware scan codes,
-   layout-independent of DOS vs Windows). Journal playback needs this
-   PLUS a separate shift flag, unlike DOS's BIOS buffer stuffing which
-   takes a pre-resolved ASCII character directly. */
-static unsigned char scan_for_ascii(unsigned char ch) {
-    static const unsigned char table[128] = {
-        0,0,0,0,0,0,0,0, 0x0E,0x0F,0,0,0,0x1C,0,0,
-        0,0,0,0,0,0,0,0, 0,0,0,0x01,0,0,0,0,
-        0x39,0x02,0x28,0x04,0x05,0x06,0x08,0x28, 0x0A,0x0B,0x09,0x0D,0x33,0x0C,0x34,0x35,
-        0x0B,0x02,0x03,0x04,0x05,0x06,0x07,0x08, 0x09,0x0A,0x27,0x27,0x33,0x0D,0x34,0x35,
-        0x03,0x1E,0x30,0x2E,0x20,0x12,0x21,0x22, 0x23,0x17,0x24,0x25,0x26,0x32,0x31,0x18,
-        0x19,0x10,0x13,0x1F,0x14,0x16,0x2F,0x11, 0x2D,0x15,0x2C,0x1A,0x2B,0x1B,0x07,0x0C,
-        0x29,0x1E,0x30,0x2E,0x20,0x12,0x21,0x22, 0x23,0x17,0x24,0x25,0x26,0x32,0x31,0x18,
-        0x19,0x10,0x13,0x1F,0x14,0x16,0x2F,0x11, 0x2D,0x15,0x2C,0x1A,0x2B,0x1B,0x29,0
-    };
-    if (ch > 127) return 0;
-    return table[ch];
-}
-
-static int needs_shift(unsigned char ch) {
-    if (ch >= 'A' && ch <= 'Z') return 1;
-    switch (ch) {
-    case '!': case '@': case '#': case '$': case '%': case '^': case '&':
-    case '*': case '(': case ')': case '_': case '+': case '{': case '}':
-    case '|': case ':': case '"': case '<': case '>': case '?': case '~':
-        return 1;
-    default:
-        return 0;
-    }
-}
-
-/* VK_A..VK_Z and VK_0..VK_9 are the same numeric values as their ASCII
-   uppercase/digit forms; symbol keys don't have a meaningful named VK
-   here; the scan code carries the actual key identity for those. */
-static unsigned vk_for_ascii(unsigned char ch) {
-    if (ch >= 'a' && ch <= 'z') return (unsigned)(ch - 'a' + 'A');
-    if (ch >= 'A' && ch <= 'Z') return (unsigned)ch;
-    if (ch >= '0' && ch <= '9') return (unsigned)ch;
-    return 0;
+/* Resolve printable ASCII through the guest's keyboard layout. Journal
+   playback needs a real virtual key even for spaces and punctuation. */
+static int map_char(unsigned char ch, unsigned *vk, unsigned *scan, int *shift) {
+    UINT key;
+    if (ch < 32 || ch > 126) return -1;
+    key = VkKeyScan((UINT)ch);
+    /* Ctrl/Alt combinations remain unsupported; never silently omit text. */
+    if (key == (UINT)-1 || (key & 0xFE00)) return -1;
+    *vk = key & 0xFF;
+    *scan = MapVirtualKey(*vk, 0);
+    *shift = (key & 0x0100) != 0;
+    return *vk && *scan ? 0 : -1;
 }
 
 static int push_char(unsigned char ch) {
-    unsigned scan = scan_for_ascii(ch);
-    unsigned vk = vk_for_ascii(ch);
-    int shift = needs_shift(ch);
-
-    if (!scan) return -1;
+    unsigned vk, scan;
+    int shift;
+    if (map_char(ch, &vk, &scan, &shift) < 0) return -1;
     if (shift) push_event(WM_KEYDOWN, VK_SHIFT, 0x2A);
     push_key(vk, scan, 0);
     if (shift) push_event(WM_KEYUP, VK_SHIFT, 0x2A | KF_UP | KF_REPEAT);
@@ -1071,10 +1036,16 @@ static int push_char(unsigned char ch) {
 static int run_journal_events(void) {
     DWORD start;
     const DWORD max_wait_ms = 3000UL;
+    FARPROC callback;
 
     g_event_pos = 0;
-    g_hook = SetWindowsHookEx(WH_JOURNALPLAYBACK, (HOOKPROC)JournalPlaybackProc, g_hinst, 0);
+    /* An EXE callback needs an instance thunk so foreign tasks enter with
+       this instance's data segment, not their own journal-queue globals. */
+    callback = MakeProcInstance((FARPROC)JournalPlaybackProc, g_hinst);
+    if (!callback) { g_event_count = 0; return -1; }
+    g_hook = SetWindowsHookEx(WH_JOURNALPLAYBACK, (HOOKPROC)callback, g_hinst, 0);
     if (!g_hook) {
+        FreeProcInstance(callback);
         g_event_count = 0;
         return -1;
     }
@@ -1091,6 +1062,7 @@ static int run_journal_events(void) {
 
     UnhookWindowsHookEx(g_hook);
     g_hook = NULL;
+    FreeProcInstance(callback);
     {
         int delivered_all = (g_event_pos >= g_event_count);
         g_event_count = 0;
@@ -1187,13 +1159,12 @@ static int handle_key(const char *keyspec) {
     if (!found) {
         if (strlen(base) == 1) {
             unsigned char ch = (unsigned char)base[0];
-            scan = scan_for_ascii(ch);
-            vk = vk_for_ascii(ch);
-            if (!scan) {
+            int char_shift;
+            if (map_char(ch, &vk, &scan, &char_shift) < 0) {
                 send_cstr("ERR:unknown key name\r\n");
                 return -1;
             }
-            if (needs_shift(ch)) use_shift = 1;
+            if (char_shift) use_shift = 1;
         } else {
             send_cstr("ERR:unknown key name\r\n");
             return -1;
@@ -1218,28 +1189,38 @@ static int handle_key(const char *keyspec) {
 
 static int handle_type(const char *text) {
     const char *p;
-
-    g_event_count = 0;
-    for (p = text; *p && g_event_count < MAX_EVENTS - 4; p++) {
-        if (push_char((unsigned char)*p) < 0) {
-            /* Unsupported character: drop it rather than fail the
-               whole string, matching the DOS agent's TYPE behavior. */
-            continue;
-        }
-    }
-    {
-        int rc = run_journal_events();
-        if (rc < 0) {
-            send_journal_error(rc);
+    /* Validate the complete request before injecting anything. */
+    for (p = text; *p; p++) {
+        unsigned vk, scan;
+        int shift;
+        if (map_char((unsigned char)*p, &vk, &scan, &shift) < 0) {
+            send_cstr("ERR:TYPE character unavailable in current keyboard layout\r\n");
             return -1;
         }
+    }
+    g_event_count = 0;
+    for (p = text; *p; p++) {
+        int rc;
+        if (g_event_count > MAX_EVENTS - 4) {
+            rc = run_journal_events();
+            if (rc < 0) { send_journal_error(rc); return -1; }
+        }
+        if (push_char((unsigned char)*p) < 0) {
+            g_event_count = 0;
+            send_cstr("ERR:TYPE keyboard layout changed during input\r\n");
+            return -1;
+        }
+    }
+    if (g_event_count) {
+        int rc = run_journal_events();
+        if (rc < 0) { send_journal_error(rc); return -1; }
     }
     send_cstr("OK\r\n");
     return 0;
 }
 
-/* ---- CLICK <x> <y> [button] -- screen coordinates, button 1=left
-   (default) or 2=right. ---- */
+/* ---- CLICK <x> <y> [button] -- screen coordinates, 1=left, 2=middle,
+   3=right, matching the shared client and other desktop agents. ---- */
 
 static int handle_click(const char *args) {
     int x = 0, y = 0, button = 1;
@@ -1249,11 +1230,18 @@ static int handle_click(const char *args) {
         return -1;
     }
 
+    if (button < 1 || button > 3) {
+        send_cstr("ERR:bad button (use 1/2/3)\r\n");
+        return -1;
+    }
     g_event_count = 0;
     push_event(WM_MOUSEMOVE, (UINT)x, (UINT)y);
-    if (button == 2) {
+    if (button == 3) {
         push_event(WM_RBUTTONDOWN, (UINT)x, (UINT)y);
         push_event(WM_RBUTTONUP, (UINT)x, (UINT)y);
+    } else if (button == 2) {
+        push_event(WM_MBUTTONDOWN, (UINT)x, (UINT)y);
+        push_event(WM_MBUTTONUP, (UINT)x, (UINT)y);
     } else {
         push_event(WM_LBUTTONDOWN, (UINT)x, (UINT)y);
         push_event(WM_LBUTTONUP, (UINT)x, (UINT)y);

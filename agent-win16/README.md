@@ -236,23 +236,30 @@ was only ever chosen originally to hide the (now-fixed) video
 corruption; there's no other reason to keep it, and keeping it
 reintroduces the hang.
 
-### ⚠ KEY/TYPE/CLICK are unreliable -- prefer WINLIST+WINMSG/POSTMSG
+### KEY/TYPE/CLICK: journal playback and limits
 
-These use a system-wide `WH_JOURNALPLAYBACK` hook (the mechanism
-`Recorder.exe` uses) since it's the only way to reach a window that
-isn't this agent's own without knowing its handle. In practice, across
-repeated testing, queued events have often failed to fully deliver
-within the wait deadline (`run_journal_events()`, bounded to 3 real
-seconds via `GetTickCount()` so a stuck hook can't freeze system input
-forever) and have at least twice caused an unrelated foreground app
-(Write) to close unexpectedly -- root cause not found; there's no
-debugger here, only header-derived documentation. Treat these three as
-experimental. **Prefer `WINLIST` + `WINMSG`/`POSTMSG` wherever the
-target window's hwnd can be discovered** -- `SendMessage`/`PostMessage`
-only ever touch the one window named, with none of the journal hook's
-system-wide reach or its failure modes. This is how, e.g., disabling
-WFW's network logon prompt via Control Panel was actually automated --
-see below.
+These use a system-wide `WH_JOURNALPLAYBACK` hook. The September 21, 2026
+fix supplies a `MakeProcInstance` thunk for the EXE callback, so callbacks
+from another task use the agent's data segment. Previously, the hook could
+read the wrong queue state, time out, or affect an unrelated application.
+Live WFW 3.11 checks now pass for clicking a dialog, named keys, mixed-case
+text with spaces/punctuation, and a 216-character multi-batch TYPE request.
+
+TYPE resolves printable ASCII through `VkKeyScan` and `MapVirtualKey`.
+Unmappable characters and mappings needing Ctrl/Alt are rejected before
+input starts. Text beyond one event queue is sent in complete batches;
+it is not silently truncated. A later playback failure can leave partial
+text, so inspect the target before retrying. KEY still supports named keys
+and the `shift-` prefix; Ctrl/Alt combinations remain unsupported. CLICK uses
+1=left, 2=middle, 3=right, matching the bridge (older Win16 builds used 2=right).
+
+Playback still temporarily replaces system-wide input and retains its
+three-second wait cap per batch. This is bounded live-test evidence, not
+certification across all display drivers, keyboard layouts and modal apps.
+Prefer `WINLIST` plus `POSTMSG` for known controls where practical.
+
+The callback setup follows Microsoft's Windows 3.1 Programmer's Reference,
+volume 1, section 1.16.2 (instance procedures for EXE-based filter functions).
 
 ### ⚠ WINMSG (SendMessage) vs POSTMSG (PostMessage) -- the second wedge
 

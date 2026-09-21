@@ -44,7 +44,9 @@ messages. For example, the Win16 headers define LB_GETCOUNT as WM_USER+12.
 Only scalar numeric values are passed: strings, buffers, and pointers are
 not marshalled into the target application's address space. Use LBGETTEXT
 for listbox strings rather than passing a pointer-bearing message. Journal
-mouse/keyboard injection remains unreliable; these wrappers do not repair it.
+input requires the corrected instance-thunk build; WFW 3.11 click, key,
+spaces/punctuation and long TYPE checks pass. Modal workflows and keyboard
+layouts still need care; see [Win16 input limits](../agent-win16/README.md#keytypeclick-journal-playback-and-limits).
 
 ## Update result semantics
 

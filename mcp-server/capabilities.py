@@ -42,7 +42,7 @@ NOTES = {
     "win32": ["Secure desktops are not controlled by synthetic input; screenshot access depends on the agent session.",
               "NT self-update expects an LLMAgent service installation; interactive --run deployments need an explicit restart."],
     "win16": ["WINLIST accepts parent_hwnd for immediate children.",
-              "Journal mouse/key/type injection remains unreliable; prefer window/message controls.",
+              "Journal input requires the corrected instance-thunk build; validated on WFW 3.11. Prefer targeted message controls for modal workflows; TYPE supports printable ASCII without Ctrl/Alt mappings.",
               "WINMSG is synchronous and can block on a modal dialog; POSTMSG only acknowledges queueing.",
               "LBGETTEXT requires a string-backed listbox; use Win16 message constants (some differ from Win32); pointer parameters are not marshalled.",
               "SHUTDOWN exits Windows to DOS; detached replies do not provide a real PID."],

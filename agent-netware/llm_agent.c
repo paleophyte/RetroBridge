@@ -438,71 +438,60 @@ static void bg_rgb(unsigned char attr, unsigned char *r, unsigned char *g, unsig
     *b = pal[bg][2];
 }
 
-/* Score printable chars; NetWare cells are char then attribute. */
+/* Spaces are not evidence of captured content. */
 static int count_printable(const unsigned char *cells, int ncells) {
     int i, n = 0;
     for (i = 0; i < ncells; i++) {
         unsigned char ch = cells[i * 2];
-        if (ch >= 32 && ch < 127) n++;
+        if (ch > 32 && ch < 127) n++;
     }
     return n;
 }
 
-/*
- * Private CLIB screen for ScanScreens/CopyFromScreenMemory context.
- * Shows up in Ctrl+Esc as "LLMAGENT" â€” do not use it interactively; the
- * agent never reads keys there. On 3.12, SetCurrentScreen(LLMAGENT) can
- * still make it the operator-visible screen (despite DONT_SWITCH flags).
- */
-static int ensure_screen_context(void) {
-    if (g_our_screen >= 0) return 0;
-    g_our_screen = CreateScreen(
-        "LLMAGENT",
-        (BYTE)(NW_DONT_AUTO_ACTIVATE | NW_DONT_SWITCH_SCREEN |
-               NW_AUTO_DESTROY_SCREEN));
-    if (g_our_screen < 0) return -1;
-    return 0;
+/* ScanScreens returns OS IDs (possibly negative), not CLIB handles.
+ * Only IDs obtained by scanning may be passed to GetScreenInfo: probing
+ * arbitrary integers can abend the server. CreateScreen can attach a
+ * CLIB handle to an existing OS ID without creating a new screen. */
+static int screen_handle(int id) {
+    int handle;
+    if (id == 0) return -1;
+    handle = GetScreenInfo(id, NULL, NULL);
+    if (handle == 0) handle = CreateScreen((const char *)id, 0);
+    return handle == 0 ? -1 : handle;
 }
 
-/* Never leave the operator parked on our private LLMAGENT screen. */
-static void restore_operator_screen(int prefer_id) {
+static int screen_displayed(int id) {
+    int handle = screen_handle(id);
+    return handle != -1 && CheckIfScreenDisplayed(handle, 0) == 1;
+}
+
+/* Restore the thread group's I/O context, not the operator's display. */
+static void restore_operator_screen(int prefer_handle) {
     int id = 0;
     char name[64];
     LONG attr = 0;
-    int install_id = -1;
-    int console_id = -1;
-    int displayed_id = -1;
-
-    if (prefer_id >= 0 && prefer_id != g_our_screen) {
-        SetCurrentScreen(prefer_id);
+    if (prefer_handle != 0 && prefer_handle != -1) {
+        SetCurrentScreen(prefer_handle);
         return;
     }
-
     while ((id = ScanScreens(id, name, &attr)) != 0) {
-        if (screen_name_ignored(name)) continue;
-        if (strstr(name, "Install") != NULL || strstr(name, "INSTALL") != NULL)
-            install_id = id;
-        if (is_system_console_name(name))
-            console_id = id;
-        if (CheckIfScreenDisplayed(id, 0) && displayed_id < 0)
-            displayed_id = id;
+        if (is_system_console_name(name)) {
+            int handle = screen_handle(id);
+            if (handle != -1) SetCurrentScreen(handle);
+            return;
+        }
     }
-    if (install_id >= 0)
-        SetCurrentScreen(install_id);
-    else if (displayed_id >= 0 && displayed_id != g_our_screen)
-        SetCurrentScreen(displayed_id);
-    else if (console_id >= 0)
-        SetCurrentScreen(console_id);
 }
 
 static int try_copy_screen(int id, unsigned char *cells, WORD *rowsP, WORD *colsP) {
     WORD rows = 25, cols = 80;
-
-    SetCurrentScreen(id);
-    if (GetSizeOfScreen(&rows, &cols) != 0 || rows == 0 || cols == 0) {
-        rows = 25;
-        cols = 80;
-    }
+    int handle = screen_handle(id);
+    if (handle == -1) return -1;
+    SetCurrentScreen(handle);
+    /* CLIB revisions differ in the return value; verify the actual context. */
+    if (GetCurrentScreen() != handle) return -1;
+    if (GetSizeOfScreen(&rows, &cols) != 0 || rows == 0 || cols == 0)
+        return -1;
     if (rows > SCR_MAX_ROWS) rows = SCR_MAX_ROWS;
     if (cols > SCR_MAX_COLS) cols = SCR_MAX_COLS;
     memset(cells, 0, (unsigned)rows * (unsigned)cols * 2);
@@ -601,7 +590,7 @@ static int run_stuffkey_ncf(const char *flags) {
     return 0;
 }
 
-static int capture_install_via_stuffkey(unsigned char *cells, WORD *rowsP, WORD *colsP) {
+static int capture_install_via_stuffkey(const char *name, unsigned char *cells, WORD *rowsP, WORD *colsP) {
     FILE *f;
 
     if (!stuffkey_present()) return -1;
@@ -609,7 +598,7 @@ static int capture_install_via_stuffkey(unsigned char *cells, WORD *rowsP, WORD 
 
     f = fopen(STUFFKEY_SCRIPT, "wb");
     if (!f) return -1;
-    fprintf(f, "<SCREEN=Install Screen>\n");
+    fprintf(f, "<SCREEN=%s>\n", name);
     fprintf(f, "<LOG NEW=SYS:SYSTEM/MD.TXT>\n");
     fprintf(f, "<DUMP>\n");
     fclose(f);
@@ -623,138 +612,42 @@ static int capture_install_via_stuffkey(unsigned char *cells, WORD *rowsP, WORD 
 }
 
 static int capture_console_text(unsigned char *cells, WORD *rowsP, WORD *colsP) {
-    int saved;
-    int id = 0;
-    int best_id = -1;
-    int best_score = -1;
+    int saved = GetCurrentScreen();
+    int id = 0, best_score = 0, best_priority = -1;
     WORD best_rows = 25, best_cols = 80;
     char name[64];
     LONG attr = 0;
-    int install_id = -1;
-    char install_name[64];
     static unsigned char tmp[SCR_MAX_ROWS * SCR_MAX_COLS * 2];
-    FILE *dbgf = NULL;
+    FILE *dbgf = g_debug ? fopen("SYS:SYSTEM\\LLMSCR.DBG", "w") : NULL;
 
-    install_name[0] = '\0';
-    /*
-     * Prefer not to CreateScreen("LLMAGENT") â€” it shows in Ctrl+Esc and
-     * console UNLOAD has abended tearing it down. ScanScreens usually works
-     * without our own screen; fall back to ensure_screen_context only if needed.
-     */
-    saved = GetCurrentScreen();
-    if (g_debug) dbgf = fopen("SYS:SYSTEM\\LLMSCR.DBG", "w");
-
-    id = 0;
     while ((id = ScanScreens(id, name, &attr)) != 0) {
+        WORD r = 25, c = 80;
+        int score, priority;
+        if (screen_name_ignored(name)) continue;
+        /* NWSNUT/Install must use StuffKey: direct copying can abend. */
         if (strstr(name, "Install") != NULL || strstr(name, "INSTALL") != NULL) {
-            install_id = id;
-            strncpy(install_name, name, sizeof(install_name) - 1);
-            install_name[sizeof(install_name) - 1] = '\0';
-            break;
+            score = capture_install_via_stuffkey(name, tmp, &r, &c);
+            priority = 3;
+        } else {
+            priority = screen_displayed(id) ? 2 :
+                       (is_system_console_name(name) ? 1 : 0);
+            score = try_copy_screen(id, tmp, &r, &c);
         }
-    }
-
-    if (install_id >= 0) {
-        WORD r, c;
-        int score;
-        /*
-         * Never CopyFromScreenMemory on Install/NWSNUT â€” hangs or abends on
-         * this 3.12 box (full rect and row-by-row both unsafe).
-         * StuffKey DUMP is chars-only (no reverse-video highlight).
-         */
-        score = capture_install_via_stuffkey(cells, &r, &c);
-        if (dbgf) fprintf(dbgf, "install stuffkey dump score=%d r=%u c=%u\n",
-                          score, (unsigned)r, (unsigned)c);
-        if (dbgf) {
-            fprintf(dbgf, "best_score=%d (install/stuffkey)\n", score);
-            fclose(dbgf);
-            dbgf = NULL;
-        }
-        if (score > 0) {
-            *rowsP = r;
-            *colsP = c;
-            return score;
-        }
-    }
-
-    if (ensure_screen_context() != 0) {
-        if (dbgf) fclose(dbgf);
-        return -1;
-    }
-    if (dbgf) fprintf(dbgf, "saved=%d our=%d\n", saved, g_our_screen);
-
-    id = 0;
-    while ((id = ScanScreens(id, name, &attr)) != 0) {
-        WORD r, c;
-        int score;
-        if (strstr(name, "Debugger") != NULL || strstr(name, "DEBUGGER") != NULL)
-            continue;
-        if (strstr(name, "LLMAGENT") != NULL)
-            continue;
-/* Install: StuffKey DUMP only â€” never CopyFromScreenMemory. */
-        if (strstr(name, "Install") != NULL || strstr(name, "INSTALL") != NULL)
-            continue;
-
-        score = try_copy_screen(id, tmp, &r, &c);
-        if (score < 0) continue;
-        if (strstr(name, "System Console") != NULL ||
-            strstr(name, "SYSTEM CONSOLE") != NULL ||
-            name[0] == '\0') {
-            score += 1000;
-        }
-        if (strstr(name, "Monitor") != NULL || strstr(name, "MONITOR") != NULL)
-            score += 400;
-        if (dbgf) fprintf(dbgf, "scan %d '%s' score=%d r=%u c=%u\n",
-                          id, name, score, (unsigned)r, (unsigned)c);
-        if (score > best_score) {
+        if (dbgf) fprintf(dbgf, "screen %d '%s' content=%d priority=%d %ux%u\n",
+                          id, name, score, priority, (unsigned)r, (unsigned)c);
+        /* Never turn a blank/failed capture into a success with a priority bonus. */
+        if (score > 0 && (priority > best_priority ||
+            (priority == best_priority && score > best_score))) {
             best_score = score;
-            best_id = id;
+            best_priority = priority;
             best_rows = r;
             best_cols = c;
             memcpy(cells, tmp, (unsigned)r * (unsigned)c * 2);
         }
         ThreadSwitchWithDelay();
     }
-
-    if (best_score <= 0) {
-        for (id = 0; id < 64; id++) {
-            WORD r, c;
-            int score;
-            name[0] = '\0';
-            attr = 0;
-            if (GetScreenInfo(id, name, &attr) != 0) continue;
-            score = try_copy_screen(id, tmp, &r, &c);
-            if (score < 0) continue;
-            if (dbgf) fprintf(dbgf, "info %d '%s' score=%d\n", id, name, score);
-            if (score > best_score) {
-                best_score = score;
-                best_id = id;
-                best_rows = r;
-                best_cols = c;
-                memcpy(cells, tmp, (unsigned)r * (unsigned)c * 2);
-            }
-        }
-    }
-
-    (void)best_id;
-    if (saved >= 0 && saved != g_our_screen)
-        restore_operator_screen(saved);
-    else
-        restore_operator_screen(best_id >= 0 ? best_id : -1);
-
-    if (dbgf) {
-        fprintf(dbgf, "best_score=%d best_id=%d %ux%u\n",
-                best_score, best_id, (unsigned)best_rows, (unsigned)best_cols);
-        if (best_score > 0) {
-            int i;
-            fprintf(dbgf, "first32:");
-            for (i = 0; i < 32 && i < (int)best_rows * (int)best_cols * 2; i++)
-                fprintf(dbgf, " %02X", cells[i]);
-            fprintf(dbgf, "\n");
-        }
-        fclose(dbgf);
-    }
-
+    restore_operator_screen(saved);
+    if (dbgf) fclose(dbgf);
     if (best_score <= 0) return 0;
     *rowsP = best_rows;
     *colsP = best_cols;
@@ -916,9 +809,9 @@ static int resolve_input_screen(char *nameOut, int nameOutLen) {
     int id = 0;
     char name[64];
     LONG attr = 0;
-    int install_id = -1;
-    int displayed = -1;
-    int any_other = -1;
+    int install_id = 0;
+    int displayed = 0;
+    int any_other = 0;
     char install_name[64];
     char displayed_name[64];
     char any_name[64];
@@ -936,12 +829,12 @@ static int resolve_input_screen(char *nameOut, int nameOutLen) {
             strncpy(install_name, name, sizeof(install_name) - 1);
             install_name[sizeof(install_name) - 1] = '\0';
         }
-        if (any_other < 0) {
+        if (any_other == 0) {
             any_other = id;
             strncpy(any_name, name, sizeof(any_name) - 1);
             any_name[sizeof(any_name) - 1] = '\0';
         }
-        if (CheckIfScreenDisplayed(id, 0)) {
+        if (screen_displayed(id)) {
             displayed = id;
             strncpy(displayed_name, name, sizeof(displayed_name) - 1);
             displayed_name[sizeof(displayed_name) - 1] = '\0';
@@ -951,35 +844,37 @@ static int resolve_input_screen(char *nameOut, int nameOutLen) {
     }
 
     /* Prefer Install Screen when present (menu driving). */
-    if (install_id >= 0) {
+    if (install_id != 0) {
         if (nameOut && nameOutLen > 0) {
             strncpy(nameOut, install_name, (unsigned)nameOutLen - 1);
             nameOut[nameOutLen - 1] = '\0';
         }
         return install_id;
     }
-    if (displayed >= 0) {
+    if (displayed != 0) {
         if (nameOut && nameOutLen > 0) {
             strncpy(nameOut, displayed_name, (unsigned)nameOutLen - 1);
             nameOut[nameOutLen - 1] = '\0';
         }
         return displayed;
     }
-    if (any_other >= 0) {
+    if (any_other != 0) {
         if (nameOut && nameOutLen > 0) {
             strncpy(nameOut, any_name, (unsigned)nameOutLen - 1);
             nameOut[nameOutLen - 1] = '\0';
         }
         return any_other;
     }
-    return -1;
+    return 0;
 }
 
 static int begin_input_stuff(int *savedP) {
     char name[64];
     int target = resolve_input_screen(name, (int)sizeof(name));
 
-    if (target < 0) return -1;
+    if (target == 0) return -1;
+    target = screen_handle(target);
+    if (target == -1) return -1;
     *savedP = GetCurrentScreen();
     /*
      * CLIB ungetch only feeds getch/getche screens. INSTALL uses NWSNUT
@@ -988,6 +883,10 @@ static int begin_input_stuff(int *savedP) {
      * System Console stuffing; INSTALL needs StuffKey (separate helper).
      */
     SetCurrentScreen(target);
+    if (GetCurrentScreen() != target) {
+        restore_operator_screen(*savedP);
+        return -1;
+    }
     ThreadSwitchWithDelay();
     if (g_debug) {
         char msg[140];
@@ -1351,7 +1250,7 @@ static int handle_screens(void) {
     /* No CreateScreen â€” listing must not invent an LLMAGENT Ctrl+Esc entry. */
     while ((id = ScanScreens(id, name, &attr)) != 0) {
         int n;
-        int disp = CheckIfScreenDisplayed(id, 0) ? 1 : 0;
+        int disp = screen_name_ignored(name) ? 0 : screen_displayed(id);
         if (len >= (int)sizeof(buf) - 96) break;
         n = sprintf(buf + len, "%d\t%d\t%s\r\n", id, disp, name);
         if (n < 0) break;
@@ -1591,12 +1490,6 @@ static int server_main(void) {
     }
     g_listen = ls;
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (char *)&one, sizeof(one));
-    if (ioctl(ls, FIONBIO, &one) < 0) {
-        ConsolePrintf("LLMAGENT: FIONBIO failed\r\n");
-        close(ls);
-        g_listen = -1;
-        return 1;
-    }
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -1610,7 +1503,15 @@ static int server_main(void) {
         return 1;
     }
     if (listen(ls, 1) < 0) {
-        ConsolePrintf("LLMAGENT: listen failed\r\n");
+        ConsolePrintf("LLMAGENT: listen failed (errno=%d)\r\n", errno);
+        close(ls);
+        g_listen = -1;
+        return 1;
+    }
+
+    /* Establish the listening endpoint before switching accept to polling. */
+    if (ioctl(ls, FIONBIO, &one) < 0) {
+        ConsolePrintf("LLMAGENT: FIONBIO failed\r\n");
         close(ls);
         g_listen = -1;
         return 1;

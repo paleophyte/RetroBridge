@@ -385,7 +385,8 @@ OS/2, NetWare and System 7 lab guests; this is not certification of every OS
 release, language, service pack or physical CPU named above.
 
 Notable limits remain: DOS commands are synchronous and the TSR is deferred;
-Win16 mouse/keyboard injection is unreliable; Mac dragging is experimental
+Win16 input requires the corrected journal-hook build and has modal/layout limits;
+Mac dragging is experimental
 and cross-application clipboard/window enumeration are disabled. Cancellation,
 job persistence and output limits vary by platform. See
 [long-running commands](docs/LONG_RUNNING_COMMANDS.md),

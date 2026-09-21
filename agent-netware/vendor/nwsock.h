@@ -109,7 +109,7 @@ void CopyFromScreenMemory(WORD height, WORD width, BYTE *Rect,
                           WORD beg_x, WORD beg_y);
 int GetCurrentScreen(void);
 int GetSizeOfScreen(WORD *heightP, WORD *widthP);
-int GetScreenInfo(int handle, char *name, LONG *attr);
+int GetScreenInfo(int screenID, char *name, LONG *attr);
 int SetCurrentScreen(int screenHandle);
 int ScanScreens(int lastScreenID, char *name, LONG *attr);
 int DisplayScreen(int screenHandle);

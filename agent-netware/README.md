@@ -18,7 +18,7 @@ header).
 | `PUT` / `GET` | File transfer (NetWare paths, e.g. `SYS:SYSTEM\FOO.TXT`) |
 | `SYSINFO` | `os_family=netware`, server name/version, SYS: volume space |
 | `AUTOEXEC` | Check explicit startup loads and CLIBAUX-before-LLMAGENT order; safely add missing loads |
-| `SCREENSHOT` | Best-scoring console text cells → 24-bit BMP |
+| `SCREENSHOT` | Displayed/console text cells → 24-bit BMP |
 | `KEY` / `TYPE` | Via **StuffKey** when `STUFFKEY.NLM` is present (INSTALL/NWSNUT). Else CLIB `ungetch` (console only) |
 | `SCREENS` | List CLIB screens (`id`, displayed flag, name) for INSTALL discovery |
 | `SHUTDOWN` | `OK` then `DownFileServer(1)` (force down — lab only) |
@@ -59,6 +59,33 @@ with “how many zombies?”). Example: `install_menu.py --path write-autoexec`.
 Agent writes `SYS:SYSTEM\L.SK` and runs via short `SK.NCF`
 (`LOAD STUFFKEY SYS:SYSTEM/L.SK /sr /d=80`) because `system()` truncates ~32
 chars (`/s` avoid flashing targets, `/r` restore the operator screen).
+
+### Screenshot screen IDs and handles
+
+The September 21, 2026 fix converts the OS IDs from `ScanScreens` to CLIB
+handles with `GetScreenInfo`/`CreateScreen` before copying or testing screen
+state. High-bit NetWare 4 IDs are valid even when represented as negative
+integers. The old code passed IDs directly, captured blank private-screen
+cells and counted their spaces as successful content.
+
+Capture prefers Install's existing StuffKey dump path, then a displayed
+screen, then the system console. Blank or failed copies cannot win through
+a priority bonus. It restores the calling thread's previous I/O context,
+does not display a different screen, and does not probe arbitrary numeric
+IDs. Live agent-produced screenshots now pass on NetWare 3.12 and 4.11.
+
+See Novell's [ScanScreens](https://www.novell.com/documentation/developer/clib/ndev_enu/data/sdk1289.html)
+and [GetScreenInfo](https://www.novell.com/documentation/developer/clib/ndev_enu/data/sdk1247.html)
+contracts. SCREENS reports displayed state only when the CLIB query returns
+1; an error is not interpreted as an active screen.
+
+Listener initialization now calls `listen` before enabling nonblocking
+accept polling, and reports its errno on failure. During validation, a
+3.12 replacement and rollback both failed to listen until a normal server
+shutdown/restart. The previous binary/configuration and all recovery records
+were preserved; the subsequent update with the revised initialization
+verified successfully. A failed listen/rollback still requires operator
+recovery; do not assume that retrying UPDATE repairs the network stack.
 
 ### Persist across reboot
 
