@@ -153,3 +153,7 @@ agent-mac-system7/MacOS 7.5.5 Update (3.5)/
 # one-off setup tool for the MacTCP control panel install workaround,
 # not part of the shipped agent
 agent-mac-system7/forkjoin.c
+
+# Local deployment media and machine-specific build settings.
+/dist/
+/tools/build_iso.local.json

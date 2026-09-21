@@ -1,0 +1,13 @@
+{
+  "watt32": "C:/src/Watt-32",
+  "mingw_bin": "C:/msys64/mingw32/bin",
+  "make": "C:/msys64/usr/bin/make.exe",
+  "mac": {
+    "host": "192.168.56.40",
+    "user": "builder",
+    "key": "C:/Users/you/.ssh/retro68_ed25519",
+    "known_hosts": "C:/Users/you/.ssh/known_hosts",
+    "port": 22,
+    "toolchain": "/home/builder/Retro68-build/toolchain/m68k-apple-macos/cmake/retro68.toolchain.cmake"
+  }
+}

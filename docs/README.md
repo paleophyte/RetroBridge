@@ -19,6 +19,8 @@ before deploying a binary or calling a tool.
 
 ## Shared behavior and development
 
+- [All-agent deployment ISO](BUILD_ISO.md): compile every production agent and
+  helper into local CD media, including NetWare NLM loading instructions.
 - [Architecture and protocol](ARCHITECTURE.md): components, Win32 design,
   desktop sessions, trust model, file transfers, and update verification.
 - [MCP coverage](MCP_COVERAGE.md): platform extensions and tool limitations.

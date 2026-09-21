@@ -20,6 +20,8 @@ text screenshots, and several desktop tools are platform-specific. See the
 [MCP coverage](docs/MCP_COVERAGE.md) and [publication audit](docs/PUBLICATION_AUDIT.md) for
 the current limits, verified coverage, and outstanding issues.
 The [documentation guide](docs/README.md) links all platform and maintainer guides.
+To compile every agent and its helpers onto one mountable CD image, see
+[building the deployment ISO](docs/BUILD_ISO.md).
 
 ## Screenshots
 
@@ -383,8 +385,9 @@ Recommended reboot/login workflow for a standalone NT-family lab box:
 ## Validation and known limits
 
 The [publication audit](docs/PUBLICATION_AUDIT.md) records dated live results
-and remaining limits. The latest functional check passed 92 root tests plus
-two Mac power/updater fixtures and one Win16 listbox fixture (95 total).
+and remaining limits. The latest host check passed 100 root tests (including
+eight ISO packaging tests), two Mac power/updater fixtures, and one Win16
+listbox fixture (103 total).
 Native builds and live checks cover the configured Windows, DOS,
 OS/2, NetWare and System 7 lab guests; this is not certification of every OS
 release, language, service pack or physical CPU named above.
@@ -399,7 +402,8 @@ job persistence and output limits vary by platform. See
 choosing tools. The source-publication checks and repeatable release procedure
 are in [PUBLICATION.md](docs/PUBLICATION.md).
 
-To run host tests, install the bridge requirements and put a host GCC on PATH
+To run host tests, install the bridge requirements and
+`tools/requirements-build.txt` (ISO packaging tests), and put a host GCC on PATH
 (or set `CC` for fixtures that support it). Win32 fixture tests require Windows
 and the MinGW toolchain; check the test output for skips on other hosts.
 

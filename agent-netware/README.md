@@ -287,6 +287,9 @@ Live loading, PING, SYSINFO, staged UPDATE, and binary readback passed on 4.11.
 
 ## Deploy on NetWare 3.12
 
+For CD deployment, the [all-agent ISO builder](../docs/BUILD_ISO.md) includes
+both NetWare variants, `UPDATE.NLM`, and direct-CD loading instructions.
+
 1. TCP/IP already up (you can ping the server).
 2. Copy to `SYS:SYSTEM`:
    - `LLMAGENT.NLM`
