@@ -20,6 +20,15 @@ text screenshots, and several desktop tools are platform-specific. See the
 [MCP coverage](docs/MCP_COVERAGE.md) and [publication audit](docs/PUBLICATION_AUDIT.md) for
 the current limits, verified coverage, and outstanding issues.
 
+## Screenshots
+
+[View the agent-captured gallery](docs/SCREENSHOTS.md): 13 running OS/version
+combinations, including FreeDOS, Windows, OS/2, System 7 and NetWare.
+
+| Windows for Workgroups 3.11 | Mac OS System 7.5.3 |
+| --- | --- |
+| ![WFW 3.11, with text entered through the agent](docs/screenshots/windows-for-workgroups-3.11.png) | ![System 7.5.3 Finder captured through the agent](docs/screenshots/system-7.5.3.png) |
+
 ## License and build dependencies
 
 Original project code and documentation are [MIT licensed](LICENSE).
