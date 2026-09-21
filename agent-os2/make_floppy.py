@@ -17,24 +17,28 @@ README = """LLMAGENT for OS/2 2.11
 =======================
 
 Files:
-  LLMAGENT.EXE - TCP agent (needs TCPIPDLL on LIBPATH)
+  LLMAGENT.EXE - 32-bit TCP agent (needs SO32DLL/TCP32DLL on LIBPATH)
   SOCKPING.EXE - one-shot listen/PONG proof (optional)
   LLMAGENT.INI - port= / token=
   README.TXT
+
+This bootstrap omits UPDATE.EXE, REBOOT.EXE, and JOBRUN.EXE. Copy those
+companions separately before using update, reboot, or tracked jobs.
 
 1. TCP/IP must be up (ifconfig lan0 works).
 2. Copy to hard disk, e.g.:
      MD C:\\LLM
      COPY A:\\*.* C:\\LLM\\
+   Set a unique token in LLMAGENT.INI and match the bridge inventory.
 3. Proof (optional):
      C:\\LLM\\SOCKPING.EXE
-   then from host:  python -c "import socket;s=socket.create_connection(('10.102.10.198',2222));print(s.recv(64))"
+   then from host:  python -c "import socket;s=socket.create_connection(('192.168.56.21',2222));print(s.recv(64))"
 4. Agent:
      C:\\LLM\\LLMAGENT.EXE
 
 machines.ini:
   [os2]
-  host = 10.102.10.198
+  host = 192.168.56.21
   exec_port = 2222
   exec_token = REPLACE_WITH_UNIQUE_TOKEN
 """

@@ -88,7 +88,7 @@ is not a claim of a formal clean-room development process.
 
 The Mac mouse implementation was informed by observing QuicKeys 3.5.3 and
 System 7 behavior. Its origin is documented in the
-[public investigation summary](agent-mac-system7/QUICKEYS_CLICK_INVESTIGATION.md).
+[input provenance summary](agent-mac-system7/README.md#input-implementation-provenance).
 The former raw disassembly/transcript and embedded diagnostic signatures
 are kept privately, not relabeled MIT. The project implements the behavior
 in its own C/assembly source; this review does not certify legal clearance

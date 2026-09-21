@@ -13,7 +13,7 @@ are excluded. Actual non-secret lab names/addresses can appear in the images.
 
 The NetWare capture and Win16 input bugs found during this session were fixed
 and tested before this gallery was published; see the
-[publication audit](PUBLICATION_AUDIT.md#follow-up-agent-screenshot-gallery-and-win16-input-2026-09-21).
+[publication audit](PUBLICATION_AUDIT.md#agent-screenshot-gallery-and-win16-input-2026-09-21).
 Capability differences and remaining limitations are documented in
 [MCP coverage](MCP_COVERAGE.md) and the platform READMEs.
 

@@ -82,9 +82,9 @@ native parsers and path/input routines have not been audited for DBCS.
 See [Python's codec documentation](https://docs.python.org/3/library/codecs.html)
 for codec names; the allowlist in `mcp-server/text_codec.py` is authoritative.
 
-`TYPE` and `KEY` accept ASCII only. Native keyboard implementations may drop
-unmapped characters or partially type a string before failing; selecting a
-codec does not implement keyboard layout mapping. Use clipboard text where
+`TYPE` and `KEY` accept ASCII only. Behavior differs by port: Win16 prevalidates printable mappings, Win32 can
+skip unmappable characters, and Mac queue exhaustion can leave partial input.
+Selecting a codec does not implement a keyboard layout or extend TYPE beyond ASCII. Use clipboard text where
 CLIPSET is supported, or transfer a file with the application's expected bytes.
 This restriction does not fix existing platform-specific keyboard injection
 limitations. General text codecs also do not add missing native functionality.

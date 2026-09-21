@@ -17,14 +17,14 @@ so [`../mcp-server/server.py`](../mcp-server/server.py) can expose it through th
 | `SCREENSHOT` | Whole-desktop `BitBlt` rendered to a 24-bit BMP |
 | `REBOOT` | `ExitWindows(EW_REBOOTSYSTEM)` -- a real machine reset, not just "exit to DOS" |
 | `SHUTDOWN` | `ExitWindows(0)` -- **not a real power-off, see warning below** |
-| `KEY` / `TYPE` / `CLICK` | `WH_JOURNALPLAYBACK` input injection -- **unreliable, see warning below** |
-| `WINLIST [hwnd]` | Enumerate top-level windows, or a window's children if `hwnd` given -- read-only, always safe |
-| `WINMSG <hwnd> <msg> <wparam> <lparam>` | Raw `SendMessage()` -- **never for anything that might open a dialog, see warning below** |
+| `KEY` / `TYPE` / `CLICK` | `WH_JOURNALPLAYBACK` with an instance thunk; tested clicks/text, with modal/layout limits below |
+| `WINLIST [hwnd]` | Enumerate top-level windows, or immediate children if `hwnd` is given |
+| `WINMSG <hwnd> <msg> <wparam> <lparam>` | Synchronous scalar `SendMessage()`; avoid actions that may open a modal dialog |
 | `POSTMSG <hwnd> <msg> <wparam> <lparam>` | Raw `PostMessage()` -- use this instead of `WINMSG` for button presses / listbox activation |
 | `LBGETTEXT <hwnd> <index>` | Read full text from a standard string-backed listbox; size checked before copying |
 | `PSLIST` | `TaskFirst`/`TaskNext` + `ModuleFindHandle` (ToolHelp) -- a real Task List view, `<hTask>\t<exe basename>` per line |
 | `PSKILL <hTask>` | `TerminateApp(hTask, NO_UAE_BOX)` (ToolHelp) -- same call Task List's "End Task" uses; refuses to kill this agent's own task |
-| `UPDATE` | Self-update without a full system REBOOT -- **read the warning below before touching this** |
+| `UPDATE` | Staged self-update via RESTART.EXE; see verification/recovery below |
 
 Everything else (`CLIPSET`, `REG*`) returns `ERR:not supported on Windows 3.11`.
 
@@ -48,51 +48,14 @@ old agent to unload, renames `LLMAGENT.EXE` to `LLMAGENT.OLD`, moves
 is deliberately preserved for local recovery if a new build cannot speak
 TCP.
 
-Getting there took three rounds, each surfacing a different failure:
+The agent requests shutdown and returns through the server loop so sockets
+close exactly once. The helper waits a quiet ten seconds before renaming and
+relaunching; earlier module-state polling during teardown caused intermittent
+crashes on the test guest and was removed. Do not replace this delay with a
+busy poll without fresh lifecycle testing. A crash dialog can still block
+unloading and require console recovery.
 
-1. **First version** had `UPDATE` call `DestroyWindow()` to reuse the
-   Exit button's `WM_DESTROY` cleanup path. That GPFs -- confirmed via
-   the linker map, inside the C runtime's own `_exit_` -- because
-   `DestroyWindow()` here runs from deep inside `accept()` ->
-   `handle_client()` -> `handle_update()`, not from *within* `WndProc`'s
-   own `WM_COMMAND` handling the way the Exit button's identical-looking
-   call does. Worse, the resulting crash dialog blocked
-   `GetModuleUsage()` from ever reaching zero until a human dismissed
-   it, defeating the entire point.
-2. **Second version** dropped `DestroyWindow()` in favor of manually
-   force-closing `g_client`/`g_listen`, mirroring `WM_DESTROY`. That
-   froze the *entire desktop*, not just this agent, needing a VM reboot
-   to recover -- `server_main()`'s own loop already closes both sockets
-   exactly once as `handle_update()`'s synchronous return unwinds
-   through it (unlike `WM_DESTROY`'s case, which really is async and
-   mid-`accept()`), so this was a silent double-`closesocket()`.
-   `WINSOCK.DLL`'s state is shared system-wide across every Win16 app,
-   not per-process, which is almost certainly why a bug here didn't
-   stay contained to just this agent. Fix: `handle_update()` just sets
-   `g_shutdown = 1` and returns -- nothing else.
-3. **Third version** (`RESTART.EXE` itself) polled
-   `GetModuleHandle("LLMAGENT")`/`GetModuleUsage()` in a tight
-   `Yield()`-driven loop waiting for the old instance to unload. That
-   was intermittently fatal too -- a different fault each time (a GPF
-   inside `_exit_` once, an illegal instruction inside `strpbrk_`
-   another time), always right around when this poll loop was actively
-   querying the old task's module state while it was mid-teardown.
-   Fixed by removing the polling entirely: `RESTART.EXE` now just waits
-   a flat 10 seconds, touching nothing about the old task's state at
-   all, before launching the fresh copy. Confirmed reliable three times
-   in a row after this change (zero successes in a row before it).
-
-Net effect: `UPDATE` now takes about 10 seconds (the flat delay) instead
-of the ~2 seconds the polling version achieved when it worked, but it
-actually works -- confirmed three clean runs in a row after the fix,
-versus roughly 50% of attempts needing a manual GPF-dialog dismiss
-before it. If a GPF dialog somehow still appears after `UPDATE` (hasn't
-recurred since this fix, but this OS has earned the caveat), it'll block
-`RESTART.EXE`'s relaunch the same way it always did -- dismiss it by
-hand and the new instance should come up right after, or fall back to
-`REBOOT` if it doesn't.
-
-Future bridge-side updates should use `legacy_win16_self_update`, which
+Use `legacy_win16_self_update`, which
 uploads and reads back `LLMNEW.EXE` and `RESTART.EXE` before sending `UPDATE`.
 `OK` means the helper launched; a failed `WinExec` returns `ERR` and leaves
 the agent running. The helper checks backup removal and every rename, restores
@@ -160,11 +123,9 @@ which is what `REBOOT` uses) are the only two values it special-cases,
 and both mean "reload", not "exit and stay out". Plain `0` is what
 actually exits to DOS and stays there.
 
-The status window also has an **Exit** button -- clicking it calls
-`DestroyWindow()`, funneling through the exact same `WM_DESTROY`
-shutdown path the system menu's Close uses (force-closes both sockets
-so `server_main()`'s `accept()`/`recv()` loop actually notices and
-exits, rather than leaving a headless process still bound to the port).
+The status window's **Exit** button and system-menu Close request shutdown.
+The server loop owns socket cleanup so message pumping cannot close a socket
+twice during a network operation.
 
 ### ⚠ EXEC vs EXECDETACH -- this one froze the entire VM, not just the agent
 
@@ -177,9 +138,9 @@ EXE) -- asking one to try (`EXEC CONTROL.EXE`, say) doesn't error out,
 it froze the whole VMware console once during testing, not just this
 agent. **Use `EXECDETACH` for any Windows-format program.** `EXEC` also
 now has a 30-second wait cap (a persistent/GUI target that never exits
-would otherwise wedge the agent forever waiting for `GetModuleUsage()`
-to hit zero) -- hitting that cap is itself a sign the wrong command was
-used.
+would otherwise occupy it indefinitely). Expiry means the child was not
+cancelled, not necessarily that the command was invalid. Use tracked jobs for
+long-running DOS commands.
 
 ### ⚠ EXEC's redirection workaround -- why it doesn't just use "> file"
 
@@ -331,105 +292,36 @@ protocol access.
 The native control refused the 32,767-byte fixture insertion with
 `LB_ERRSPACE`; that upper boundary was tested only in the host harness.
 
-### This agent pins the host CPU while idle -- known, not yet fixed
+### Idle behavior
 
-With this agent running, VMware raises a "Virtual machine CPU usage"
-alert for the VM; the alert clears within moments of the agent process
-exiting, with nothing else about the guest's workload changing (host
-CPU usage drops immediately, confirmed repeatedly). `WQGHLT.386`, a
-tiny idle-detection VxD already loaded in `SYSTEM.INI`'s `[386Enh]`
-(exactly the DOSIDLE-for-Win3.x equivalent), is not the problem and
-doesn't need touching -- root cause is this agent spending nearly all
-its life blocked in `accept()`/`recv()`, serviced by 16-bit Winsock's
-own default blocking hook, which behaves like a tight polling loop
-rather than a real blocking wait. A loop that never truly blocks never
-lets the VMM see genuine idle, so `WQGHLT` never gets a chance to `HLT`
-regardless of how correct it is.
-
-**A fix was attempted and reverted.** 16-bit Winsock lets an app install
-its own blocking hook via `WSASetBlockingHook()`, and the intent was to
-replace the default with one that calls `GetMessage()` (a real blocking
-wait) instead. It GPF'd inside the compiler's stack-check runtime
-(`__STK`, found via `llm_agent.map`) at the *same* address regardless of
-whether the stack was 8K, 16K, or 32K -- which rules out simple stack
-exhaustion and points at a calling-convention mismatch instead: the
-hook's exact required signature (`void FAR PASCAL BlockingHookProc(void)`
-was used) was recalled from memory, not verified against real Winsock
-1.1 documentation, which wasn't available to check against. If that
-signature is wrong, *every* call Winsock makes into the hook corrupts
-the stack -- which is consistent with what happened. **Do not reinstall
-a custom blocking hook without a verified signature to build it
-against.** The 16K stack (up from Watcom's 8K default for this target)
-and the Exit button survived the revert and are harmless keepers on
-their own.
+The listener uses `WSAAsyncSelect` notifications and `WaitMessage`, rather
+than blocking Winsock accept/recv polling. Accepted sockets are nonblocking;
+network waits pump messages and obey the shared deadlines. The old idle-CPU
+report described a superseded implementation. No custom Winsock blocking hook
+is installed. Active requests and DOS child/PIF scheduling can still consume CPU;
+this does not promise that every guest/driver combination idles identically.
 
 ### Worked example: disabling WFW's network logon prompt
 
-WFW pops an "Enter Network Password" dialog on every boot, before this
-agent (or anything else) has a chance to run -- there is no way to
-answer it programmatically, since the agent itself only starts after
-it's dismissed (see `../agent-dos/README.md`'s boot menu docs for why).
-The actual fix is turning the prompt off entirely, which *is*
-scriptable once Windows is up, via Control Panel's Network applet:
+On the tested WFW installation, the network logon prompt appears before
+Program Manager starts the agent. For an unattended lab boot, configure the
+Network applet's startup settings once Windows is running:
 
-```python
-# 1. Launch Control Panel (EXECDETACH -- it's a native Windows EXE).
-client.exec_detach("CONTROL.EXE")
+1. Launch `CONTROL.EXE` with EXECDETACH and inspect its windows/children.
+2. Find and activate Network. Its applet list can be owner-drawn without
+   strings, so inspect the displayed descriptions rather than assuming indices.
+3. Open Startup Settings and clear Log On at Startup.
+4. Confirm the dialogs, then verify the configuration and a normal reboot.
 
-# 2. Find its owner-drawn applet listbox (WINLIST is always safe).
-cp = next(w for w in client.winlist() if w.class_name == "CtlPanelClass")
-lb = next(w for w in client.winlist(cp.hwnd) if w.class_name == "lb")
+Use WINLIST to discover current handles and POSTMSG for actions that can open
+modal dialogs. Handles and control indices from another boot are not reusable.
+The [listbox guidance](#listbox-text-and-owner-drawn-controls) explains how to
+inspect owner-drawn controls without treating item data as text.
 
-# 3. Select "Network" (index found by walking every index with
-#    LB_SETCURSEL + a POSTMSG'd LBN_SELCHANGE and reading the resulting
-#    description back off the dialog's Text control -- index 9 in this
-#    install, may differ if extra software added its own applets).
-LB_SETCURSEL = 0x0407
-client.winmsg(lb.hwnd, LB_SETCURSEL, 9, 0)
-
-# 4. Activate it with POSTMSG, not WINMSG -- this opens a modal dialog.
-WM_COMMAND, LBN_DBLCLK = 0x0111, 2
-client.postmsg(cp.hwnd, WM_COMMAND, 20, (LBN_DBLCLK << 16) | lb.hwnd)
-time.sleep(2)
-
-# 5. Find the "Startup..." button in the resulting dialog (another
-#    owner-drawn listbox here; index 0 confirmed from a SCREENSHOT)
-#    and activate it the same way.
-netdlg = next(w for w in client.winlist() if w.title == "Microsoft Windows Network")
-startup_lb = 16068  # discover via winlist(netdlg.hwnd) -- varies per boot
-client.winmsg(startup_lb, LB_SETCURSEL, 0, 0)
-client.postmsg(16000, WM_COMMAND, 1, (LBN_DBLCLK << 16) | startup_lb)
-time.sleep(2)
-
-# 6. The "Log On at Startup" checkbox is a real Button control this
-#    time -- WINMSG (SendMessage) is fine, toggling it opens nothing.
-BM_SETCHECK = 0x0401
-startup_dlg = next(w for w in client.winlist() if w.title == "Startup Settings")
-checkbox = next(w for w in client.winlist(startup_dlg.hwnd) if "Log On at" in w.title)
-client.winmsg(checkbox.hwnd, BM_SETCHECK, 0, 0)  # 0 = unchecked
-
-# 7. OK both dialogs -- POSTMSG'd click, not WINMSG, in case OK itself
-#    validates/prompts.
-def press(hwnd):
-    WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
-    lp = (8 << 16) | 10
-    client.postmsg(hwnd, WM_LBUTTONDOWN, 1, lp)
-    client.postmsg(hwnd, WM_LBUTTONUP, 0, lp)
-
-ok1 = next(w for w in client.winlist(startup_dlg.hwnd) if w.title == "1:OK")
-press(ok1.hwnd); time.sleep(1.5)
-ok2 = next(w for w in client.winlist(netdlg.hwnd) if w.title == "1:OK")
-press(ok2.hwnd)
-```
-
-This writes `AutoLogon=No` (plus a few sibling keys the dialog owns --
-`StartMessaging`, `LoadNetDDE`, `LMLogon`) into `SYSTEM.INI`'s
-`[Network]` section and survives reboots. Confirmed via `SYSTEM.INI`
-diff and an actual reboot with no prompt. Note the *value format*:
-`Yes`/`No` strings, not `0`/`1` -- and the direction is inverted from
-what the key name suggests: `AutoLogon=No` is what makes the box skip
-the interactive logon step (and its prompt) entirely, not what enables
-automatic silent logon.
+The tested change wrote `AutoLogon=No` and related Network settings in
+SYSTEM.INI, and a subsequent reboot had no prompt. That value skips network
+logon; it does not store or supply a network password. Preserve other settings
+and verify the behavior on your installation.
 
 **Why less than the DOS agent, network-wise:** WFW already has a real
 Winsock 1.1 stack (`WINSOCK.DLL`, Microsoft TCP/IP-32) once its own
@@ -439,12 +331,13 @@ Watt-32 equivalent needed here at all. If `WSAStartup` fails, that
 network stack isn't up; check `CONFIG.SYS` and that `NET START`
 succeeded, not this agent.
 
-**EXEC exit codes:** `WinExec()` is fire-and-forget under Win16 -- there
-is no `WaitForSingleObject`/exit-code API. The generated batch appends
-`echo LLMEXITCODE:%ERRORLEVEL%` as its last line, which this agent peels
-back off the captured output before replying. Output is capped at 8KB
-(`EXEC_CAP` in `llm_agent.c`); put larger jobs in a `.BAT` and `EXEC`
-that file, same guidance as the DOS agent.
+**EXEC results:** the current handler observes REDIR's completion and reports
+synthetic `EXIT:0`; it does not recover the inner command's real exit code.
+It reads at most 8,191 bytes (`EXEC_CAP - 1`) and discards excess output when
+cleaning a completed spool. A shorter batch filename can fit the DOS command
+tail but does not increase that output limit. Use tracked jobs for explicit
+output retrieval/truncation, or redirect to a separate file and download it.
+Win16 job completion also reports the inner exit status as unknown.
 
 **Memory model:** one shared 64K near data segment (`-bt=windows`
 medium model, no explicit `-mm` needed -- Watcom picks the right default
@@ -463,9 +356,12 @@ ships its own Win16 SDK headers/import libs (`%WATCOM%\H\WIN`,
 ```bat
 cd C:\src\RetroBridge\agent-win16
 build.bat
+build_redir.bat
+build_restart.bat
 ```
 
-Produces `llm_agent.exe` (16-bit NE executable, ~30KB) and
+`build.bat` produces the Win16 agent and DOS-target `JOBRUN.EXE`; the other
+scripts build `REDIR.EXE` for EXEC and `RESTART.EXE` for updates. It also emits
 `llm_agent.map` (linker map -- if the agent ever GPFs again, search this
 for the nearest preceding symbol to the faulting "module:offset"
 address to trace it back to a function).
@@ -494,7 +390,9 @@ of whatever was actually free in that WFW session at the time).
 ## WFW deploy
 
 1. Copy to the guest (same directory), e.g. `C:\LLMWIN`:
-   - `LLMAGENT.EXE`
+   - `LLMAGENT.EXE` (rename the host build `llm_agent.exe` to this 8.3 name)
+   - `REDIR.EXE` for synchronous EXEC and `JOBRUN.EXE` for tracked jobs
+   - `RESTART.EXE` for self-update
    - `LLMAGENT.INI` (from `LLMAGENT.INI.example` -- set a real `token=`;
      this is a **separate file** from the DOS agent's
      `C:\LLMAGENT\LLMAGENT.INI`. For one inventory entry used in both
@@ -521,18 +419,18 @@ of whatever was actually free in that WFW session at the time).
    `load=`/`Startup`-group items don't run until any network logon
    prompt is dismissed -- they're both driven by the Program Manager
    shell, which doesn't start until after that (see the worked example
-   below if an unattended reboot needs to reach a running agent with
+   above if an unattended reboot needs to reach a running agent with
    nobody at the console to dismiss it).
 
-4. Bridge: add a section to `machines.ini` (a separate one from the DOS
-   entry, even though the IP is the same host -- port can be shared
-   since only one of the two agents is ever running at a time):
+4. Bridge: add a section to `machines.ini` (use a separate DOS
+   profile if credentials/addresses differ; one entry can serve both mutually
+   exclusive boot modes when their configuration matches):
 
    ```ini
    [wfw-1]
    host = 192.168.56.12
    exec_port = 2222
-   exec_token = your-shared-secret
+   exec_token = REPLACE_WITH_UNIQUE_TOKEN
    ```
 
 ## Layout
@@ -540,8 +438,9 @@ of whatever was actually free in that WFW session at the time).
 | File | Purpose |
 |---|---|
 | `llm_agent.c` | Agent source |
-| `build.bat` | Open Watcom build (`-bt=windows`, Winsock 1.1, emits a `.map`) |
-| `make_floppy.py` | Builds `llm_agent_win16.flp` with 8.3 names |
+| `build.bat` | Win16 agent and DOS JOBRUN helper; emits an agent `.map` |
+| `build_redir.bat` / `build_restart.bat` | Build the EXEC and update companions |
+| `make_floppy.py` | Builds `llm_agent_win16.flp` with 8.3 names; requires host `pyfatfs`; copy JOBRUN.EXE separately |
 | `LLMAGENT.INI.example` | `port=` / `token=` (guest name: `LLMAGENT.INI`) |
 
 ## EXEC lifetime follow-up

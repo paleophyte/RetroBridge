@@ -36,8 +36,8 @@
  * click showed it simply writes the target point into
  * MTemp/RawMouse/Mouse and then posts ordinary mouseDown/mouseUp events.
  * MBState is never written and journaling is never used. See
- * QUICKEYS_CLICK_INVESTIGATION.md for the evidence; HandleClick() below
- * carries the implementation notes.
+ * README.md, "Input implementation provenance", for the findings;
+ * HandleClick() below carries the implementation notes.
  *
  * KEY/TYPE use keyboard event injection with a US keyboard layout.
  * Configuration and companion files are located beside the actual running
@@ -453,8 +453,8 @@ static void HandleMousePos(void)
 /* ---- Synthetic mouse clicks -------------------------------------------
  *
  * How QuicKeys 3.5.3 actually does it, established by watchpointing the
- * low-level event queue during a real click (full evidence in
- * QUICKEYS_CLICK_INVESTIGATION.md):
+ * low-level event queue during a real click (provenance summary in
+ * README.md, "Input implementation provenance"):
  *
  *   1. write the target point into MTemp/RawMouse/Mouse and set CrsrNew,
  *      so the Toolbox believes the mouse is physically there;

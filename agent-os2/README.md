@@ -26,6 +26,7 @@ desktop screenshots. Guest must have INET/IFNDIS loaded; `C:\MPTN\DLL` on
 | `SCREENSHOT` | Full PM desktop via `WinGetScreenPS` → 24-bit BMP |
 | `CLICK` | PM `WinSetPointerPos` + `BM_CLICK` / button up-down (top-left coords) |
 | `KEY` / `TYPE` | `WM_CHAR` / `WM_VIOCHAR` to the focus window (same keyspec grammar as Windows) |
+| `WINCLOSE` | Close/cancel requests to every exact case-insensitive title match |
 | `WINLIST` | Switch-list entries (titles + top-left frame rects for CLICK) |
 | `PSLIST` / `PSKILL` | `DosQProcStatus` process table / `DosKillProcess` |
 | `REBOOT` | Detached `REBOOT.EXE` (OEMHLP/DOS$ IOCTL, then DOS `.COM` kbd reset) |
@@ -66,16 +67,25 @@ cd C:\src\RetroBridge\agent-os2
 build.bat
 ```
 
-Produces `llm_agent.exe` and `update.exe` (OS/2 LX). Floppy:
+Produces `llm_agent.exe`, `update.exe`, `reboot.exe`, and `jobrun.exe`
+(OS/2 LX). The optional floppy builder additionally needs `pyfatfs` installed
+in the host Python environment:
 
 ```bat
 ..\mcp-server\.venv\Scripts\python.exe make_floppy.py
 ```
 
+The current floppy builder is a minimal bootstrap: it includes the agent and
+optional SOCKPING proof, but not UPDATE, REBOOT, or JOBRUN. Transfer those
+companions separately before using their operations.
+
 ## Deploy
 
 1. TCP/IP up; `SO32DLL.DLL` on `LIBPATH` (normally `C:\MPTN\DLL`).
-2. Copy `LLMAGENT.EXE` + `LLMAGENT.INI` to e.g. `C:\llmagent\`.
+2. Copy `LLMAGENT.EXE` and `JOBRUN.EXE` to e.g. `C:\LLMAGENT\`.
+   Add `REBOOT.EXE` for reboot and `UPDATE.EXE` for updates. Copy
+   `LLMAGENT.INI.example` as `LLMAGENT.INI`, choose a unique token, and
+   match the host, port, and token in your private bridge inventory.
 3. Run `LLMAGENT.EXE` from an OS/2 window, or register it for autostart
    (see below) — **never** via a `CONFIG.SYS RUN=` line (see warning).
 
@@ -118,9 +128,10 @@ from agent_client import AgentClient
 
 ## Why 32-bit?
 
-Watcom’s PM headers are 32-bit-only (`os2.h` errors on `_M_I86`). Desktop
-capture needs `WinGetScreenPS` / `GpiBitBlt`, so the agent is LX + SO32DLL
-rather than 16-bit TCPIPDLL.
+This port uses the 32-bit `h/os2` header tree, LX executable format, and
+SO32DLL/TCP32DLL for OS/2 2.x and later tested kernels. Watcom also supplies
+16-bit PM APIs in `h/os21x`; the separate [OS/2 1.3 port](../agent-os2-13/README.md)
+uses them with NE/TCPIPDLL. Desktop capture does not require a 32-bit OS.
 
 ## EXEC lifetime follow-up
 

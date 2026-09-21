@@ -12,14 +12,9 @@ close/cancel requests to all exact title matches, ignoring case. Apps may
 prompt or refuse; acknowledgment does not prove closure. See
 [MCP coverage](../docs/MCP_COVERAGE.md) and `legacy_capabilities` for limits.
 
-This is a genuinely separate build, not a recompile of `../agent-os2` for a
-smaller target: **OS/2 1.3 has no 32-bit kernel at all** (that arrived with
-2.0), so everything here is 16-bit NE, built with Open Watcom's `os21x`
-header set. There used to be a 16-bit OS/2 agent in this repo's git history
-(the very first `agent-os2` commit, before it was rewritten 32-bit to get
-desktop screenshots — see "Why this exists" below); this directory starts
-from that same EXEC/PUT/GET/SYSINFO baseline and builds it back up to
-closer parity with the current 2.x agent, not just a straight restore.
+OS/2 1.3 predates the 32-bit kernel, so this is a separate 16-bit NE build
+using Open Watcom's `os21x` headers and the guest's TCPIPDLL. The 32-bit
+port uses a different header tree, executable format, and socket ABI.
 
 ## What works
 
@@ -42,9 +37,9 @@ closer parity with the current 2.x agent, not just a straight restore.
 Self-update: `update.exe` (same role as `../agent-win32/update.c` /
 `../agent-os2/update.c`) — stop the old agent with a `SELFEXIT` request
 over the wire (`DosKillProcess` can't: see below), swap the binary with
-rollback, then relaunch it in a fresh session. Working and safe to use,
-with one intermittent failure that rolls back cleanly — read
-"Self-update" below.
+rollback, then relaunch it in a fresh session. Verified replacements have
+passed, but an earlier intermittent rename failure remains unexplained;
+read [self-update and recovery](#self-update-from-host) before deploying.
 
 ### AGTBOOT.LOG — why the agent started or stopped
 
@@ -181,45 +176,22 @@ Everything else returns `ERR:not supported on OS/2 1.3`:
   + `DosGiveSeg`, `CFI_HANDLE`/`CFI_SELECTOR` instead of 2.x's flat-memory
   `CFI_POINTER`/`DosAllocSharedMem`). Deliberately left unimplemented
   rather than shipped unverified — this needs a real OS/2 1.3 box to get
-  right, not just a header search. Worth revisiting once the rest of this
-  agent is confirmed working live.
+  right, not just a header search. A working implementation would need separate live cross-application tests.
 - `REG*`, `SHUTDOWN` — same reasons as the 2.x agent (registry doesn't
   really apply the same way pre-2.x; a clean interactive shutdown from an
   unattended service is the same unsolved problem there already documents).
 
-## Why this exists (vs. just recompiling `../agent-os2`)
+## Why a separate 16-bit build
 
-The 2.x agent's README says: *"Watcom's PM headers are 32-bit-only — `os2.h`
-errors on `_M_I86`"* — and that's true of the specific header tree
-(`%WATCOM%\h\os2`) that a 32-bit build points at. Confirmed directly:
+Open Watcom supplies the 1.x Dos/Win/Gpi APIs under `%WATCOM%\h\os21x`.
+The `%WATCOM%\h\os2` tree used by the 32-bit port is not suitable for this
+build. Segmented handles, the older BITMAPINFOHEADER layout, calling
+conventions, and TCPIPDLL's ABI differ from the 32-bit interfaces.
 
-```
-wcc -bt=os2 -ml -zq -i=%WATCOM%\h\os2 anything.c
-...\os2.h(21): Error! E1091: This os2.h is for 32-bit development only!
-```
-
-But Open Watcom ships a **second, separate 16-bit OS/2 1.x header tree**,
-`%WATCOM%\h\os21x` — a real Dos*/Win*/Gpi* API surface for 16-bit OS/2, not
-a stub. `PID`, `STARTDATA`, `DosStartSession`, `DosKillProcess`,
-`WinGetScreenPS`, `GpiBitBlt`, `WinQuerySwitchList`, `WM_CHAR`, `BM_CLICK`
-— all present, just with 16-bit-shaped types (`APIRET` doesn't exist there;
-Dos calls return `USHORT`; `HAB`/`HWND`/etc. are `void far *` segmented
-handles; `BITMAPINFOHEADER` is the older non-`2` GPI 1.x layout; `STARTDATA`
-has no `ObjectBuffer` field; several `Win*` calls take an extra trailing
-`BOOL` the 2.x versions dropped). None of that showed up in the 2.x
-project's own research because it only tried the 32-bit header tree.
-
-Everything in this directory has been **compiled and linked** against the
-real `%WATCOM%\h\os21x` headers and `%WATCOM%\lib286\os2\os2.lib` import
-library (link-tested with a stub socket library standing in for the real
-guest `TCPIPDLL.DLL`, which isn't available on this dev machine) — so the
-API usage is confirmed correct at the type/signature level. `PSLIST` and
-`REBOOT` have since been confirmed live against the real os2-13 box (see
-their sections above). Treat anything PM-based
-(`SCREENSHOT`/`CLICK`/`KEY`/`TYPE`/`WINLIST`/`WINCLOSE`) as still
-needing live verification before relying on it, the same way this
-project's other agents document verified-vs-reasoned status in
-[`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+Native builds and live tests cover file/command operations, PM screenshots,
+input/window queries, PSTAT process listing, reboot, and verified updates on
+the configured OS/2 1.3 guest. This is not certification of other TCP/IP
+packages or hardware. Clipboard remains unimplemented.
 
 ## Build (Open Watcom on host)
 
@@ -232,18 +204,24 @@ cd C:\src\RetroBridge\agent-os2-13
 build.bat
 ```
 
-Produces `llm_agent.exe` and `update.exe` (both OS/2 16-bit NE). Floppy
+Produces `llm_agent.exe`, `update.exe`, `ioreset.exe`, `ioseg.dll`, and
+`jobrun.exe` (OS/2 16-bit). Floppy
 (needs `pyfatfs`, e.g. the `mcp-server` venv):
 
 ```bat
 ..\mcp-server\.venv\Scripts\python.exe make_floppy.py
 ```
 
+The current floppy builder includes available agent/update/reboot binaries
+but omits JOBRUN.EXE. Transfer that companion separately before using jobs,
+and check the image's actual file list rather than assuming every build exists.
+
 ## Deploy
 
 1. TCP/IP up; `TCPIPDLL.DLL` on `LIBPATH`.
-2. Copy `LLMAGENT.EXE`, `IORESET.EXE`, `IOSEG.DLL` (+ `UPDATE.EXE` if you
-   want self-update) and `LLMAGENT.INI` to e.g. `C:\LLM\`. All of them go
+2. Copy `LLMAGENT.EXE`, `JOBRUN.EXE`, `IORESET.EXE`, `IOSEG.DLL` (+
+   `UPDATE.EXE` for self-update) and a configured `LLMAGENT.INI` from the
+   example to e.g. `C:\LLM\`. Choose a unique token. All of them go
    in the *same* directory — `IOSEG.DLL` is loaded by path, so it does not
    need to be on `LIBPATH`, and the agent finds `IORESET.EXE` next to
    itself.
@@ -260,144 +238,48 @@ Add an `[os2-13]` section to your private `machines.ini`, for example at
 `%USERPROFILE%\.retrobridge\machines.ini`. Set `host` to the guest's
 address and `exec_token` to the same unique token as `LLMAGENT.INI`'s `token=`.
 
-## Self-update (from host) - WORKING, ONE INTERMITTENT FAILURE LEFT
+## Self-update (from host)
 
-Same shape as the other agents - `legacy_self_update` in
-`mcp-server/server.py`, with OS/2 8.3 remote names:
+Use `legacy_self_update` with `remote_dir` set to the actual installation
+and 8.3 filenames: `new_agent_name="LLMNEW.EXE"`,
+`update_exe_name="UPDATE.EXE"`, `target_agent_name="LLMAGENT.EXE"`.
+The bridge checks staged bytes and verifies a new startup identity and matching
+installed executable. A reachable old binary is not a successful update.
 
-```
-legacy_self_update(machine="os2-13", ...,
-    new_agent_name="LLMNEW.EXE", update_exe_name="UPDATE.EXE",
-    target_agent_name="LLMAGENT.EXE")
-```
+The helper needs `host=` in `LLMAGENT.INI`, set to the guest's own reachable
+LAN address, plus the matching `port=` and `token=`. The tested legacy TCP/IP
+stack did not provide working loopback. This host field is for the updater's
+authenticated SELFEXIT request; it is not the controller's address. Changing
+the INI token while the old process still uses another token will prevent
+that request from authenticating.
 
-**Status, from real live testing against os2-13, not just reasoned
-about.** Two long-standing failures were root-caused and fixed; a third
-problem was found underneath them and is *not* fixed.
+Implementation constraints established by live debugging:
 
-### Fixed: `DosKillProcess` could never stop the agent
+- The helper cannot kill its parent with DosKillProcess; it asks the agent
+  to SELFEXIT and waits for the listening port to go quiet.
+- The backup replaces the extension (`LLMAGENT.BAK`). Appending a second
+  extension failed with this 16-bit runtime's rename(), even on HPFS.
+- The replacement starts with an independent DosStartSession inheriting
+  shell handles, avoiding exhaustion down a chain of parent/child updates.
+- Relaunch checks avoid starting a duplicate listening agent after a failed swap.
 
-`update.exe` is a *child* of the agent (`EXECDETACH` -> `spawnv`), and
-OS/2 only allows killing descendants, so killing its own parent always
-failed with `ERROR_NOT_DESCENDANT` (rc=305). Replaced with a `SELFEXIT`
-wire command - `update.exe` connects as an ordinary authenticated client
-and asks the agent to exit itself. Confirmed working live. (This also
-needs the `host=` line in `LLMAGENT.INI`: an earlier version connected to
-`127.0.0.1` and hung forever, since this TCP/IP stack's loopback doesn't
-work.)
+Successful swaps, byte readback, normal operations afterward, and later
+startup-hash verification passed on the guest. An earlier four-update series
+had three clean swaps and one rename failure (`errno=6`); the old binary
+restarted and stayed usable. The remaining file holder was not identified.
+Later successes do not establish that this intermittent condition is eliminated.
 
-### Fixed: the swap itself - it was the backup *filename*
+After an unverified result, inspect `UPDATE.LOG`, `AGTBOOT.LOG`, and the process
+list. Let the existing helper exit before attempting another upload of
+UPDATE.EXE; a still-running helper can keep its own file open. Verify which
+agent and bytes are active before deciding whether to retry. Do not run an
+unattended retry loop or overwrite a running executable.
 
-The rename after `SELFEXIT` failed every time, and the old notes here
-blamed a lingering file lock. That was wrong. The backup name was
-`<target>.OLD`, i.e. `LLMAGENT.EXE.OLD`, and **Watcom's 16-bit `rename()`
-rejects a second dot** - `errno=1`, on any file, locked or not, even
-though the volume is HPFS and CMD.EXE's own `REN` accepts that exact
-name. Isolated with `_rentest.c` on a throwaway file with no agent
-involved:
-
-```
-rename(DUMMY.EXE -> DUMMY.EXE.OLD)   rc=-1 errno=1
-rename(DUMMY.EXE -> DUMMY.OLD)       rc=0
-```
-
-The backup is now built by *replacing* the extension (`LLMAGENT.BAK`),
-never by appending. The swap then succeeds on the **first attempt**, and
-a full update cycle takes ~10s.
-
-Two plausible-sounding theories died on the way, both recorded so nobody
-re-derives them:
-
-- **Not a timing race.** Widening the retry window from 8s to 30s changed
-  nothing, and an independent observer agent renamed the same file
-  successfully ~2.4s after the agent exited.
-- **Not the parent/child relationship.** An `fopen`/`fclose` on the target
-  immediately before the rename (which `file_exists()` does every
-  iteration) makes no difference, and the fixed version works fine while
-  still running as the agent's child.
-
-The diagnosis needed an **independent observer agent** - a second copy
-running from another directory on port 2223 - because `SELFEXIT` kills
-the very agent you would otherwise use to watch. `PSLIST` from outside
-showed the old agent leaving the process table ~5s in, which is what
-ruled out the lock theory.
-
-### Fixed: the agent ran out of file handles down the update chain
-
-Each generation is spawned by `update.exe`, which was itself spawned by
-the previous agent, and OS/2 children inherit their parent's open
-handles:
-
-```
-agent -> (EXECDETACH/spawnv) update.exe -> (spawnl) new agent -> ...
-```
-
-OS/2 1.x gives a process 20 handles by default, so it ran out fast.
-Measured live from a freshly booted machine: generations 1-3 healthy,
-generation 4 unable to open a file at all - it could not read back the
-`AGENT.PID` it had just written - and every generation after it dead on
-arrival. **This degrades silently and is the nastiest failure here**: the
-agent keeps answering `PING` and `SYSINFO` while `PUT`/`GET`/`EXEC` all
-fail and `REBOOT` stops working too (it has to spawn `IORESET.EXE`). On
-the console it shows up as `SYS1071: The handle could not be duplicated
-during redirection of handle 1` - that is `EXEC`'s `CMD.EXE /C ... >
-tmpfile` failing to redirect stdout. It is not a per-request leak: 125
-requests across `PING`/`GET`/`PUT`/`SYSINFO`/`EXEC` on one agent left it
-perfectly healthy.
-
-`start_agent()` now uses
-`DosStartSession(SSF_RELATED_INDEPENDENT, SSF_INHERTOPT_SHELL)` instead
-of `spawnl`, so each generation inherits from the shell rather than from
-the update chain. **Confirmed live**: the agent now survives every round,
-including rounds whose swap fails.
-
-### Fixed: duplicate agents wedging all future updates
-
-`start_agent()` used to run unconditionally, even when the swap had
-failed. Once two agents existed, `SELFEXIT` could only ever stop whichever
-one held the port, while the other kept `LLMAGENT.EXE` open - so the
-rename failed with a permanent `errno=6` and *every* subsequent update was
-wedged. Seen live as two `LLM_AGEN` entries in `PSLIST`, and on the
-console as repeated `listening on port 2222` banners stacking up in one
-session.
-
-`update.exe` now (a) waits for the agent's port to actually go quiet
-before touching the binary, rather than sleeping a fixed 500ms, and
-(b) only starts an agent if nothing is already listening.
-
-### Verification status, and what is still intermittent
-
-A real swap, verified by content rather than by mechanics: the
-boot-logging agent build (md5 `bcb846...`) replaced the previous one
-(`b6d7cd...`) through `legacy_self_update`, agent pid 44 -> 117, and the
-installed `LLMAGENT.EXE` compared byte-identical to the new local build
-afterwards.
-
-From a clean boot, four consecutive updates through the real
-`legacy_self_update`: **rounds 1-3 completely clean** - exactly one agent
-throughout, `port 2222 quiet after 2 check(s)`, `renamedOld=1 after 0
-attempt(s)`, agent healthy (`files=True exec_rc=0`) after each, ~10s per
-round.
-
-**Round 4 still failed** with `rename ... errno=6`, the swap skipped and
-the old binary restarted - a safe failure, and the agent stayed healthy,
-but it is not yet understood. Something still held `LLMAGENT.EXE` after
-the port went quiet. Note `update.exe` holds *its own* binary open while
-it runs, so a failed round also blocks the next round's upload of
-`UPDATE.EXE` (`ERR:write failed`) until it exits - if you see that, wait
-for `PSLIST` to show no `UPDATE` process and retry.
-
-So: self-update is now **safe** (it no longer bricks the agent, and it
-rolls back), and usually works, but is not yet reliable enough to fire
-blindly in a loop. Check the result and retry rather than assuming
-success.
-
-### Recovering a box in this state
-
-A handle-starved agent cannot `EXEC`, `PUT`, or `REBOOT`, so it has to be
-fixed from the console: stop the agent, and run `CHKDSK C: /F` if the
-volume has taken unclean resets (repeated hard resets on HPFS386 will
-report `SYS0562: The system detected lost data on disk`).
+If the agent cannot perform file/EXEC operations, recover from the console:
+stop the agent/helper, preserve logs and current files, restore a known-good
+executable and configuration, and launch one instance from a normal session.
+A host-visible PING alone does not establish that its file handles are healthy.
+Use the OS's normal filesystem recovery procedure after an unclean reset.
 
 ## Trust model
 

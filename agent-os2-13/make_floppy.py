@@ -11,7 +11,7 @@ FLOPPY_SIZE = 1474560
 
 INI = """port=2222
 token=REPLACE_WITH_UNIQUE_TOKEN
-host=10.102.10.199
+host=192.168.56.22
 """
 
 README = """LLMAGENT for OS/2 1.3
@@ -27,10 +27,16 @@ Files:
   LLMAGENT.INI - port= / token=
   README.TXT
 
+Only binaries present at build time are included. JOBRUN.EXE is omitted;
+copy the 16-bit OS/2 helper separately before using tracked jobs.
+
 1. TCP/IP must be up.
 2. Copy to hard disk, e.g.:
      MD C:\\LLM
      COPY A:\\*.* C:\\LLM\\
+   Set a unique token in LLMAGENT.INI and match the bridge inventory.
+   Set host= to this guest's own LAN address for UPDATE's SELFEXIT request.
+   The sample address is not auto-detected.
 3. Agent:
      C:\\LLM\\LLMAGENT.EXE
 
@@ -38,7 +44,7 @@ REBOOT needs IOPL=YES in CONFIG.SYS (the OS/2 1.3 default).
 
 machines.ini:
   [os2-13]
-  host = 10.102.10.199
+  host = 192.168.56.22
   exec_port = 2222
   exec_token = REPLACE_WITH_UNIQUE_TOKEN
 """

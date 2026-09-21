@@ -45,8 +45,7 @@ Needs both on `SYS:SYSTEM`:
   but does nothing useful / may flash screens)
 
 ```text
-PUT SYS:SYSTEM\CLIBAUX.NLM
-PUT SYS:SYSTEM\STUFFKEY.NLM
+Copy CLIBAUX.NLM and STUFFKEY.NLM to SYS:SYSTEM using file transfer.
 LOAD INSTALL                    (console or EXEC)
 KEY down down enter             (batched — one StuffKey run)
 TYPE text
@@ -136,8 +135,8 @@ and [comment markers](https://support.novell.com/techcenter/articles/ann20000301
 ### Remote update
 
 ```text
-PUT SYS:SYSTEM\UPDATE.NLM     (current protocol-2 helper)
-PUT SYS:SYSTEM\LLMAGENT.NEW    (new agent build)
+Upload current protocol-2 UPDATE.NLM to SYS:SYSTEM\UPDATE.NLM.
+Upload the new agent build to SYS:SYSTEM\LLMAGENT.NEW.
 UPDATE                         (agent command)
 ```
 
@@ -266,7 +265,7 @@ build.bat
 build_proof.bat
 ```
 
-Produces `LLMAGENT.NLM` / `HELLO.NLM` / `SOCKPING.NLM` using Novell
+Produces `LLMAGENT.NLM` / `UPDATE.NLM` / `HELLO.NLM` / `SOCKPING.NLM` using Novell
 `prelude.obj` + **explicit** CLIB imports only (do **not** `import @clib.imp`
 — that embeds the entire modern CLIB catalog and NetWare 3.12 then fails
 resolving hundreds of symbols).
@@ -300,7 +299,11 @@ Live loading, PING, SYSINFO, staged UPDATE, and binary readback passed on 4.11.
    ```
 
    Or add `LOAD LLMAGENT` to `AUTOEXEC.NCF` after TCP/IP.
-   Floppy images from `make_floppy.py` ship binaries + README only — **no INI**.
+   The optional `make_floppy.py` builder requires host `pyfatfs` and copies
+   `LLMAGENT.INI.example` as `LLMAGENT.INI` when present. This contains a
+   placeholder, not a usable private configuration: set a unique token before
+   loading. It can also include locally supplied StuffKey/CLIBAUX modules;
+   generated lab media is not an approved public binary bundle.
 4. Bridge `machines.ini`:
 
    ```ini
@@ -310,7 +313,9 @@ Live loading, PING, SYSINFO, staged UPDATE, and binary readback passed on 4.11.
    exec_token = REPLACE_WITH_UNIQUE_TOKEN
    ```
 
-5. Host smoke (set host/token to match):
+5. Host smoke: set `NW_HOST` and `NW_TOKEN` privately to the actual host and
+   token before running; the script's default token is only a placeholder.
+   For example, after supplying `NW_TOKEN` in your local environment:
 
    ```bat
    set NW_HOST=192.168.56.30

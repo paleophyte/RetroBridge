@@ -1,16 +1,17 @@
 # Source publication
 
-The cleaned publication history is the source-release candidate. Do not publish
+The public RetroBridge repository contains the cleaned source history. Do not publish
 the original/private development checkout or merge its old history back into
 this one: it retains removed credentials and vendor material. Publish Git refs
 from the cleaned checkout, or use `git archive` for a source ZIP. Copying the
 entire working directory can include ignored SDKs, credentials and build output.
 
-The September 21, 2026 pass covers source and documentation, not approval of
+This procedure covers source and documentation, not approval of
 compiled binaries. [BINARY_RELEASE.md](BINARY_RELEASE.md) lists the remaining
 runtime/SDK distribution requirements. The [audit](PUBLICATION_AUDIT.md)
-retains platform limitations and dated live-test evidence. No new guest
-deployment, reboot or invasive live test is part of this publication pass.
+retains platform limitations and dated live-test evidence. Publication checks
+do not themselves require guest deployment or reboot.
+Functional changes need their own appropriate builds and validation.
 
 ## Contents and disclosure
 
@@ -44,8 +45,8 @@ deployment, reboot or invasive live test is part of this publication pass.
    workspace. Check that example configuration loads and missing SDK inputs
    produce the documented setup error.
 4. Create a fresh Python 3.12 virtual environment; install
-   `mcp-server/requirements.txt` and run `python -m pip check`. The final pass
-   resolves MCP 2.2.0 and Pillow 12.3.0. MCP 2.0.0 was also tested earlier;
+   `mcp-server/requirements.txt` and run `python -m pip check`. The September 21
+   validation used MCP 2.2.0 and Pillow 12.3.0. MCP 2.0.0 was also tested earlier;
    requirements constrain the bridge to the MCP 2.x server API. These versions
    are validation evidence, not a frozen distribution of third-party packages.
 5. Run the README's host test commands with the required compiler. Exercise a
@@ -64,10 +65,11 @@ its own hash into its documentation. Re-run these checks if its contents change.
 
 ## Publish or export
 
-Create an empty GitHub repository, then from the cleaned checkout configure its
-URL as `origin` and push the reviewed `master` branch. Do not reuse a remote
-whose branch still contains the removed private history without reviewing how
-that remote will be replaced. This preparation does not push or create a release.
+The project is published at [paleophyte/RetroBridge](https://github.com/paleophyte/RetroBridge).
+From the cleaned checkout, verify the remote URL and push only the reviewed
+branch (currently `master`). Do not push backup refs or merge the original
+private history. A source push does not create or clear a compiled release.
+For a separate fork, configure its own remote explicitly.
 
 For an optional source ZIP, choose an output path outside the checkout:
 

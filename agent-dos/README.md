@@ -107,7 +107,7 @@ Produces `llm_agent.exe` (DOS MZ).
    [freedos-1]
    host = 192.168.56.20
    exec_port = 2222
-   exec_token = your-shared-secret
+   exec_token = REPLACE_WITH_UNIQUE_TOKEN
    ```
 
 ## Console access and optional startup
@@ -203,7 +203,7 @@ Against a reachable FreeDOS guest with the agent listening:
 | `llm_agent.c` | Agent source |
 | `build.bat` | Recommended Windows build (Open Watcom + Watt-32) |
 | `Makefile` | Alternate `wmake` build (path-fragile on Windows) |
-| `make_floppy.py` | Builds `llm_agent.flp` with 8.3 names + fixed geometry |
+| `make_floppy.py` | Builds `llm_agent.flp` with 8.3 names + fixed geometry; needs host `pyfatfs` and a privately supplied PCNTPK.COM |
 | `LLMSTART.BAT` | Timed startup choice; defaults to Agent, returns to console on exit |
 | `LLMAGENT.INI.example` | `port=` / `token=` (guest name: `LLMAGENT.INI`) |
 | `wattcp.cfg.example` | Watt-32 IP + packet vector |

@@ -24,13 +24,17 @@ README = """LLMAGENT for NetWare 3.12+
 ==========================
 
 Files on this floppy:
-  LLMAGENT.NLM  - agent (keytype20+)
-  LLMAGENT.INI  - lab token (A: fallback if SYS: down)
+  LLMAGENT.NLM  - agent
+  LLMAGENT.INI  - placeholder config from the example (when present)
   UPDATE.NLM    - remote swap helper
   STUFFKEY.NLM  - keystroke helper (INSTALL menus)
   CLIBAUX.NLM   - required by StuffKey on 3.12
   HELLO.NLM / SOCKPING.NLM - proofs
   README.TXT    - this file
+
+Optional helpers/utilities are included only when present locally.
+Set a unique private token before loading; never use the placeholder.
+This is private lab media, not a redistributable release bundle.
 
 Rescue boot (SYS: not mounted):
   LOAD A:CLIBAUX

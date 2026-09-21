@@ -1,1201 +1,200 @@
 # Architecture
 
-> This document contains the original Win32 design and historical debugging notes.
-> Platform differences and outstanding issues are summarized in the
-> [publication audit](PUBLICATION_AUDIT.md); the protocol below is not a
-> complete command reference for every agent.
+RetroBridge consists of native target agents, a shared Python protocol client,
+and an MCP bridge on a modern control machine. The target does not run an LLM
+or an MCP server. See the [documentation guide](README.md) for platform builds
+and [MCP coverage](MCP_COVERAGE.md) for the exposed operations.
 
 ## Why not SSH
 
-The target agents enforce authentication, command-line, and network-progress
-deadlines. See [agent network deadlines](NETWORK_TIMEOUTS.md) for the limits,
-platform details, and the distinction between a stalled socket and a running
-command.
-
-Authentication and command lines also enforce byte limits and LF/CRLF
-framing on the target. See [command framing](COMMAND_FRAMING.md) for raw
-client requirements and rejection behavior.
-
-The original ask was "a modern-ish SSH server for Windows 2000." Nothing
-current exists (see the project's origin conversation) — the newest
-Cygwin/OpenSSH build that actually runs on Win2000 is OpenSSH 6.2p1 from
-around 2013, predating Ed25519/Curve25519/ChaCha20-Poly1305. Bitvise and
-similar modern servers refuse to install below XP SP3.
-
-But the real requirement underneath "SSH server" turned out to be narrower:
-**an LLM tool-calling client needs to run commands, move files, see the
-screen, and send input on a legacy box.** That's not what SSH is for. SSH's
-value is a general-purpose encrypted multiplexed terminal for human
-interactive sessions — host key exchange, PTY allocation, agent
-forwarding, SFTP subsystem, rekeying. None of that serves a single trusted
-automated client on an isolated lab network, and freeSSHd's breakage (it
-couldn't coexist with an MSSQL install) is a plausible symptom of exactly
-that kind of general-purpose surface: LSA-level auth hooks and a
-background service model that other installers step on.
-
-So this project splits the actual requirement into two much smaller,
-narrower pieces instead of one do-everything SSH-alike:
-
-**Command execution + file transfer + screenshot + input** all live in one
-place on the legacy machine — `agent-win32/llm_agent.c` (`llm_agent`): a
-single-purpose, single-threaded target-agent TCP service. No session
-multiplexing, no PTY, no
-auth-subsystem hooks. Small surface area means small opportunity to
-collide with anything else running on the box.
-
-`mcp-server/server.py` is the piece that actually talks to an LLM tool-calling
-client: an MCP bridge/server, running on your modern control machine, that
-exposes target-agent commands as MCP tools.
-
-Terminology used throughout the repo:
-
-- **Target agent**: a legacy-machine `llm_agent` binary that speaks this
-  repo's private TCP wire protocol.
-- **MCP bridge / MCP server**: the modern-host Python process in
-  `mcp-server/server.py`.
-- **MCP tools**: the `legacy_*` functions registered by `mcp-server/server.py`,
-  such as `legacy_exec`, `legacy_screenshot`, and `legacy_reboot`.
-
-## FreeDOS agent (`agent-dos/`)
-
-The same wire protocol is also implemented for FreeDOS in
-`agent-dos/llm_agent.c`, built with Open Watcom + Watt-32 against a
-packet-driver TSR. The bridge does not special-case DOS: unsupported
-commands simply return `ERR:not supported on DOS` from the agent.
-
-DOS capabilities that *are* implemented:
-
-- `PING` / auth / `QUIT`, `EXEC` (via `system()`/`COMSPEC` + temp-file
-  stdout capture), `PUT` / `GET`, `SYSINFO`, `REBOOT`
-- `SCREENSHOT` — read text-mode video memory at `B800:0000` (80×25) and
-  stream a rendered 24-bit BMP so existing bridge PNG conversion still
-  works
-- `KEY` / `TYPE` — stuff the BIOS keyboard buffer (INT 16h AH=05h)
-
-Not on DOS (by design for v1): `EXECDETACH`, `CLICK`, `WINLIST`,
-`CLIPSET`, `REGGET`/`REGSET`, `PSLIST`/`PSKILL`, `SHUTDOWN`, and the
-Windows service / `RunServices` autostart paths. Autostart is an
-`AUTOEXEC.BAT` line after the packet driver. See `agent-dos/README.md`
-for build and deploy.
-
-## OS/2 agent (`agent-os2/`)
-
-Same wire protocol for OS/2 2.11 in `agent-os2/llm_agent.c`, built with
-Open Watcom as a **32-bit OS/2 LX** executable linked against IBM
-**SO32DLL**/**TCP32DLL** (Socket/MPTS) and PM for screenshots.
-
-Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH`, `PUT` / `GET`, `SYSINFO`
-(`os_family=os2`), `SCREENSHOT` (PM desktop → 24-bit BMP), `CLICK`, `KEY` /
-`TYPE` (`WM_CHAR`/`WM_VIOCHAR` to focus), `WINLIST`, `PSLIST` / `PSKILL`
-(`DosQProcStatus` / `DosKillProcess`), `CLIPSET` (PM `CF_TEXT` /
-`DosAllocSharedMem` + `CFI_POINTER`), `REBOOT` (detached `REBOOT.EXE`:
-keyboard-controller `.COM`). Self-update uses a separate `update.exe`
-helper (same pattern as Windows `agent-win32/update.c`), driven by
-`legacy_self_update`. `REG*` and `SHUTDOWN` return `ERR:not supported on
-OS/2` (`DosShutdown` hard-locks; `WinShutdownSystem` needs interactive
-session-close confirms we could not automate reliably). See
-`agent-os2/README.md`.
-
-## OS/2 1.3 agent (`agent-os2-13/`)
-
-Same wire protocol again, for OS/2 1.3 in `agent-os2-13/llm_agent.c` — a
-**separate, 16-bit** build, not a recompile of `agent-os2/` for a smaller
-target: OS/2 1.3 predates the 32-bit kernel entirely (that arrived with
-2.0), so there is no LX/SO32DLL option here at all.
-
-The 2.x agent's README asserts Watcom's PM headers are 32-bit-only. That's
-true of the specific header tree (`%WATCOM%\h\os2`) a 32-bit build points
-at — confirmed directly, it hard-errors (`E1091: This os2.h is for 32-bit
-development only!`) the moment `-bt=os2` (16-bit) is used, even for
-Dos-kernel-only code with no PM involved at all. But Open Watcom ships a
-second, separate 16-bit OS/2 1.x header tree, `%WATCOM%\h\os21x`, that the
-2.x port's own research never tried: a real Dos*/Win*/Gpi* API surface for
-16-bit OS/2, not a stub. Everything in `agent-os2-13/` — including
-screenshot/click/key/type/winlist — is built against those headers.
-
-Implemented: auth / `PING` / `QUIT`, `EXEC`, `EXECDETACH` (`spawnv`, not
-`DosStartSession` — simpler and needs none of that API's 16-bit
-`STARTDATA`/`PgmInputs` string-building), `PUT` / `GET`, `SYSINFO`
-(`DosGetVersion`), `SCREENSHOT` (16-bit PM `WinGetScreenPS`/`GpiBitBlt` →
-24-bit BMP, using the older non-`2` `BITMAPINFOHEADER` GPI 1.x layout),
-`CLICK`, `KEY`/`TYPE`, `WINCLOSE`, `WINLIST`, `PSLIST` (no
-`DosQProcStatus` equivalent exists in the 16-bit 1.x header set — that
-API is itself undocumented and 2.x-era — but OS/2 1.3 ships a real
-userspace diagnostic utility that solves the same problem: `PSLIST`
-shells out to `C:\OS2\PSTAT.EXE`, confirmed present on the real os2-13
-box, and parses its process/thread table), `PSKILL` (`DosKillProcess` —
-works given a PID from elsewhere, including `PSLIST`'s own output now),
-`REBOOT` (spawns `IORESET.EXE` detached, which calls `DosShutdown` and
-then pulses the 8042's reset line — `out 0xFE` to port `0x64` — from a
-ring-2 I/O privilege segment in `IOSEG.DLL`; see
-`agent-os2-13/README.md` "REBOOT, via a ring-2 I/O privilege segment"
-for the IOPL/call-gate mechanics and the `DosShutdown` ordering rules).
-The earlier real-mode-`.COM`-in-a-DOS-box approach described here could
-never have worked on this machine: its `CONFIG.SYS` has
-`PROTECTONLY=YES`, so there is no DOS compatibility box at all, and no
-DOS binary of any kind will start. Self-update follows the
-same `update.exe` pattern as the other agents — see "Bugs found via live
-testing on os2-13" below for why it ended up using `SELFEXIT` over the
-wire instead of `DosKillProcess`, and why it's still not reliable
-end-to-end.
-
-Not implemented: `CLIPSET` (16-bit PM's clipboard convention needs a
-giveable real-mode-style segment —
-`DosAllocSeg(SEG_GIVEABLE)`/`DosGiveSeg`/`CFI_HANDLE`, not 2.x's flat
-`DosAllocSharedMem`/`CFI_POINTER` — deliberately left unshipped rather than
-guessed at), `REG*`, `SHUTDOWN`.
-
-**Verification status**: link-tested (real `%WATCOM%\h\os21x` headers +
-`%WATCOM%\lib286\os2\os2.lib`, initially with a stub socket library, later
-against the guest's actual `TCPIPDLL.DLL`) before ever touching real
-hardware, then **run live against the real os2-13 box** (auth / `PING` /
-`QUIT`, `EXEC`, `PUT`/`GET`, `SYSINFO`, `EXECDETACH`, `KEY`/`TYPE`,
-`WINLIST`, `SCREENSHOT`, `PSLIST` — 15/15 in `agent-os2-13/_smoke_test.py`,
-including the PM-based commands this project's own 2.x research previously
-assumed needed 32-bit, and `PSLIST` end-to-end through `PSTAT.EXE`
-correctly reporting the agent's own process each run). `REBOOT` is also
-confirmed live end-to-end through the wire protocol: `OK`, box down ~20s
-later, `STARTUP.CMD` agent answering again ~60s after the command, and no
-`CHKDSK` on the way back up. `CLIPSET` remains unverified live (it isn't
-implemented at all — see above). Self-update is implemented but
-**confirmed broken** — see below.
-
-### Bugs found via live testing on os2-13 (not anticipated in advance)
-
-**Self-update's swap failure was the backup *filename*, not a file lock.**
-`update.exe` renamed the outgoing binary to `<target>.OLD` -
-`LLMAGENT.EXE.OLD` - and Watcom's 16-bit `rename()` rejects a second dot
-with `errno=1` on any file, locked or not, even though the volume is HPFS
-and CMD.EXE's own `REN` accepts that exact name. Every earlier
-investigation had tested the rename with `REN` (which works) while the
-code used `rename()` (which cannot), so the evidence pointed at a lock
-that was never there. Isolated with a throwaway file and no agent
-involved. Replacing the extension instead of appending to it
-(`LLMAGENT.BAK`) makes the swap succeed on the *first* attempt.
-
-Two things made this hard to see, both worth reusing. First, `SELFEXIT`
-kills the very agent you would use to observe the update, so diagnosis
-needed an **independent observer agent** - a second copy running from
-another directory on another port - to watch `PSLIST` and the filesystem
-from outside. That immediately showed the old agent leaving the process
-table ~5s in and an unrelated process renaming the file successfully ~2.4s
-later, which killed the lock theory. Second, two confident-sounding
-theories had to be discarded against measurements: that it was a timing
-race (widening the retry window 8s -> 30s changed nothing) and that it was
-caused by `update.exe` being the agent's child (the fixed version works
-fine while still being its child). **When a fix and a diagnosis disagree
-about the mechanism, test the mechanism directly on something trivial
-rather than re-testing the whole flow.**
-
-**Chained self-updates exhaust the agent's file handles, silently.** Each
-generation is spawned by `update.exe`, which was spawned by the previous
-agent, and OS/2 children inherit their parent's open handles; OS/2 1.x
-gives a process 20. Measured from a freshly booted machine, updating
-repeatedly: generations 1-3 healthy, generation 4 unable to open a file at
-all - it could not read back the `AGENT.PID` it had just written - and
-every generation after it dead on arrival. This is *not* a per-request
-leak: 125 requests across `PING`/`GET`/`PUT`/`SYSINFO`/`EXEC` on a single
-agent left it perfectly healthy. The failure mode is the dangerous kind -
-the agent keeps answering `PING` and `SYSINFO` while `PUT`/`GET`/`EXEC`
-all fail and `REBOOT` stops working, because that too has to spawn a
-helper. `update.c` now starts the new agent with
-`DosStartSession(SSF_RELATED_INDEPENDENT, SSF_INHERTOPT_SHELL)` so each
-generation inherits from the shell rather than from the update chain;
-**that fix is built but not yet confirmed live** - see
-`agent-os2-13/README.md`.
-
-**`REBOOT` could not possibly have worked, and the reason was one line of
-`CONFIG.SYS`.** The original implementation tried four genuinely different
-reset mechanisms (8042 pulse reset, Ctrl-Alt-Del scancode injection, BIOS
-warm-boot vector jump, `0xCF9` chipset reset) as real-mode DOS `.COM`
-stubs, and all four failed identically with no visible effect. That
-identical failure was itself the clue: the machine has
-**`PROTECTONLY=YES`**, so it has no DOS compatibility box at all and no
-DOS binary of any kind will start — three of the four never executed a
-single instruction. `spawnl`'s return code was discarded at every call
-site, so nothing ever reported it; a check that a `.COM` even launched
-would have collapsed the whole search immediately. The surviving lesson is
-narrow and practical: **when several independent mechanisms fail in
-exactly the same way, suspect the thing they share, and check the return
-codes you decided not to look at.** Fixed by doing the same 8042 pulse
-reset from protected mode instead, through an OS/2 1.x I/O privilege
-segment — a documented facility the machine was already configured for
-(`IOPL=YES` was in `CONFIG.SYS` all along). See
-`agent-os2-13/README.md`.
-
-**Resetting the hardware silently corrupted a file, then made `CHKDSK` run
-on every boot.** os2-13 runs HPFS386 with a ~4.9MB lazy-write cache. The
-first successful reset came seconds after a `PUT`, and the file came back
-the right length with 16,972 bytes of garbage in it — the directory entry
-had been committed, the data had not. `DosBufReset` is not a fix: it
-flushes file buffers, a layer above the HPFS386 cache, and does not clear
-the dirty-volume flag that `AUTOCHECK` keys on. `CACHE.EXE /LAZY:OFF`
-stops the data loss but still leaves the volume dirty. Only `DosShutdown`
-gives a clean boot — and it brings its own trap, since it leaves the
-filesystem read-only: **one log write after `DosShutdown` blocks forever**
-and the machine sits quiesced and wedged instead of resetting, which
-happened twice before the cause was clear. The IOPL segment likewise has
-to be preloaded *and* called once beforehand, or the first call after the
-shutdown demand-loads it from a disk that is no longer there.
-`IORESET.EXE` now arms a watchdog process before shutting down so the
-worst case is a late reset rather than a hang needing someone at the
-console.
-
-**`SYSINFO` reported `os2_major=30, os2_minor=10` for a real 1.30 system**
-— backwards and unscaled. The original code assumed `DosGetVersion`
-followed the DOS `int21h AH=30h` convention (low byte = major, high byte
-= minor). The real live value decodes as low byte = minor as-is (30),
-high byte = major *generation* number ×10 (10, i.e. "1.x") — confirmed
-against `EXEC ver`'s own report of "1.30" from the same machine at the
-same time. **Reproduced and fixed** — `os2_major`/`os2_minor` now read
-1/30 correctly, verified via a live `SELFEXIT`-driven redeploy (see
-below) and a follow-up `SYSINFO` call.
-
-**Self-update's `DosKillProcess` always failed with `ERROR_NOT_DESCENDANT`
-(rc=305)**, discovered the first time self-update was actually run live,
-not from code review — the exact class of bug this project's own
-"bugs found via live testing" sections keep surfacing. `update.exe` is
-launched via `EXECDETACH`, making it a *child* of the running agent; OS/2
-only allows `DosKillProcess` to kill descendants, never an ancestor, so
-`update.exe` trying to kill its own parent was structurally backwards
-from the start. (The 2.x agent's `update.exe` has the exact same
-`DosKillProcess(DKP_PROCESS, pid)` call and the exact same
-`EXECDETACH`-is-a-child relationship to its own agent — this may well be
-the same latent bug there, just never caught, since that self-update path
-was never confirmed working end-to-end live either.)
-
-Fixed with a new `SELFEXIT` wire command: `update.exe` connects to the
-running agent as an ordinary authenticated client (same token) and asks
-it to exit itself, sidestepping the kill-rights question entirely.
-**Confirmed working live**, twice (`selfexit: agent acknowledged` in
-`UPDATE.LOG`).
-
-**`SELFEXIT`'s first version connected to `127.0.0.1` and hung
-indefinitely.** This 16-bit TCP/IP stack's loopback interface doesn't
-appear to work (or isn't configured) - confirmed live: the connect never
-even errored out, it just hung, leaving an orphaned `update.exe` that
-never appeared in the OS/2 Window List (Ctrl-Esc) yet still held its own
-`.EXE` file locked (a subsequent `PUT` to the same filename failed with
-`ERR:write failed` until a different filename was used instead). Fixed
-by adding a required `host=` line to `LLMAGENT.INI` — the machine's real
-LAN address, which every external client (including this project's own
-bridge) had already been reaching successfully the whole time — read only
-by `update.exe`, not the agent itself. **Confirmed working live** after
-the fix: `SELFEXIT to 10.102.10.199:2222` → `selfexit: agent
-acknowledged`.
-
-**Even after a confirmed-clean `SELFEXIT`, renaming the new binary into
-place still fails - consistently, not intermittently.** Widening the
-retry window from ~8s to ~30s (150 attempts × 200ms) made no difference:
-`renamedOld=0 after 150 attempt(s)`, live, same as the original ~8s
-version. That rules out a simple "OS/2 hasn't released the file handle
-yet" timing race as the sole cause. Leading theory, **not confirmed**:
-`update.exe`'s `start_agent()` step runs unconditionally, even after a
-failed swap, immediately relaunching a fresh process from the same
-still-unswapped binary - so by the time the *next* round's rename is
-attempted, a new process may already hold the file open again, even
-though each individual round's own `SELFEXIT` genuinely killed its own
-target. Couldn't be confirmed at diagnosis time without process-level
-visibility - `PSLIST` didn't exist yet then. It does now (see above); a
-follow-up live attempt with `PSLIST` called before/during/after each step
-(watching for `LLMAGENT`/`LLMNEW` process count growing round over round)
-would likely settle this, but hasn't been done yet.
-**Not yet root-caused or fixed** - self-update remains unreliable
-end-to-end on os2-13 despite `SELFEXIT` itself working; recovering from a
-failed attempt needed manual console intervention (stop the stuck agent,
-`PUT` the new binary under a different name, rename and restart by hand)
-twice during this investigation. Treat `legacy_self_update` against
-`os2-13` as broken until this is root-caused with direct console
-observation during a live attempt.
-
-A related, smaller finding from the same session: a freshly `spawnl`'d
-agent occasionally failed its own `bind(2222)` immediately after the
-previous instance exited. Worked around with a ~60s bind retry loop in
-`server_main()` (same shape as the Windows agent's own
-`WSAStartup`/`bind` retry loop for its analogous early-boot race - see
-"Bugs found via live testing" further up) — but this alone did not fix
-the rename problem above, confirming they're at least partly separate
-issues.
-
-## Screenshot/input: built into the agent, not VNC (revised)
-
-**Original decision**: use an externally-installed VNC server (TightVNC
-1.3.x / UltraVNC) for screen capture and input injection, and have the
-bridge speak RFB to it via `vncdotool`. Reasoning at the time: screen
-capture and synthetic input on Windows 9x through XP is a solved problem
-with decades of hardening (GDI `BitBlt`/`GetDIBits`, `keybd_event`/
-`mouse_event`), wrapped in the RFB protocol, and TightVNC/UltraVNC both
-trace back to the original ORL/AT&T VNC that targeted exactly this OS
-range from the start — so re-deriving that plumbing looked like effort
-spent for no real benefit.
-
-**Revised**: that reasoning was aimed at *reimplementing VNC* — streaming
-video, multiple wire encodings, a general remote-desktop protocol for
-human interactive use. What's actually needed here is much narrower:
-on-demand "grab one frame" and "inject one click/key," driven by a single
-trusted automated client. That's a handful of well-documented GDI/input
-calls, not RFB. Requiring a separate third-party service install also cut
-directly against the rest of this design's whole point (see "Why not
-SSH" above) — one more service to install, configure, and keep from
-colliding with whatever else is running — and in practice was the thing
-actually blocking getting this working at all. So `SCREENSHOT`/`CLICK`/
-`KEY`/`TYPE` moved into `llm_agent` itself, on the existing token-authed
-channel, and `vncdotool`/VNC dropped out of the bridge entirely. Nothing
-stops you from *also* running a VNC server or using RDP for your own
-independent, human, live view of the box — the agent's tools just don't
-depend on one anymore.
-
-Implementation specifics:
-
-- Capture: `BitBlt` off the screen DC into a memory DC, `GetDIBits` into a
-  24-bit-forced `BITMAPINFOHEADER` (this does the color-depth conversion
-  for us — matters for old 8-bit/256-color palette displays, which need
-  no special-case handling as a result). Sent over the wire as a raw BMP;
-  the bridge converts to PNG via Pillow before handing it to the MCP
-  client, since BMP is uncompressed (a full-screen capture easily runs
-  several MB) and PNG shrinks that by ~20x on typical UI content.
-- Injection: `mouse_event`/`keybd_event`, not the newer `SendInput` —
-  `SendInput` doesn't exist on Windows 9x, and these do, keeping the same
-  API surface across the whole 9x-XP range as everything else in the
-  agent.
-- Key names: `KEY <keyspec>` parses `mod-mod-key` (`ctrl-alt-del`,
-  `shift-a`, `alt-tab`), a small named-key table (`enter`, `esc`, `f1`-
-  `f12`, arrows, ...) for non-printable keys, and `VkKeyScanA` for single
-  ASCII characters (handles which ones need Shift on the current
-  keyboard layout). `TYPE <text>` is the same character path, looped.
-
-Two gotchas worth knowing about, both structural rather than bugs:
-
-- **Session 0 / interactive desktop.** Pre-Vista Windows has no Session 0
-  isolation, so a LocalSystem service *can* see and drive the logged-on
-  user's real desktop — but only if registered with
-  `SERVICE_INTERACTIVE_PROCESS` (see `install_nt_service()`). Without it,
-  these commands would silently operate against an invisible,
-  disconnected window station: `SCREENSHOT` would "succeed" and return a
-  blank/black image, `CLICK`/`KEY` would "succeed" and visibly do
-  nothing. This isn't unique to rolling this ourselves — VNC-as-a-service
-  hits the identical wall on pre-Vista Windows, which is why a lot of
-  legacy VNC install guides tell you to run it as a per-user startup app
-  instead of a service. It also only works with a user actually logged in
-  locally; capturing/driving the Winlogon screen (nobody logged on, or
-  the workstation locked) isn't reliable.
-- **A synthetic Ctrl+Alt+Del does not trigger the secure Winlogon SAS.**
-  Windows intentionally blocks software-simulated Ctrl+Alt+Del from
-  reaching the secure attention sequence, specifically so malware can't
-  fake it — real VNC and RDP hit this same limitation (RDP's "Send
-  Ctrl+Alt+Del" menu item works through a different, privileged path, not
-  simple key injection). `KEY ctrl-alt-del` here will not unlock a locked
-  screen.
-- **Session identity when using RDP.** If you RDP into a box that has
-  Terminal Services in remote-administration mode, that RDP session is a
-  *different* session from the physical console (session 0) — which is
-  what an interactive LocalSystem service touches. `legacy_screenshot`
-  would then show the console desktop, not whatever you're looking at
-  over RDP. Watching over the VMware/hypervisor console instead doesn't
-  have this mismatch, since that *is* the console session.
-
-## Later additions: process control, system info, power, windows, clipboard, registry
-
-`PSLIST`/`PSKILL`, `SYSINFO`, `REBOOT`/`SHUTDOWN`, `WINLIST`, `CLIPSET`,
-and `REGGET`/`REGSET` all followed the same shape as everything above:
-narrow, native, on the same channel, instead of depending on CLI tools
-that don't exist on this OS range by default (`tasklist.exe`/
-`taskkill.exe`/`shutdown.exe`/`reg.exe` are all XP+ ; `sc.exe` isn't
-reliably present before 2000). Design specifics that mattered:
-
-- **`PSLIST` has no single enumeration API across the whole range.**
-  `CreateToolhelp32Snapshot` covers 9x and 2000+ but *not* NT4 (added for
-  Windows 2000). `EnumProcesses`/`GetModuleBaseNameA` (PSAPI) cover
-  NT4/2000/XP but `psapi.dll` doesn't exist on 9x *at all*. Both are
-  resolved via `LoadLibraryA`/`GetProcAddress` at runtime, never a static
-  import — a static import of either would fail to load the *entire
-  binary*, not just this feature, on whichever OS family lacks it. Same
-  trap `RegisterServiceProcess` already has to work around. Branch is
-  `is_windows_9x()`: Toolhelp32 there, PSAPI everywhere else.
-  **Verified locally, but the verification itself surfaced a real caveat
-  for local testing specifically**: on this 64-bit dev machine, every
-  process except the 32-bit `llm_agent.exe` and one 32-bit installer came
-  back with no resolvable name (`GetModuleBaseNameA` needs a
-  bitness-matched target, and this 32-bit agent can't read module names
-  from native 64-bit processes under WOW64). This is a testing artifact,
-  not a real-target bug — every genuine 9x/NT4/2000/XP target is 32-bit
-  only, no WOW64, no mismatch possible.
-- **`SYSINFO`'s memory figures use the old, non-Ex `GlobalMemoryStatus`**
-  (present since Win95/NT 3.1, unlike `GlobalMemoryStatusEx`, which
-  wasn't universal until 98/2000). It's documented to clamp both
-  `dwTotalPhys` and `dwAvailPhys` to 2GB on any machine with more than
-  that installed — confirmed locally (`total_phys_mb=2047` on a modern
-  box with far more RAM than that). Harmless for every real target here,
-  since no legitimate legacy 9x/NT4/2000/XP box has anywhere near 2GB of
-  RAM, but worth knowing if `SYSINFO` is ever pointed at something modern
-  for testing. Disk space resolves `GetDiskFreeSpaceExA` dynamically
-  (missing on original Win95 retail / pre-SP NT4) and falls back to the
-  always-present `GetDiskFreeSpaceA`, doing the cluster/sector math by
-  hand.
-- **`REBOOT`/`SHUTDOWN` need `SeShutdownPrivilege` explicitly enabled**
-  on NT-family — LocalSystem doesn't get it by default. The
-  privilege-adjustment calls (`OpenProcessToken`/`LookupPrivilegeValueA`/
-  `AdjustTokenPrivileges`) are the same class of NT-security advapi32
-  function as the SCM calls `install_nt_service()` already relies on
-  being present (if only as no-op compatibility stubs) on 9x — see the
-  note in "OS-family handling" below on that assumption's actual
-  verification status. NT-family then calls `ExitWindowsEx` directly,
-  same as any normal NT service.
-
-  9x does **not** call `ExitWindowsEx` directly — see "Bugs found via
-  live testing" below for why: it doesn't work from this process on real
-  hardware, no matter which process makes the call, and the actual fix
-  (`rundll32.exe shell32.dll,SHExitWindowsEx`) took three failed live
-  attempts to find. The MCP tools (`legacy_reboot`/`legacy_shutdown`)
-  require an explicit `confirm=True` argument — verified that omitting it
-  short-circuits before any network call happens at all. **Verified
-  end-to-end against real machines on both OS families**: `legacy_reboot`
-  against `win95` genuinely power-cycles the VM and the agent comes back
-  up on its own afterward (see "Bugs found via live testing"). Against
-  `scm201` (NT4 SP6), the direct `ExitWindowsEx` path worked correctly on
-  the very first attempt — no workaround needed, unlike 9x — with the
-  SCM-installed service surviving the reboot and coming back on its own,
-  and `legacy_enable_autologon`'s Winlogon autologon confirmed working
-  end-to-end for the first time: real desktop back and confirmed via
-  screenshot roughly 30 seconds after the reboot was triggered.
-- **`WINLIST`** uses `EnumWindows`/`GetWindowTextA`/`GetClassNameA`/
-  `GetWindowRect` — plain user32 exports present since Windows 3.1/95/
-  NT 3.1, safe to call directly with no dynamic resolution needed, unlike
-  `PSLIST`'s APIs.
-- **`CLIPSET`** uses the classic `OpenClipboard`/`GlobalAlloc`+
-  `GlobalLock`/`SetClipboardData(CF_TEXT, ...)` sequence from the
-  Windows 3.x era, safe across the whole range. Only sets the clipboard —
-  pairing it with `KEY ctrl-v` to actually paste is left to the caller,
-  matching the small-composable-primitives style `CLICK`/`KEY` already
-  use rather than one combined "set and paste" command.
-- **`REGGET`/`REGSET` use TAB-delimited wire arguments**, not
-  space-delimited like `EXEC`/`PUT`. Registry key paths can contain
-  spaces the same way filesystem paths can (e.g. `...\App Paths`), and
-  tabs essentially never appear in real key/value names — simpler than
-  `PUT`'s right-to-left parsing trick for the same underlying problem.
-  `RegOpenKeyExA`/`RegQueryValueExA`/`RegCreateKeyExA`/`RegSetValueExA`
-  are safe to link statically across the whole 9x-XP range — the
-  registry itself is a core OS feature on both family branches, not an
-  NT-only concept merely stubbed for 9x compatibility the way the SCM/
-  token functions are. Only `REG_SZ`/`REG_EXPAND_SZ`/`REG_DWORD` are
-  supported for now — covers the large majority of legacy app/installer
-  registry needs without the added complexity of `REG_BINARY`/
-  `REG_MULTI_SZ` handling.
-
-## Self-update
-
-`agent-win32/update.c` compiles to a second binary, `update.exe`, whose only
-job is replacing a running `llm_agent` installation with a new one:
-stop the old process, swap the file, start the new one. Deliberately a
-*separate* small program rather than a `SELFUPDATE` command bolted onto
-`llm_agent` itself — the whole reason it's needed is that you generally
-can't overwrite an EXE file while it's the one currently executing, so
-something *other than* the running agent has to do the swap.
-
-OS/2 has the same helper under `agent-os2/update.c` (`UPDATE.EXE`): the
-agent writes `AGENT.PID` on listen; the helper `DosKillProcess`es that
-PID, renames with rollback, and `DosStartSession`s the new binary.
-`EXECDETACH` on OS/2 uses an independent `DosStartSession` so the helper
-survives the kill. `legacy_self_update` accepts optional remote filename
-overrides for 8.3 names (`LLMNEW.EXE` / `UPDATE.EXE` / `LLMAGENT.EXE`).
-
-Usage: `update.exe <new-exe-path> [target-exe-path]`. `target-exe-path`
-defaults to `llm_agent.exe` next to `update.exe` itself if omitted (Windows
-only — OS/2 requires both paths). Both
-paths must be absolute — a service's default working directory is
-`system32`, not wherever the target agent and update helper actually live (the same
-gotcha `load_config()` already has to work around for
-`llm_agent.ini`), so any relative path here would silently resolve to
-the wrong place.
-
-Sequencing, driven by `mcp-server/server.py`'s `legacy_self_update`:
-
-1. Read the running agent's `SYSINFO` identity, validate distinct staging,
-   helper, and target paths, and snapshot both local inputs. `PUT` the new
-   executable to `<remote_dir>\llm_agent_new.exe` and the helper to
-   `<remote_dir>\update.exe`. Read back both uploads and compare every byte
-   before launching anything. A reported executable path must match the target.
-2. `EXECDETACH` launches `update.exe` with both paths, quoted, and
-   returns immediately with its PID. The triggering connection gets its
-   response and closes cleanly *before* `update.exe` actually stops the
-   old agent — `EXECDETACH` launches it as a direct child (not tied to
-   the parent via a pipe the way plain `EXEC` is), so killing the old
-   agent process moments later doesn't touch `update.exe` itself.
-3. `update.exe` stops the old agent — `ControlService` +
-   poll-for-`SERVICE_STOPPED` on NT-family (the same "don't assume a
-   stop is instant" lesson already learned once from the `net stop`
-   bug below, applied here from the start rather than re-discovered),
-   or a Toolhelp32 find-by-name + `TerminateProcess` on 9x (no SCM
-   there at all) — reusing the exact same dynamically-resolved
-   Toolhelp32 pattern `PSLIST` already established, for the same
-   NT4-doesn't-have-it reason.
-4. Renames the old binary to `<target>.old` (retrying briefly — the
-   just-stopped process may take a moment to release its file mapping),
-   moves the new one into place, and restores the `.old` backup if that
-   move fails, so a bad upload can't strand the machine with no agent
-   at all.
-5. Restarts it — `StartService` on NT-family (no need to re-run
-   `--install`; the service registration's binary path didn't change,
-   only the file's contents did), or a direct `CreateProcess ... --run`
-   on 9x (mirroring what the `Run` key would do on next logon, just
-   immediately).
-6. After 15 quiet seconds, `legacy_self_update` polls for a different
-   `agent_started` marker, an `agent_sha256` matching the local snapshot,
-   and the expected `agent_exe` path. It downloads the installed executable
-   and checks its SHA-256, then confirms the startup identity stayed the same
-   across that readback. Rollback, wrong bytes, a still-running old process,
-   and missing identity fields cannot produce a verified result.
-
-`legacy_win16_self_update` uses the same verification after its `UPDATE`
-command. Win32, Win16, and both OS/2 agents compute `agent_sha256` once at
-startup from their executable file; it is never recomputed from a subsequently
-replaced file during `SYSINFO`. `agent_started` combines startup uptime and
-process/task ID. A collision fails verification rather than implying success.
-The portable implementation in `common/update_identity.h` supports 16-bit C
-and avoids MinGW's prebuilt formatted-I/O routines.
-
-These are deployment checks for trusted lab agents, not code signatures or
-attestation of executable memory. The hash describes the file read at startup;
-concurrent external file replacement is outside the update transaction. Old
-agents can be upgraded to identity-capable builds, but replacing an agent with
-a build that lacks these fields reports `[update NOT verified]` on timeout.
-`wait_for_agent=False` reports launch/acceptance only. `legacy_wait_for_agent`
-remains a readiness check; neither `PING` nor `AGENT.PID` proves an update.
-If the launch reply is lost as the old process exits, the bridge checks these
-same postconditions and does not launch a second updater.
-
-The stock Win32 helper expects an installed `LLMAgent` service on NT-family
-Windows. A manually launched agent needs a separate stop/relaunch procedure;
-the bridge does not silently treat that deployment as a verified service update.
-
-`update.exe` follows the exact same `-march=i486` / no-CRT-formatted-I/O
-discipline as `llm_agent.c` (see the SSE2 crash below) — it's a
-separately compiled binary, so it's just as exposed to the toolchain's
-unsafe default, and there'd be little point fixing that crash in one
-binary while shipping a second one with the identical latent bug.
-The compiler flag does not certify every prebuilt CRT routine for a 486.
-The September 20, 2026 agent build retains startup `cmov` instructions and
-six SSE2 instructions in CRT `__matherr`, also present in the preceding
-build. Startup fingerprinting added no SIMD instructions. Normal update
-paths passed on both Windows 95 lab guests; real 486/Pentium hardware and
-that CRT math-error path remain outside the tested coverage.
-
-**Verified**: the file-swap-with-rollback logic locally (both the
-success path and, separately, a deliberately-missing new-binary path to
-confirm the old file gets restored rather than left gone); the full
-bridge-driven path (`legacy_self_update` → two `PUT`s → `EXECDETACH` with
-quoted multi-path arguments → `update.exe` actually swapping the target
-file) against a local test agent; and now the real
-`ControlService`/`Toolhelp32` stop-the-real-agent step end-to-end against
-`win95` (real Windows 9x, via `EXECDETACH`, twice — see the two 9x-specific
-bugs below) with a follow-up `EXECDETACH`/`PSLIST`/`PSKILL` cycle
-confirming the freshly-restarted agent still works correctly post-update.
-Not yet confirmed against a real installed NT-family service specifically
-(only reasoned-through/locally-tested for that half).
-
-## Bugs found via live testing (not anticipated in advance)
-
-Nine real correctness bugs surfaced only once the agent was actually
-exercised against a live machine/desktop, not from code review. All are
-worth recording since the pattern ("looks right on paper, breaks the
-moment something realistic happens") is likely to recur as more of this
-OS range gets tested.
-
-**EXEC hung forever, wedging the whole agent, the moment a command
-spawned something that outlives it.** The original implementation
-`ReadFile`-looped on the redirected pipe until it saw EOF, which requires
-*every* handle to the pipe's write end to close. `cmd.exe` inherits that
-handle so it can write to it — but if `cmd.exe` itself spawns something
-(e.g. `start /b notepad.exe`), that inheritance passes transitively to
-the grandchild too, by default, with no way for us to prevent it from our
-side of the `CreateProcess` call for `cmd.exe`. Notepad stays open
-indefinitely, so the pipe's write end never fully closes, so `ReadFile`
-never returns, so `run_exec()` never returns, so `handle_client()` never
-returns — and since the agent is single-threaded, the accept loop never
-gets back to `accept()` either. One ordinary "launch a GUI app in the
-background" command — extremely plausible during real installer
-automation — wedges the *entire* agent against *all* future connections,
-including `PING`, until the orphaning process is manually closed.
-
-Fix: stop waiting for pipe EOF. Poll the *direct* child (`cmd.exe`/
-`command.com`) via `WaitForSingleObject` instead, draining whatever's
-currently buffered each poll via `PeekNamedPipe`+`ReadFile` (non-blocking
-checks, not the blocking read that caused the hang). We're done as soon
-as our own child exits, regardless of what any orphaned grandchild still
-holds open. A side effect worth having anyway: a `LEN:0\n` heartbeat
-(zero bytes follow — already valid under the existing framing, no
-protocol change needed) goes out every 5 seconds of silence so a
-long-running-but-currently-quiet command (a silent installer step, say)
-doesn't trip a client-side read timeout while it's still legitimately in
-progress.
-
-**Reproduced and fixed** — confirmed hung under the original
-implementation (`start /b notepad.exe` never returned), confirmed fixed
-under the rewrite (returns in ~0.1s, agent stays responsive to a
-follow-up `PING` immediately after, `PSLIST`/`PSKILL` find and kill the
-spawned process cleanly).
-
-**Windows 9x has no `cmd.exe` at all.** `run_exec()` originally hardcoded
-`cmd.exe /C <cmdline>` unconditionally. `cmd.exe` is NT-family only —
-Windows 95/98/ME's command interpreter is `COMMAND.COM`. Every `EXEC`
-call would have simply failed on a 9x target ("file not found"), which
-would have broken nearly everything else too (`PUT`/`GET` verification
-and most real workflows lean on `EXEC`). Fixed by branching on
-`is_windows_9x()`. `COMMAND.COM` also takes `/C`, so the fix is narrow,
-but it has a much smaller command-tail buffer (~127 characters) than
-`cmd.exe` — a long `EXEC` command that works fine on NT-family may need
-shortening (or writing to a batch file first) to run on 9x. Not yet
-tested on real 9x — this is reasoned from documented `COMMAND.COM`
-behavior, not verified empirically like the pipe-hang fix above.
-
-**`net stop` on the installed NT service hung, then reported failure,
-then refused a second stop attempt** — the exact same underlying pattern
-as the `EXEC` pipe-hang, just in the accept loop instead of a pipe read.
-`svc_ctrl_handler()` (the callback the SCM invokes to deliver
-`SERVICE_CONTROL_STOP`) set `g_running = 0` and reported
-`SERVICE_STOP_PENDING`, but that callback runs on the SCM's own
-control-dispatch thread — a *different* thread from the one blocked in
-`server_main()`'s `accept()` (or, if a client happened to be connected,
-`recv()` inside `handle_client()`). Neither blocking call has a timeout
-or any way to notice a flag changing on another thread; nothing was ever
-going to make them return on their own. Reproduced live on `cucm413`:
-first `net stop llmagent` printed "service is stopping........" then
-"could not be stopped"; a second attempt failed differently ("service
-could not be controlled in its present state," error 2189) because the
-SCM now considered a stop already in progress — confirming the process
-itself was still alive and genuinely parked, not crashed.
-
-Fix: track the listening socket and the currently-active client socket
-(if any) in globals, and have `svc_ctrl_handler()` call `closesocket()`
-on both when a stop is requested. Closing a socket that a *different*
-thread is blocked in `accept()`/`recv()` on is a documented, valid way to
-force that call to return on Winsock — confirmed with a standalone
-cross-thread test (a thread blocked in `accept()`, closed from the main
-thread after a delay) before touching the real service code: unblocked
-within 50ms. Deliberately accepted a small, low-consequence race on
-those two globals rather than adding real synchronization — worst case
-a stop takes one extra connection-cycle to notice, not a hang, and that
-matches the lightweight-single-threaded register the rest of this agent
-is written in.
-
-This fix could only be validated for the underlying mechanism locally
-(the cross-thread `closesocket()` test above) — actually exercising the
-real SCM-integrated `net stop` flow needs an elevated, installed service,
-which this dev environment doesn't have. Confirming `net stop` actually
-completes cleanly against the real fix still needs to happen on
-`cucm413` (or another real target) directly.
-
-Only NT-family goes through this SCM/`net stop` path at all — Windows 9x
-never calls `StartServiceCtrlDispatcherA` (see `main()`'s `--run`
-handling), so `svc_ctrl_handler` is never registered or invoked there,
-and this specific bug couldn't occur on 9x. 9x has no equivalent
-"request a graceful stop" mechanism for an ordinary background process in
-the first place.
-
-**The agent crashed outright on a real Windows 95 VM** — "This program
-has performed an illegal operation and will be shut down," `LLM_AGENT`
-executed an invalid instruction at a specific `CS:EIP`, with a full
-register dump. This is the most severe bug found in this project: not a
-hang, an actual fault, and the first time the whole 9x code path had ever
-been exercised against real hardware/a real VM rather than just reasoned
-about. The fault bytes (`66 0f ef c0`) decode to `pxor %xmm0,%xmm0` — an
-SSE2 instruction. SSE2 shipped with the Pentium 4 in 2000, five years
-after Windows 95, and this VM's virtual CPU is deliberately configured
-without it for period accuracy.
-
-Root cause: the `i686-w64-mingw32-gcc` toolchain (the MSYS2 package
-itself, confirmed via `gcc -v`) defaults to `-mtune=generic
--march=pentium4` — nothing this project ever set. At `-O2`, GCC happily
-vectorizes plain `ZeroMemory()`/struct-zeroing code into `pxor`/`movups`/
-`movdqu`. This was latent in *every* binary built before this fix, on
-every target, not something specific to 9x code paths — it simply never
-crashed on `cucm413`/`scm201` because those VMs' virtual CPUs still
-expose SSE2. Confirmed via `objdump -d`: dozens of SSE2 instructions
-scattered through functions with completely ordinary `ZeroMemory()`
-calls (`run_exec`, `handle_sysinfo`, etc.) — this was never confined to
-one function or one command.
-
-Fix, in two parts:
-
-1. `agent-win32/Makefile` now passes `-march=i486` explicitly, which disables
-   MMX/SSE/SSE2 (and the Pentium-Pro-only `cmov`) for anything compiled
-   fresh from `llm_agent.c`.
-2. That alone wasn't enough — `-march` only affects code GCC compiles
-   from source in this build, not object code already sitting in the
-   toolchain's own prebuilt static libraries (`-static-libgcc` links
-   those in verbatim). `objdump` after step 1 still showed `cmov`/`xmm`
-   instructions, all inside mingw's own `__mingw_pformat`/`__gdtoa`/D2A
-   (its printf-family float-formatting internals) — pulled in wholesale
-   the moment *anything* in the program references `_snprintf`/`printf`/
-   `sscanf`, regardless of which format specifiers are actually used at
-   runtime, since the linker can't know a `%s`-only call site will never
-   need the float path. `_snprintf` (introduced alongside `EXECDETACH`,
-   used on every `EXEC`/`EXECDETACH` call — the hot path) and `sscanf`
-   (in `handle_click`) were removed entirely and replaced with
-   hand-written string/int parsing (`build_shell_command`'s manual
-   `memcpy` concatenation, `parse_int`). `printf` (only in `--install`/
-   `--uninstall`/usage output, never in the service hot path, but
-   statically linked into the binary regardless of whether that code
-   path runs) was replaced with `wsprintfA`-into-a-buffer plus a new
-   `con_msg()` helper wrapping plain `fputs` — formatting via a
-   dynamically-resolved user32.dll export instead of statically-linked
-   CRT internals.
-
-After both fixes, `objdump -d` shows zero `pxor`/`movups`/`movdqu`/
-`punpck` instructions anywhere in the binary. A handful of `cmov`
-instructions remain, but only inside mingw's own mandatory CRT startup
-internals (thread-local-storage setup, PE image base lookup) that run
-unconditionally before `main()` — not something reachable through this
-project's own code, and not fixable short of replacing the CRT entry
-point entirely, which isn't warranted for a gap this narrow (real 486 or
-non-Pro Pentium only; every VM tested against so far has `cmov`, just
-not SSE2). Documented as a known, accepted residual limitation rather
-than silently ignored.
-
-**The practical lesson, worth restating**: a cross-compiler's *default*
-target architecture is not something to trust implicitly just because
-the toolchain's triple says "i686" — that triple names an ABI/toolchain
-convention, not a hard instruction-set floor, and this MSYS2 package's
-actual default (`pentium4`) was five CPU generations newer than anything
-in scope for this project. `-march` needs to be pinned explicitly, and
-verified by disassembly, not assumed from the target triple.
-
-**`update.exe`'s Windows 9x stop step silently never matched, so it never
-actually stopped the old agent before swapping its file.**
-`stop_9x_agent()` compared `PROCESSENTRY32.szExeFile` against the bare
-constant `"llm_agent.exe"` via exact `_stricmp()`. That field is
-documented to (and, confirmed live, actually does) hold the *full path*
-on Windows 9x — `"C:\LLM_AGENT\LLM_AGENT.EXE"`, not just the filename —
-so the comparison could never match, regardless of where the agent was
-actually launched from. `stop_9x_agent()` always returned "not found,"
-`replace_file()` then raced against a still-running process still
-holding the old binary open, and the file swap failed every time on a
-real 9x target. Diagnosed by running `update.exe` via synchronous `EXEC`
-(instead of the normal silent `EXECDETACH`) specifically to see its
-console output, which showed "could not confirm the running agent
-stopped" followed by "failed to replace the agent binary." Fixed with an
-`ends_with_ci()` suffix-match helper instead of the exact-match
-comparison, so it matches regardless of whether `szExeFile` is a bare
-name or a full path. **Reproduced and fixed** — confirmed working
-end-to-end against `win95` via the real `legacy_self_update`/`EXECDETACH`
-path: the file swap succeeded, exactly one `llm_agent.exe` instance was
-running afterward with a fresh PID, and a follow-up `EXECDETACH` still
-reported the correct real target PID.
-
-**`update.log` was never actually created, on any target, despite every
-step appearing to log successfully.** `log_line()` opened the log file
-with `dwDesiredAccess = FILE_APPEND_DATA` only. That access right is
-documented and commonly used for named pipes/mailslots, but is not a
-reliable way to grow a brand-new *regular* file on every Windows
-version/filesystem — confirmed live: zero bytes were ever written, on
-both an NT4 target and (after the 9x fix above made the rest of the
-update succeed) `win95`, with no error surfaced anywhere because
-`log_line()`'s `CreateFileA` failure path was already silent by design
-(logging is deliberately best-effort, not something that should ever
-block or fail the actual update). Since `update.exe` is normally launched
-via `EXECDETACH` with no console and no output redirection, this meant
-`update.exe` runs were completely unobservable after the fact — the one
-thing `update.log` exists for. Fixed by opening with `GENERIC_WRITE`
-instead and explicitly seeking to `FILE_END` before each write, the
-standard portable append idiom (works identically back to Windows 95),
-rather than relying on `FILE_APPEND_DATA`'s implicit-append semantics.
-**Reproduced and fixed** — confirmed `update.log` now contains the full
-expected step-by-step trace after a real `win95` self-update.
-
-**A correctly-installed Windows 9x `Run`-key autostart entry never
-actually launched the agent across a real reboot.** `install_9x_autostart()`
-originally wrote to `HKLM\...\CurrentVersion\Run`. `win95` has User
-Profiles enabled (visible as "Log Off &lt;user&gt;" on its Start menu, a
-side effect of the network-logon dialog investigated below), and Windows
-9x's `Run`-key entries are known to go through a per-profile merge that
-doesn't reliably fire on every boot. Confirmed live: with the registry
-entry present and pointing at the right path (verified via `legacy_reg_get`
-before ever rebooting), a real reboot left the agent's TCP port refusing
-connections indefinitely — not timing out, *refusing*, meaning the
-machine was up and reachable but nothing was listening. Fixed by writing
-to `RunServices` instead — the Microsoft-documented location for a
-background/service-style process, which starts at boot independent of
-profiles or which user (if any) logs on, matching what
-`RegisterServiceProcess` is already trying to achieve.
-`uninstall_9x_autostart()` now cleans up both keys, since a box set up
-with an older build could have a stale entry in the old location.
-**Reproduced and fixed** — after switching to `RunServices`, two
-consecutive real reboots both brought the agent back automatically
-(confirmed once at ~40s, once at ~10s after the machine came back on the
-network), with no manual intervention.
-
-**Even after the autostart fix, the very first automated reboot attempt
-still failed — a second, compounding bug.** `server_main()` called
-`WSAStartup`/`socket`/`bind` exactly once, with no retry, and returned
-immediately (silently exiting the whole process) on any failure. Launched
-from `RunServices` — which starts earlier in Windows 9x's boot sequence
-than a normal interactive `Run`-key or command-prompt launch — the
-TCP/IP stack can plausibly still be finishing initialization at the
-moment the agent tries to bind. Genuinely hard to fully confirm the exact
-failure point from a launch context with no attached console, which is
-what motivated adding `agent_boot.log` (see below) in the same pass.
-Fixed with a bounded retry loop (up to ~2 minutes, every 2s) around both
-`WSAStartup` and `socket`+`bind`. Logged, not just fixed blind — worth
-noting the added `agent_boot.log` output on the reboot that actually
-worked showed both succeeding on the *first* attempt (no retries needed
-that time), so this fix is defensive rather than confirmed as the exact
-original root cause; it hasn't reproduced since being added.
-
-**Startup and self-update failures on any unattended launch (`RunServices`
-at boot, `update.exe` via `EXECDETACH`) were completely unobservable** —
-no console, no output redirection, nothing. Added `agent_boot.log`, next
-to the exe, written with the same `GENERIC_WRITE`+seek-to-`FILE_END`
-idiom as `update.log` above (same reasoning: a bare `FILE_APPEND_DATA`
-open is not reliable for growing a brand-new file). Covers `main()`
-entering the `--run` path, `WSAStartup`/`bind` attempt counts and
-failures, and reaching the accept loop. This is what made diagnosing the
-two bugs above at all possible without a debugger attached to a headless
-boot sequence.
-
-**`REBOOT`/`SHUTDOWN` didn't work on Windows 9x at all, and took three
-live attempts across multiple real reboots to actually fix.** The
-original code called `ExitWindowsEx` directly from the long-running agent
-process, same as the NT-family path. On real `win95`, this produced no
-visible effect whatsoever — no black screen, no "shutting down" UI,
-nothing — the calling process (this agent) simply died, while a
-completely manual Start → Shut Down → Restart on the *same* machine
-worked correctly, ruling out a VM/BIOS/APM limitation and pointing
-squarely at something about how this process was calling the API.
-
-Two follow-up fixes were tried live and both failed identically:
-1. Priming the calling thread's message queue with a throwaway
-   `PeekMessageA` call first (the standard fix for a
-   message-loop-less caller, since `ExitWindowsEx` internally
-   negotiates the shutdown via `WM_QUERYENDSESSION`/`WM_ENDSESSION`
-   broadcasts).
-2. Handing the actual `ExitWindowsEx` call off to a freshly-launched,
-   completely ordinary helper process (`llm_agent.exe --power <flags>`)
-   instead of the long-running, `RegisterServiceProcess`-marked one —
-   mirroring how this project already isolates other self-affecting
-   operations (`update.exe` for self-update).
-
-Both reproduced the exact same symptom as the original code. What
-actually worked, found only after ruling out a VM-level limitation via
-the manual test above: `rundll32.exe shell32.dll,SHExitWindowsEx <flags>`.
-`SHExitWindowsEx` is an undocumented-but-well-known `shell32.dll` export
-— the same one many third-party Windows 95/98 command-line reboot
-utilities used historically, for exactly this reason: it routes through
-the shell's own internal shutdown coordination instead of a bare `user32`
-API call from an arbitrary process, which is apparently unreliable on
-real Windows 9x regardless of which process makes it (service-registered
-or not, message-queue-primed or not). `handle_power()` now launches this
-via `rundll32.exe` as a child process for 9x specifically; NT-family is
-unchanged (direct `ExitWindowsEx`, the standard documented pattern for an
-NT service, never observed broken). **Reproduced and fixed** — confirmed
-end-to-end against real `win95` through the actual `legacy_reboot` code
-path: the VM genuinely power-cycles, and (combined with the `RunServices`
-fix above) the agent comes back up on its own afterward.
-
-A related, non-bug finding from the same test cycle: `win95` has a
-"Enter Network Password" dialog on every boot (a side effect of User
-Profiles being enabled), which blocks nothing agent-related but does sit
-in front of the desktop until dismissed. Since the agent's own
-`legacy_click`/`legacy_type` tools work as soon as it's listening — which
-happens independent of that dialog, since `RunServices` starts before
-user logon completes — this was fully scriptable once credentials were
-available: click the dialog to bring it to front (it can start behind the
-agent's own console window), click the password field, type the
-password, click OK. No manual intervention needed for this step once the
-agent itself is reachable.
-
-Two follow-up changes from the same session, once the reboot cycle
-itself was confirmed working:
-
-**The agent's console window was always visible on 9x, which wasn't
-wanted for a background agent.** A console-subsystem exe always gets a
-window — a fresh one when launched with no existing console to inherit
-(`RunServices`), or the launching command prompt's own when run
-manually. Fixed by calling `FreeConsole()` right before entering
-`server_main()` in the 9x `--run` path. Confirmed live: the `LLM_AGENT`
-window disappears from both the desktop and `legacy_winlist` after a
-self-update, while the agent stays fully reachable. Safe for the manual
-`--run`-from-a-command-prompt case too, since `COMMAND.COM` remains
-attached to that console as long as it's waiting on `llm_agent.exe` as
-its foreground child — only this process's own attachment drops, so the
-caller's window stays open and usable.
-
-**The "Enter Network Password" dialog itself was removed entirely** by
-changing `win95`'s Primary Network Logon (Control Panel → Network) from
-"Client for Microsoft Networks" to "Windows Logon", scripted through the
-agent's own `legacy_click`/`legacy_type` — including handling the
-"Insert Disk" prompt Windows 95 raised for driver files it didn't have
-cached (the user supplied the missing install media; this isn't
-something the agent can resolve on its own, no remote workaround exists
-for genuinely missing installation media). One real bug surfaced as a
-direct result: `legacy_wait_for_desktop()`'s Explorer-detection check
-did `"explorer.exe" in names` against `pslist()`'s process-name set, but
-`pslist()` reports the *full path* on Windows 9x
-(`c:\windows\explorer.exe`), not the bare filename — the exact same
-`PROCESSENTRY32.szExeFile` full-path pattern already hit once in
-`update.c`'s `stop_9x_agent()` above, this time in the bridge's own
-Python code. This exact-match bug had been silently present the whole
-time; it only surfaced now because the function's fallback check (any
-non-"Program Manager" visible window) had always found *something* first
-— the agent's own console window, or this login dialog — and both of
-those are now gone by design. Fixed with a suffix match
-(`n.endswith("explorer.exe")`) instead of exact membership.
+The project began with remote access to legacy Windows machines after freeSSHd
+conflicted with an MSSQL installation in the lab. It expanded into a common
+interface for shell commands where available, file transfer, screenshots,
+input, and system inspection across several operating systems.
+
+Native agents provide those operations without requiring a separate SSH or
+VNC installation on each guest. This is a small automation protocol, without
+terminal sessions, encrypted transport, or SSH compatibility. Existing SSH,
+RDP, VNC, and hypervisor consoles can still be useful alongside it.
+
+## Components and platform boundaries
+
+| Component | Responsibility |
+| --- | --- |
+| `agent-win32/`, `agent-win16/`, `agent-dos/`, `agent-os2/`, `agent-os2-13/`, `agent-netware/`, `agent-mac-system7/` | Native OS operations and TCP command dispatch |
+| `common/` | Shared framing, timeout, hashing, and execution helpers; keep it beside the agent directories when building |
+| `mcp-server/agent_client.py` | Authentication, argument validation, framing, bounded responses, and explicit text conversion |
+| `mcp-server/server.py` | MCP tools, inventory routing, platform guards, and update orchestration |
+| `mcp-server/capabilities.py` | Advisory profiles based on SYSINFO; not proof that an arbitrary installed build supports every tool |
+
+Most agents serve one command connection at a time. Jobs can keep work running
+between connections on Win32, Win16, and OS/2, but do not make every native
+operation concurrent. A blocked OS call can still occupy the command processor.
+
+All ports implement the same authentication and basic framing. Commands and
+effects vary: Mac has no shell; DOS/NetWare render text consoles; Win16 uses
+task handles; Mac quit/power requests are cooperative. Unsupported commands
+return errors. Do not infer another platform's behavior from a Win32 example.
+
+The OS/2 ports are separate builds: 32-bit LX uses Watcom's `h/os2` headers
+and SO32DLL/TCP32DLL, while 16-bit NE uses `h/os21x` and TCPIPDLL. Both implement
+Presentation Manager capture/input. See their platform READMEs for prerequisites.
 
 ## Trust model
 
-The agent authenticates with a single pre-shared token sent in the
-clear, and the wire protocol itself is unencrypted. This is a deliberate
-simplification, not an oversight — it's only defensible because:
+The agent token and all commands, file data, screenshots, and replies travel
+in cleartext. Possession of the token grants broad control with the agent's
+OS privileges. There is no per-operation authorization or untrusted-user
+sandbox. Use a unique token per machine and an isolated lab network. Use a
+separately secured tunnel or VPN for access across an untrusted network.
 
-- The legacy machine is assumed to sit on an isolated lab/VM host-only
-  network, reachable only from your control machine.
-- Windows 95/98/NT4 have no usable modern crypto story to build on (no
-  CryptoAPI on stock Win95, no CNG until Vista) — doing real transport
-  encryption would mean bundling a TLS stack, which reintroduces exactly
-  the kind of heavyweight dependency this design is trying to avoid.
+Network deadlines limit stalled sockets, not misuse by an authenticated
+controller. There is no fairness scheduler or rate limiting. Keep real
+configuration outside the checkout and set `LEGACY_MACHINES_FILE` explicitly.
+An `agent_enabled = false` inventory entry is descriptive only; the bridge
+does not provide SSH access to it.
 
-This now covers screenshot/click/key/type too, since those went through
-the same channel (see "revised" above) rather than a separately-secured
-VNC connection.
+## Win32 desktop capture and input
 
-**Do not expose this port beyond that isolated network.** If the target
-machine ever needs to be reachable from a less-trusted network, put a real
-VPN/tunnel in front rather than trying to harden the agent protocol itself.
+`SCREENSHOT` captures the desktop using GDI (`BitBlt` and `GetDIBits`) and
+returns a 24-bit BMP. The bridge converts it to PNG. Input uses
+`mouse_event`/`keybd_event`; TYPE maps ASCII characters through the guest
+keyboard layout. An acknowledgment does not prove that a target application
+consumed the input. Some unmappable Win32 characters can be skipped.
 
-## OS-family handling
+Deployment determines which desktop these operations can reach:
 
-Windows 9x and NT-family (NT4/2000/XP) diverge in several places the
-agent cares about:
+- On NT4/2000/XP, `--install` registers an interactive LocalSystem service.
+  Desktop automation was tested on the local console. Locked/logon screens
+  are not a reliable interactive target, even if a screenshot can capture them.
+- An RDP session can differ from the console session seen by that service.
+- On Windows 7, run `llm_agent.exe --run` in the logged-in user's session for
+  desktop automation. Session 0 services cannot drive that user's desktop.
+- On Windows 9x, `--install` registers `RunServices`; `--run` uses
+  `RegisterServiceProcess` and detaches its console.
 
-- **Autostart**: NT-family gets installed as a real service via
-  `CreateService`/SCM. Windows 9x has no service manager, so the agent
-  instead writes a `RunServices` registry key (not the plain `Run` key —
-  see "Bugs found via live testing" below for why that distinction turned
-  out to matter) and, once launched, calls the 9x-only
-  `RegisterServiceProcess` kernel32 export so it survives logoff and
-  stays off the taskbar — the standard pattern legitimate background
-  tools of that era used.
-- **Unicode**: Windows 9x's wide-char ("W"-suffixed) API entry points are
-  mostly unimplemented stubs. The agent is built and linked against the
-  ANSI ("A"-suffixed) API surface throughout — no `-DUNICODE`.
-- **Command interpreter**: NT-family uses `cmd.exe`; Windows 9x has no
-  `cmd.exe` at all and uses `COMMAND.COM` instead (also takes `/C`, but
-  with a much smaller ~127-character command-tail buffer). `EXEC`
-  branches on this — see "Bugs found via live testing" below, since this
-  one was a real, shipped bug, not a proactively-handled gotcha.
+Synthetic `ctrl-alt-del` does not invoke Windows' secure attention sequence.
+`legacy_wait_for_desktop` is a Win32 heuristic based on Explorer/windows,
+not proof of successful login or readiness of a particular application.
 
-Detection is `GetVersion()`'s high bit (set → Windows 9x), which is
-reliable across the whole range and doesn't require the XP-only
-`VerifyVersionInfo`.
+## Win32 OS-family and build choices
 
-**An assumption still riding on unverified ground**: `install_nt_service()`
-statically links `OpenSCManagerA`/`CreateServiceA` and friends, and the
-new `REBOOT`/`SHUTDOWN` privilege-adjustment code statically links
-`OpenProcessToken`/`AdjustTokenPrivileges` — all NT-security concepts.
-The working assumption is that Windows 9x's `advapi32.dll` exports these
-as documented no-op compatibility stubs (specifically so apps built
-against them don't fail to *load* on 9x, even though calling them there
-does nothing/returns an error), which is genuinely how Microsoft
-documented 9x's compatibility shims of this era to work. But it hasn't
-been verified empirically on real 9x yet, unlike the Toolhelp32/PSAPI
-split above (which *is* dynamically resolved specifically because the
-equivalent assumption for *that* pair of APIs is false). If a real 9x
-boot ever fails to load `llm_agent.exe` at all — not just fails a
-specific command, but won't start — this static-link assumption is the
-first thing to check.
+The agent uses ANSI APIs and distinguishes Windows 9x from NT-family with
+`GetVersion`. EXEC selects COMMAND.COM on 9x and CMD.EXE on NT. Process listing
+resolves Toolhelp32 on 9x and PSAPI on NT dynamically; those APIs are not
+interchangeable across the target range. A 32-bit agent can fail to resolve
+names for 64-bit processes. Memory reporting uses `GlobalMemoryStatus` and
+can clamp large physical-memory totals; disk reporting has an older-API fallback.
 
-## Toolchain notes (the part that actually breaks silently)
+NT power requests enable the required privilege and use `ExitWindowsEx`.
+The 9x implementation launches `rundll32.exe shell32.dll,SHExitWindowsEx`.
+Power acknowledgments precede completion; verify the resulting machine state.
 
-Building something that boots on Windows 95 in 2026 has one real trap:
-**the linker's PE subsystem/OS version stamp**. A binary built with a
-default modern toolchain gets a subsystem version the old loader compares
-against its own version and refuses ("is not a valid Win32 application")
-— with a misleading error that looks like a corrupt binary, not a version
-mismatch.
+The Makefile uses the MSYS2 i686 legacy MSVCRT toolchain, explicit `-march=i486`
+and PE OS/subsystem version 4.0. Keep `mingw32/bin` on PATH for compiler
+subprocess dependencies as well as the compiler itself. UCRT builds are not
+substitutes for this target. The executable imports Winsock 2 and guest CRT/GUI
+DLLs, so a loader version stamp alone does not establish stock-OS compatibility.
 
-The fix, in `agent-win32/Makefile`:
+Compiler flags do not rewrite prebuilt CRT objects. The reviewed build retains
+CMOV in startup code and SSE2 in a CRT math-error routine. Real 486/non-Pro
+Pentium compatibility is not certified. Validate imports, disassembly, and
+the actual guest rather than assuming a toolchain triple proves compatibility.
+See [binary provenance](BINARY_RELEASE.md) for recorded build inputs.
 
-- Use the MSYS2 **`mingw-w64-i686`** environment, not `ucrt64`/`mingw64`.
-  UCRT-linked binaries depend on `ucrtbase.dll`, which doesn't exist before
-  Vista SP2. The classic i686 toolchain links `msvcrt.dll` instead, which
-  has shipped since Win95 OSR2/98/NT4.
-- Force `--major-subsystem-version 4 --minor-subsystem-version 0` and the
-  matching `--major-os-version`/`--minor-os-version` linker flags. Verified
-  with `file llm_agent.exe` → `PE32 executable for MS Windows 4.00 (console)`.
-- The Win32 agent links `ADVAPI32`, `GDI32`, `KERNEL32`, `msvcrt.dll`,
-  `USER32`, `WS2_32` — no `api-ms-win-*` forwarder DLLs (those are a Win7+
-  concept and won't exist on old targets even if the import would
-  otherwise resolve).
+## Wire protocol
 
-One more trap worth flagging explicitly: the whole toolchain — not just
-`gcc` — needs `mingw32/bin` on `PATH`. `gcc` shells out to `cc1.exe`
-(under `mingw32/lib/gcc/...`), which dynamically loads runtime DLLs
-(`libwinpthread-1.dll`, `zstd.dll`, etc.) that live in `mingw32/bin`. If
-only `gcc`/`ld` are reachable and `mingw32/bin` isn't actually on `PATH`
-for the child process, `cc1.exe` fails to load with **no diagnostic
-output at all** — the build just silently produces no object file. Looks
-identical to "the source has an error the compiler didn't bother to
-report," which it isn't.
+After connecting, send the token and a line terminator. Authentication returns
+`OK` or `FAIL`; failure closes the connection. An authenticated connection can
+carry several commands; `QUIT` ends it. The Python client ordinarily opens a
+connection per operation. Text uses configured legacy codecs; binary bodies
+are opaque bytes. See [text encodings](TEXT_ENCODINGS.md).
 
-## Wire protocol (llm_agent)
+Lines end in LF or CRLF. Maximum line content is 4094 bytes on Win32 and
+510 on other ports. Malformed, overlong, or incomplete lines fail the session
+without dispatching their prefix or queued suffix. See [command framing](COMMAND_FRAMING.md).
 
-Line-oriented, one TCP connection per session:
+| Operation | Request / reply shape |
+| --- | --- |
+| PING | `PING` → `PONG` |
+| EXEC | `EXEC <command>` → zero or more `LEN:<n>` lines each followed by n raw bytes, then `EXIT:<code>`; some ports also return explicit execution errors |
+| Detached launch | `EXECDETACH <command>` → `OK pid=<value>` or `ERR:<reason>`; Win16's value is an instance handle |
+| Upload | `PUT <path> <size>` immediately followed by exactly size raw bytes → `OK` or `ERR:<reason>` |
+| Download / screenshot | `GET <path>` / `SCREENSHOT` → `SIZE:<n>` plus n raw bytes, or `ERR:<reason>` |
+| System/process/window queries | SIZE-framed text, with key=value or tab-separated fields as appropriate |
+| Input / mutation | Typically `OK` or `ERR:<reason>`; platform-specific acceptance semantics apply |
+| Registry | TAB-delimited REGGET/REGSET fields; GET returns DWORD, SIZE-framed text, or an error |
 
-```
-client -> server: <token>\n
-server -> client: OK\n | FAIL\n            (closes on FAIL)
-client -> server: EXEC <cmdline>\n | EXECDETACH <cmdline>\n
-                  | PUT <path> <size>\n | GET <path>\n
-                  | SCREENSHOT\n | CLICK <x> <y> <button>\n | KEY <keyspec>\n
-                  | TYPE <text>\n | PSLIST\n | PSKILL <pid>\n | SYSINFO\n
-                  | REBOOT\n | SHUTDOWN\n | WINLIST\n | CLIPSET <text>\n
-                  | REGGET\t<root>\t<subkey>\t<valuename>\n
-                  | REGSET\t<root>\t<subkey>\t<valuename>\t<type>\t<data>\n
-                  | PING\n | QUIT\n
-server -> client (EXEC): (LEN:<n>\n <n raw bytes>)* EXIT:<code>\n
-                         (a bare LEN:0\n with no bytes may appear as a
-                         heartbeat during a long-running, currently-quiet
-                         command - see "Bugs found via live testing")
-server -> client (EXECDETACH): OK pid=<pid>\n | ERR:<msg>\n
-client -> server (PUT):  <size> raw bytes, immediately after the PUT line
-server -> client (PUT):  OK\n | ERR:<msg>\n
-server -> client (GET):  SIZE:<n>\n <n raw bytes>  |  ERR:<msg>\n
-server -> client (SCREENSHOT): SIZE:<n>\n <n raw BMP bytes>  |  ERR:<msg>\n
-server -> client (CLICK/KEY/TYPE): OK\n | ERR:<msg>\n
-server -> client (PSLIST): SIZE:<n>\n <n raw bytes of "<pid>\t<name>\r\n" lines>
-server -> client (PSKILL): OK\n | ERR:<msg>\n
-server -> client (SYSINFO): SIZE:<n>\n <n raw bytes of "key=value\r\n" lines>
-server -> client (REBOOT/SHUTDOWN): OK\n | ERR:<msg>\n
-server -> client (WINLIST): SIZE:<n>\n <n raw bytes of
-                            "<hwnd>\t<x>\t<y>\t<w>\t<h>\t<class>\t<title>\r\n" lines>
-server -> client (CLIPSET): OK\n | ERR:<msg>\n
-server -> client (REGGET): DWORD:<value>\n | SIZE:<n>\n <n raw bytes> | ERR:<msg>\n
-server -> client (REGSET): OK\n | ERR:<msg>\n
-server -> client (PING): PONG\n
-```
+A zero-length LEN can be a heartbeat. A zero-length SIZE is a valid empty
+payload. Neither means that a still-running command has completed. A failed
+send or a failed file read after SIZE closes the connection instead of
+inserting error text into the promised payload. Incomplete responses are errors.
 
-Win32 text replies exclude their C-string terminating NUL. Text and binary
-payloads retry short socket writes. A send failure shuts down the session;
-after a SIZE header, a GET read error or premature EOF also closes the
-connection rather than inserting an error line into the promised payload.
-Treat connection closure before the declared byte count as a failed
-transfer. Reconnect for another command; do not treat a partial payload as
-a completed file. A complete SIZE:0 response is valid and keeps the session
-usable. See [network deadlines](NETWORK_TIMEOUTS.md) for stalled-reader limits.
+The client validates command arguments before connecting and bounds reply
+lines and payloads. Authentication and command lines have absolute deadlines;
+transfers have progress deadlines. See [network deadlines](NETWORK_TIMEOUTS.md).
+Job commands are documented in [long-running commands](LONG_RUNNING_COMMANDS.md),
+and platform extensions in [MCP coverage](MCP_COVERAGE.md). This table is not a
+complete per-agent command reference.
 
-`EXEC` runs `cmd.exe /C <cmdline>` (or `command.com /C <cmdline>` on 9x)
-and streams combined stdout+stderr. There's no persisted shell state
-across calls — each `EXEC` is a fresh interpreter invocation, so `cd`
-doesn't carry over. Good enough for installer/test automation; would need
-a persistent-shell mode if that becomes limiting. Completion is detected
-by our direct child process exiting, not by the pipe reaching EOF — see
-"Bugs found via live testing" for why that distinction matters.
-If the client disconnects while `EXEC` is still running, the next output
-send or heartbeat send fails; the agent terminates its direct child and
-returns to the accept loop so one abandoned command cannot permanently
-consume the single connection slot.
+## Execution and file semantics
 
-If Win32 cannot create its output pipe or launch the command interpreter,
-it sends a diagnostic such as `EXEC launch failed: CreateProcessA (Win32
-error 2)` in a normal LEN payload, followed by `EXIT:-1`. The diagnostic names
-the failed API and its Windows error code; it does not echo the command.
-The error is captured before handle cleanup can overwrite it. No child was
-started, and a successfully delivered error keeps the connection usable for
-another command. A disconnected peer instead fails the session through the
-normal checked-send path. An invalid command *inside* a successfully launched
-shell still returns that shell's output and exit code.
+Win32 EXEC starts a fresh shell, captures merged stdout/stderr, and emits
+five-second heartbeats while quiet. No working directory or shell variables
+persist between calls. Completion follows the direct child, not pipe EOF:
+descendants can outlive the shell. On disconnect the agent attempts to terminate
+that direct child; this is not process-tree cancellation. Pipe/launch failures
+return a diagnostic LEN payload and EXIT:-1, retaining the Windows error code.
 
-This uses the existing EXEC framing; the Python client returns its diagnostic
-in `ExecResult.output` with `exit_code=-1`, and MCP displays both. No client
-protocol update is required. It does not add command cancellation or a total
-runtime limit, or change EXECDETACH's separate ERR response.
+Win32 EXECDETACH launches a program directly and returns its PID. Shell syntax
+requires explicitly launching a shell or using EXEC. For tracked work and
+recoverable output, use the job tools where `exec_jobs=1` is advertised.
+Synchronous EXEC timeout, output, and exit-status behavior on other ports differs;
+consult the [execution table](LONG_RUNNING_COMMANDS.md#synchronous-exec).
 
-`tests/test_win32_exec.py` fault-injects the production handler and socket
-helpers. `make exec_fixture.exe` in `agent-win32` builds an optional native
-fixture that injects a pipe error, triggers a real CreateProcessA failure
-using a nonexistent executable, and checks a subsequent successful EXEC.
-The fixture opens no listener and does not change agent configuration or OS
-executables.
+PUT/GET transfer whole files without resume or delta support. Paths can contain
+spaces; PUT parses the size from the final field. Native size handling is bounded
+by signed 32-bit values, and the client defaults to a smaller 64 MiB response cap.
+Mac transfers data forks only; use its MacBinary updater for applications.
 
-`EXECDETACH` launches a program directly — deliberately *not* through
-`cmd.exe`/`command.com` — and returns immediately after `CreateProcess`
-succeeds, with the actual launched program's PID. Use it for GUI
-programs, browser launches, or background helper scripts that write
-their own log file; use normal `EXEC` for anything needing shell syntax
-(`&&`, `%VAR%` expansion, redirection, built-ins like `dir`), since it
-intentionally waits for the direct child to exit.
+PUT success means the declared bytes arrived and no checked write/finalization
+error was reported. All ports check short writes and flush/close results; Mac
+uses File Manager calls because the reviewed runtime wrappers discard some
+native errors. After a local file error, the agent drains the remaining declared
+payload when possible to preserve framing. PUT overwrites directly: failure can
+leave an empty or partial destination. Stage important replacements separately
+and read them back before installation. This is not a power-loss durability guarantee.
 
-First implementation wrapped `EXECDETACH` through the shell the same way
-`EXEC` does, for consistency. Caught before it was ever committed, via
-the same kind of live-testing habit that found the `EXEC`/`net stop`
-bugs above: `cmd.exe /C foo.exe` spawns `foo.exe` as *cmd.exe's own
-child* rather than replacing it, so the PID `CreateProcess` hands back is
-cmd.exe's, not the target's. Confirmed concretely —
-`EXECDETACH("notepad.exe")` reported cmd.exe's PID; `PSKILL` on that PID
-killed cmd.exe while notepad.exe kept running, orphaned and untracked.
-That's exactly the "spawn via `EXEC`, then `PSLIST`-match by name to find
-the real PID" workaround this command exists to eliminate — a shell-
-wrapped `EXECDETACH` doesn't actually solve the problem it was built for.
-Fixed by skipping the shell wrapper entirely for this one command; the
-lost shell features aren't things GUI apps / browser launches /
-standalone helpers typically need anyway.
+## Self-update
 
-`PUT`/`GET` move a single file per command, whole-file (no resume, no
-delta transfer). `PUT`'s `<path>` may contain spaces — it's parsed from
-the *right* (last space = the size field), since Windows paths routinely
-have spaces (`Program Files`) but the size never does. File sizes are
-handled as signed 32-bit values (`GetFileSize`, no high-DWORD result
-combined in), so there's a practical ceiling around 2GB — well past
-anything from this OS era's installer/driver media, but not meant for
-large modern payloads.
+A separate helper outlives the old agent and replaces its executable. Use the
+platform bridge tool so staging and verification are coordinated:
 
-`OK` for `PUT` means the agent received the declared payload and observed
-no write or finalization error. All ports check write counts; stdio ports
-also check `fflush`, `ferror`, and `fclose`, while Win32 checks
-`WriteFile`, `FlushFileBuffers`, and `CloseHandle`. The Mac uses checked
-File Manager write/close/volume-flush calls directly, because Retro68's
-stdio syscall wrappers discard some native errors. Local open/write errors
-still consume the declared payload before returning `ERR`, preserving the
-next command's framing. An interrupted connection cannot be drained.
-These checks report errors exposed by the runtime/OS; they are not a
-guarantee against power loss. `PUT` overwrites directly and is not atomic:
-a failed transfer can leave a truncated or partial destination. Upload
-important replacements to a separate path and verify them with `GET`
-before invoking the platform's replacement mechanism. Reproduce the
-host-side failure checks with `python tests/test_uploads.py` (requires GCC).
+| Target | Tool and helper | Main limitation / recovery location |
+| --- | --- | --- |
+| Win32 | `legacy_self_update`, `UPDATE.EXE` | NT helper assumes the installed LLMAgent service; previous executable and update log retained |
+| OS/2 2.x | `legacy_self_update`, `UPDATE.EXE` | Independent session, AGENT.PID-based stop, backup and relaunch; WPS startup context required |
+| OS/2 1.3 | `legacy_self_update`, `UPDATE.EXE` | Authenticated SELFEXIT using INI host/token, 8.3 backup, independent relaunch; historical intermittent rename failures require inspection |
+| Win16 | `legacy_win16_self_update`, `RESTART.EXE` | Quiet teardown wait, staged rename/rollback; LLMAGENT.OLD and RESTART.LOG |
+| Mac | `legacy_mac_self_update`, `llm_updater` | Two-fork file exchange; numbered recovery copies and UPDATER.LOG; helper updated separately |
+| NetWare | `legacy_netware_self_update`, protocol-2 UPDATE.NLM | Retained transaction directory and readiness checks; loaded/unready candidates require operator recovery |
+| DOS | No built-in updater | Stop locally and replace the executable; retain console recovery |
 
-`CLICK <x> <y> <button>` moves the cursor and clicks (`button`: 1/2/3 =
-left/middle/right). `KEY <keyspec>` presses one key or `mod-mod-key`
-combo (`enter`, `ctrl-alt-del`, `shift-a`); see "Screenshot/input: built
-into the agent" above for the two gotchas that actually matter
-(interactive-service requirement, no synthetic secure-SAS). `TYPE <text>`
-is per-character `KEY` in a loop — no newlines in `<text>` (send `KEY
-enter` instead), and unmappable characters are silently skipped rather
-than erroring the whole command.
+Updates refuse retained jobs, including completed results, until collected and
+released. Stage distinct paths, preserve configuration, and keep console access
+and an independent backup. Helpers do not provide a universal crash or power-loss
+rollback guarantee. Platform READMEs describe the exact file and recovery rules.
 
-`PSLIST` returns `<pid>\t<name>` per running process; `PSKILL <pid>` force
--terminates one, with no protection against killing critical processes
-(including the agent's own) — same trust model as `EXEC` already allowing
-arbitrary commands. `SYSINFO` returns `key=value` lines describing the OS/
-hardware. `REBOOT`/`SHUTDOWN` wrap `ExitWindowsEx`; `OK` is sent *before*
-the machine actually goes down, since `ExitWindowsEx` only needs to
-signal the shutdown sequence to start. `WINLIST` returns one line per
-visible top-level window with a non-empty title. `CLIPSET <text>` sets
-the clipboard (pair with `KEY ctrl-v` to paste). `REGGET`/`REGSET` are the
-two commands with TAB-delimited arguments instead of space-delimited —
-see "Later additions" above for why.
+The bridge freezes local inputs, checks staging where the protocol permits,
+and normally waits for a changed startup instance plus matching startup and
+installed-file fingerprints. Windows/OS2/NetWare use executable SHA-256 and
+readback; Mac verifies both forks at the same application location, with the
+explicit normalization of system-owned resource-header bytes described in
+[MCP coverage](MCP_COVERAGE.md#update-result-semantics).
 
-
-### Mac and NetWare update verification
-
-`legacy_mac_self_update` and `legacy_netware_self_update` now accept
-`wait_for_agent=True` (the default). NetWare uses the same startup hash and
-installed readback verification as Windows/OS2, with a loader-provided NLM
-path. Mac verifies a new Process Manager instance at the original application
-location plus startup and current disk hashes of both forks. Its resource
-hash explicitly normalizes only system-owned bytes 16..127; it still covers
-resource code/data, the map, layout header, and application-owned bytes.
-See [MCP coverage](MCP_COVERAGE.md#update-result-semantics) for the hash format,
-limits and migration from old agents. NetWare protocol-2 helpers retain per-
-attempt backups, verify listener readiness, and restore an exited/failed
-candidate. They preserve unresolved work for operator recovery and never
-force UNLOAD; see the [NetWare recovery procedure](../agent-netware/README.md#recovery-files-and-status).
+These fingerprints describe files read at startup, not live-memory attestation
+or publisher signatures. PING, a build date, or an unchanged hash alone cannot
+prove replacement. Older replacement builds without identity fields remain
+unverified. Disabling the wait reports acceptance only. An uncertain handoff
+is verified rather than automatically launched again. Win7 interactive installs
+need a separate stop/relaunch procedure; the service helper cannot supply it.

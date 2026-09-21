@@ -3,7 +3,7 @@
 **Remote control and automation for vintage computers.**
 
 Native agents and an MCP bridge give modern tools and LLM clients hands-on access to legacy
-machines — Windows for Workgroups 3.11, Windows 95/98/ME/NT4/2000/XP,
+machines — Windows for Workgroups 3.11, Windows 95/98/ME/NT4/2000/XP/7,
 FreeDOS, OS/2, NetWare, and classic Mac OS (System 7) — on an isolated lab network: run shell commands,
 transfer files, take screenshots, send mouse/keyboard input.
 Built after `freeSSHd` turned out to break other software (couldn't install
@@ -19,6 +19,7 @@ Platform support varies: classic Mac OS has no shell, DOS/NetWare expose
 text screenshots, and several desktop tools are platform-specific. See the
 [MCP coverage](docs/MCP_COVERAGE.md) and [publication audit](docs/PUBLICATION_AUDIT.md) for
 the current limits, verified coverage, and outstanding issues.
+The [documentation guide](docs/README.md) links all platform and maintainer guides.
 
 ## Screenshots
 
@@ -36,7 +37,7 @@ Third-party SDKs, libraries, and guest software retain their own terms; see
 [licensing, provenance, and dependency setup](THIRD_PARTY.md). Apple and
 Novell SDK inputs are supplied locally and verified against a file manifest.
 They are not included in this repository or downloaded by the setup tool.
-This checkout is prepared for **source publication**. Compiled releases still
+This is a **source release**. Compiled releases still
 have the per-platform requirements in [the binary release review](docs/BINARY_RELEASE.md).
 
 Previously developed as `retro-ssh-server`. Existing `llm_agent` binaries,
@@ -66,11 +67,11 @@ Pieces:
   service you cross-compile and copy onto the legacy Windows machine. One
   token-authed TCP channel
   does everything: runs commands, moves files, captures the screen, sends
-  mouse/keyboard input. No third-party software required on the legacy
-  box — screenshots/input are built straight into the agent with GDI and
+  mouse/keyboard input. No separate remote-desktop package is required on the
+  guest — screenshots/input are built straight into the agent with GDI and
   `mouse_event`/`keybd_event`, not a separately-installed VNC server. See
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#screenshotinput-built-into-the-agent-not-vnc-revised)
-  for why (that started as a VNC-based design and changed).
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#win32-desktop-capture-and-input)
+  for capture and desktop-session details.
 - **`agent-dos/`** — FreeDOS target-agent port of the same wire protocol
   (Open Watcom + Watt-32). Supports exec/file transfer/sysinfo/reboot plus text-mode
   screenshot and BIOS keyboard inject. See [agent-dos/README.md](agent-dos/README.md).
@@ -263,15 +264,10 @@ using them, and keep generated configuration/media out of Git. The Mac
 agent reads `token=` and optional `port=` (default 2222) from `LLMAGENT.INI`
 beside its executable; see [Mac configuration](agent-mac-system7/README.md#installation-and-configuration).
 
-**Put your real `machines.ini` outside the repo**, e.g.
-`~/.retrobridge/machines.ini`, and point `LEGACY_MACHINES_FILE` at
-it (rather than the in-repo default of `mcp-server/machines.ini`). This isn't
-just tidiness — anything under `mcp-server/` is fair game for scratch/test
-files during development on this repo itself, and a real config sitting
-at the same default path a quick local test would use is a live token
-one `rm`/overwrite away from being gone, with no git history to recover
-it from since it's gitignored. Keeping the real file outside the repo
-entirely removes that risk.
+**Put your real `machines.ini` outside the repo**, for example
+`~/.retrobridge/machines.ini`, and set `LEGACY_MACHINES_FILE` to its absolute
+path. This separates live credentials from example inventories and development
+scratch files. Keep a private backup; ignored files cannot be recovered from Git.
 
 Wire the bridge into your MCP client config (e.g. Claude Code) as a stdio
 server:
@@ -387,9 +383,9 @@ Recommended reboot/login workflow for a standalone NT-family lab box:
 ## Validation and known limits
 
 The [publication audit](docs/PUBLICATION_AUDIT.md) records dated live results
-and remaining limits. The host suite has 90 tests, with additional Mac power/
-updater and Win16 listbox fault-injection fixtures in their platform test
-folders. Native builds and live checks cover the configured Windows, DOS,
+and remaining limits. The latest functional check passed 92 root tests plus
+two Mac power/updater fixtures and one Win16 listbox fixture (95 total).
+Native builds and live checks cover the configured Windows, DOS,
 OS/2, NetWare and System 7 lab guests; this is not certification of every OS
 release, language, service pack or physical CPU named above.
 

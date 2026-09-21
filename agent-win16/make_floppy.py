@@ -29,8 +29,11 @@ Files on this disk:
                   self-update; must also sit next to LLMAGENT.EXE (see
                   the "UPDATE: self-update without a full REBOOT" section
                   -- UPDATE will not bring the agent back without it)
-  LLMAGENT.INI  - port= / token=
+  LLMAGENT.INI  - port= / placeholder token=
   README.TXT    - this file
+
+JOBRUN.EXE is not included by this builder. Copy the DOS-target helper
+from build.bat separately to use tracked jobs.
 
 1. Copy to hard disk from File Manager (or a DOS prompt, if you have
    one open):
@@ -39,6 +42,7 @@ Files on this disk:
      COPY A:\\REDIR.EXE C:\\LLMWIN\\
      COPY A:\\RESTART.EXE C:\\LLMWIN\\
      COPY A:\\LLMAGENT.INI C:\\LLMWIN\\
+   Edit LLMAGENT.INI to set a unique token and match the bridge inventory.
 2. Make sure NET START succeeded for this boot (WFW's own NDIS network
    stack -- see agent-dos/README.md's boot menu section) before starting
    the agent; it calls WSAStartup() and will show an error dialog if the
