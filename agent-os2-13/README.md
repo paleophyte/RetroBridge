@@ -228,7 +228,7 @@ built automatically — see `vendor/README.md` if the guest's DLL turns out
 to have a different name):
 
 ```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-os2-13
+cd C:\src\retro-ssh-server\agent-os2-13
 build.bat
 ```
 
@@ -256,10 +256,9 @@ Note that a running `LLMAGENT.EXE` cannot be overwritten in place — `COPY`
 reports `0 file(s) copied`. Swap it while it is stopped, or in the window
 between the reset and `STARTUP.CMD` starting it.
 
-`machines.ini` already has an `[os2-13]` section
-(`C:\Users\admin\.retro-ssh-server\machines.ini`) pointed at
-`10.102.10.199:2222` — set a real `exec_token` there matching
-`LLMAGENT.INI`'s `token=`.
+Add an `[os2-13]` section to your private `machines.ini`, for example at
+`%USERPROFILE%\.retro-ssh-server\machines.ini`. Set `host` to the guest's
+address and `exec_token` to the same unique token as `LLMAGENT.INI`'s `token=`.
 
 ## Self-update (from host) - WORKING, ONE INTERMITTENT FAILURE LEFT
 

@@ -79,7 +79,7 @@ signatures. They detect an unchanged instance, wrong file, rollback, failed
 reads, and identity changes during verification under the existing trusted
 lab-agent model; they do not protect against a malicious guest.
 
-Neither tool automatically retries an uncertain update transfer/handoff.
+No update tool automatically retries an uncertain transfer/handoff.
 `legacy_wait_for_agent` only establishes reachability. It cannot turn
 acceptance or a build label into verified replacement.
 

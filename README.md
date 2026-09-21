@@ -15,7 +15,7 @@ These are network deadlines, not command runtime limits. See
 
 Platform support varies: classic Mac OS has no shell, DOS/NetWare expose
 text screenshots, and several desktop tools are platform-specific. See the
-[capability matrix and publication audit](docs/PUBLICATION_AUDIT.md) for
+[MCP coverage](docs/MCP_COVERAGE.md) and [publication audit](docs/PUBLICATION_AUDIT.md) for
 the current limits, verified coverage, and outstanding issues.
 
 ## License and build dependencies
@@ -25,7 +25,8 @@ Third-party SDKs, libraries, and guest software retain their own terms; see
 [licensing, provenance, and dependency setup](THIRD_PARTY.md). Apple and
 Novell SDK inputs are supplied locally and verified against a file manifest.
 They are not included in this repository or downloaded by the setup tool.
-Binary-release redistribution requirements are reviewed separately.
+This checkout is prepared for **source publication**. Compiled releases still
+have the per-platform requirements in [the binary release review](docs/BINARY_RELEASE.md).
 
 ## Nomenclature
 
@@ -84,10 +85,11 @@ a different session than what `legacy_screenshot` sees.
 machine. Only put this on an isolated host-only/lab network — see
 [docs/ARCHITECTURE.md#trust-model](docs/ARCHITECTURE.md#trust-model).
 
-## 1. Build a target agent
+## 1. Build a target agent (Win32 walkthrough)
 
-Requires the MSYS2 `mingw-w64-i686` environment (not `ucrt64`/`mingw64` —
-those target Vista+):
+The following build/deploy steps cover Win32. Use the platform README links
+above for DOS, Win16, OS/2, NetWare and Mac. The Win32 build requires MSYS2
+`mingw-w64-i686` with the legacy MSVCRT runtime:
 
 ```bash
 pacman -S --needed mingw-w64-i686-gcc mingw-w64-i686-binutils
@@ -106,14 +108,19 @@ directory has to be on `PATH` for the *whole* build, not just for finding
 This produces `agent-win32/llm_agent.exe` and `agent-win32/update.exe` (see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update) — used for
 in-place updates, not part of normal deployment), both 32-bit PE binaries
-stamped for Windows 4.0 (95/NT4-era) so the loader on old targets will
-actually accept them. Sanity-check with `file llm_agent.exe` — should
+stamped for Windows 4.0 (95/NT4-era). The stamp alone does not establish
+compatibility: guest DLLs and CPU instructions must also match. Win95 needs
+Winsock 2; the current prebuilt CRT retains some CMOV instructions, so real
+486/non-Pro Pentium compatibility is not certified. See the audit for tested
+guests and limits. Sanity-check with `file llm_agent.exe` — should
 read `PE32 executable for MS Windows 4.00 (console)`.
 
 ## 2. Deploy to each legacy machine
 
-Repeat this for every legacy box you want the bridge to reach — each one
-needs its own copy of the agent and its own unique token.
+Repeat the appropriate platform installation for each guest. Each needs its
+own agent and unique random token. Generate one on the control machine, for
+example with `python -c "import secrets; print(secrets.token_hex(32))"`, and
+put the same value in that guest's configuration and your private inventory.
 
 Copy `llm_agent.exe` and `agent-win32/llm_agent.ini.example` (renamed to
 `llm_agent.ini`) to the target machine, in the same directory. Edit
@@ -124,7 +131,7 @@ port=2222
 token=REPLACE_WITH_UNIQUE_TOKEN
 ```
 
-Then install it as autostart and start it:
+On NT4/2000/XP, install the service and start it:
 
 ```
 llm_agent.exe --install
@@ -146,7 +153,15 @@ flag requires updating the service registration. New protocol commands
 come from the replacement binary and do not themselves require reinstalling
 the service.
 
+For Windows 7 desktop automation, run the agent in the logged-in user's
+session with `llm_agent.exe --run`; services are isolated from that desktop.
+The NT update helper still assumes a service installation. Interactive
+self-update and next-logon autostart remain follow-ups, not verified guarantees.
+
 ## 3. Set up the bridge
+
+Use Python 3.12 (the tested host version). The commands below use a Windows
+virtual environment; on Linux/macOS use `.venv/bin/python` and `.venv/bin/pip`.
 
 ```bash
 cd mcp-server
@@ -168,7 +183,7 @@ exec_encoding = cp437
 
 [winxp-1]
 host = 192.168.56.11
-exec_token = a-different-long-random-shared-secret
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 text_encoding = cp1252
 exec_encoding = cp437
 ```
@@ -273,8 +288,9 @@ first if you don't remember the exact name):
   support for every installed build. See [MCP coverage](docs/MCP_COVERAGE.md).
 - `legacy_exec`, `legacy_exec_detach`, `legacy_ping` — run a command,
   launch a command without waiting, check connectivity. Use
-  `legacy_exec_detach` for GUI apps and long-running helpers.
-- `legacy_upload`, `legacy_download` — file transfer
+  `legacy_exec_detach` for GUI apps and long-running helpers on Win32/Win16/OS2.
+  Win16's detached reply contains an instance handle, not a process/task ID.
+- `legacy_upload`, `legacy_download` — file bytes; Mac transfers data forks only
 - `legacy_job_start`, `legacy_job_status`, `legacy_job_output`,
   `legacy_job_cancel`, `legacy_job_release` — tracked background commands
   on agents advertising `exec_jobs=1`. See [job lifetime and limits](docs/LONG_RUNNING_COMMANDS.md).
@@ -282,7 +298,8 @@ first if you don't remember the exact name):
   `legacy_key`, `legacy_type` — screen capture and input injection.
   Use `legacy_screenshot_file` for large screenshots you want saved on
   the control machine instead of emitted into the tool transcript.
-- `legacy_ps`, `legacy_kill` — list/terminate processes by PID
+- `legacy_ps`, `legacy_kill` — list/terminate platform processes or tasks;
+  Mac termination is a cooperative Quit request that applications can cancel
 - `legacy_sysinfo` — OS version, memory, disk space, computer name
 - `legacy_winlist` — visible top-level windows (title/class/position),
   useful for finding dialogs/buttons without screenshot-guessing; Win16
@@ -296,24 +313,26 @@ first if you don't remember the exact name):
   startup file; enabling debug truncates the existing agent log.
 - `legacy_double_click`, `legacy_mouse_position` — Mac double-click and
   cursor/button-state queries
-- `legacy_clipboard_set` — set the clipboard (pair with
+- `legacy_clipboard_set` — Win32/32-bit OS/2 clipboard (pair with
   `legacy_key(machine, 'ctrl-v')` to paste — more reliable than
   `legacy_type` for exact strings like product keys)
-- `legacy_reg_get`, `legacy_reg_set` — native registry access
-  (`REG_SZ`/`REG_DWORD` only); use instead of `legacy_exec` + `reg.exe`,
+- `legacy_reg_get`, `legacy_reg_set` — Win32 native registry access
+  (read `REG_SZ`/`REG_EXPAND_SZ`/`REG_DWORD`, write `REG_SZ`/`REG_DWORD`);
+  use instead of `legacy_exec` + `reg.exe`,
   which doesn't exist by default before XP
 - `legacy_enable_autologon`, `legacy_disable_autologon` — configure or
   clear NT-family Winlogon autologon. This is the practical way to make
   the agent usable after reboot on a box that otherwise stops at the
   login screen. It stores the password in plaintext in the Winlogon
   registry key, so use it only on isolated lab machines.
-- `legacy_wait_for_agent`, `legacy_wait_for_desktop` — poll after a
-  reboot until the TCP agent responds, then until the interactive shell
-  appears. `legacy_wait_for_desktop` looks for Explorer or visible
-  top-level windows, which is a better readiness signal than ping alone.
-- `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`**; take
-  the target down immediately and interrupt anything in progress on it
-- `legacy_self_update` — updates the agent on a machine in place:
+- `legacy_wait_for_agent` — poll for an authenticated agent response.
+  `legacy_wait_for_desktop` adds a Win32 desktop-readiness heuristic, looking
+  for Explorer or visible top-level windows.
+- `legacy_reboot`, `legacy_shutdown` — **require `confirm=True`** and can
+  interrupt work immediately. Support and effects vary: Mac requests can be
+  cancelled, Win16 shutdown exits to DOS, and NetWare shutdown downs the server.
+- `legacy_self_update` — Win32/OS2 in-place update (NT installations must
+  use the LLMAgent service for the helper's automatic restart):
   uploads and reads back a new executable and update helper, launches the
   helper detached, then verifies a changed startup identity, matching startup
   SHA-256, and matching installed executable. Requires `remote_dir` (the
@@ -323,10 +342,16 @@ first if you don't remember the exact name):
   fields report **not verified**; disabling the wait reports acceptance only. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#self-update).
 - `legacy_mac_self_update` — sends a MacBinary `.bin` to the installed
-  companion updater; `legacy_netware_self_update` — stages and reads back
-  the NLM and helper before `UPDATE`. Both report **replacement NOT verified**:
-  these agents lack the loaded-image identity needed for the verification
-  above. Acceptance or a subsequent PING does not prove replacement.
+  companion updater and verifies a new startup instance and both application
+  forks, with documented resource-metadata normalization.
+- `legacy_netware_self_update` — verifies staged NLM/helper bytes and the new
+  agent's startup identity and executable. Protocol-2 helpers retain backups,
+  roll back failed/exited candidates, and block retries during unresolved
+  recovery. Loaded but unready candidates require operator recovery.
+
+Mac/NetWare verification requires current identity-capable agents. Older builds
+remain explicitly unverified. Acceptance or PING alone does not prove an update;
+see [update semantics](docs/MCP_COVERAGE.md#update-result-semantics).
 
 `legacy_key`/`legacy_type` note: a synthetic `ctrl-alt-del` will not
 unlock a locked/secure-desktop screen — that's Windows intentionally
@@ -343,70 +368,34 @@ Recommended reboot/login workflow for a standalone NT-family lab box:
 5. `legacy_screenshot_file(machine, "screenshots/after-reboot.png")` or
    `legacy_screenshot(machine)` to verify what the agent can see.
 
-## Status
+## Validation and known limits
 
-Exec and file-transfer protocol has been round-tripped locally (`ping`,
-`exec`, a full `put`/remote-`type`/`get` byte-for-byte cycle) and against
-a real Windows 2000 machine (`cucm413`) end-to-end. The multi-machine
-`machines.ini` config has been exercised too — machine listing, a
-reachable machine, an unreachable-but-configured one, and an unknown
-machine name all produce correct, clean results.
+The [publication audit](docs/PUBLICATION_AUDIT.md) records dated live results
+and remaining limits. The host suite has 90 tests, with additional Mac power/
+updater and Win16 listbox fault-injection fixtures in their platform test
+folders. Native builds and live checks cover the configured Windows, DOS,
+OS/2, NetWare and System 7 lab guests; this is not certification of every OS
+release, language, service pack or physical CPU named above.
 
-Screenshot/click/key/type are verified end-to-end against a real
-installed service on `cucm413`, not just locally: `legacy_screenshot`
-returned a genuine, content-rich capture of the live desktop (confirmed
-by eye, not just structurally) — proof `SERVICE_INTERACTIVE_PROCESS` is
-working and the agent can actually see the interactive session, not a
-disconnected window station. `legacy_click` followed by
-`legacy_type('x')` produced a visible, verifiable effect: Explorer's
-desktop jump-to-icon selected "Xlight Server" (the one icon starting with
-`x`), confirmed by diffing before/after screenshots. `legacy_key` was
-also exercised on both its error path and a real (harmless,
-self-reverting Caps Lock toggle) success path.
+Notable limits remain: DOS commands are synchronous and the TSR is deferred;
+Win16 mouse/keyboard injection is unreliable; Mac dragging is experimental
+and cross-application clipboard/window enumeration are disabled. Cancellation,
+job persistence and output limits vary by platform. See
+[long-running commands](docs/LONG_RUNNING_COMMANDS.md),
+[text encodings](docs/TEXT_ENCODINGS.md), and the capability report before
+choosing tools. The source-publication checks and repeatable release procedure
+are in [PUBLICATION.md](docs/PUBLICATION.md).
 
-`legacy_ps`/`legacy_kill`/`legacy_sysinfo`/`legacy_winlist`/
-`legacy_clipboard_set`/`legacy_reg_get`/`legacy_reg_set` are verified
-locally (this dev machine) at both the wire-protocol and bridge-tool
-level — including a real spawn → list → kill round trip, and a real
-registry write → read round trip against a disposable test key. Not yet
-tested against `cucm413` or any other real legacy target.
-`legacy_reboot` is verified end-to-end against real machines on both OS
-families. Windows 9x (`win95`) took three live fix attempts — raw
-`ExitWindowsEx` turned out not to work from any process context on real
-Windows 9x, regardless of service-registration or message-queue state,
-and needed `rundll32.exe shell32.dll,SHExitWindowsEx` instead — see "Bugs
-found via live testing" in ARCHITECTURE.md. NT-family (`scm201`, NT4 SP6)
-worked correctly on the first attempt with no workaround needed: the
-direct `ExitWindowsEx` call, the SCM-installed service surviving the
-reboot, and `legacy_enable_autologon`'s Winlogon autologon all confirmed
-working together in one pass — real desktop back and confirmed via
-screenshot ~30 seconds after the reboot was triggered. `legacy_shutdown`
-is implemented and build-clean on both OS families but hasn't been
-invoked against a real machine yet. The `confirm=True` gate itself is
-verified: omitting it short-circuits before any network call happens at
-all.
+To run host tests, install the bridge requirements and put a host GCC on PATH
+(or set `CC` for fixtures that support it). Win32 fixture tests require Windows
+and the MinGW toolchain; check the test output for skips on other hosts.
 
-Testing the process-list/kill code specifically surfaced a real testing
-caveat worth knowing about (not a target-environment bug): on this
-64-bit dev machine, `legacy_ps` can only resolve names for 32-bit
-processes (a 32-bit reader can't read module names from native 64-bit
-processes under WOW64) — every genuine 9x/NT4/2000/XP target is 32-bit
-only, so this won't happen there. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the details.
+```text
+python -m unittest discover -s tests -v
+python -m unittest discover -s agent-mac-system7/tests -v
+python -m unittest discover -s agent-win16/tests -v
+```
 
-One real bug was found and fixed via live testing, not code review:
-`legacy_exec` could wedge the *entire* agent — refusing all further
-connections, including `legacy_ping` — if the command spawned something
-that outlived it (e.g. launching any GUI app in the background). Fixed
-by watching the agent's direct child process exit instead of waiting for
-the redirected pipe to reach EOF. Reproduced hanging under the old code,
-confirmed fixed under the new code (returns in ~0.1s, agent stays
-responsive immediately after). See "Bugs found via live testing" in
-ARCHITECTURE.md.
-
-Not yet verified against a real Windows 9x/ME/NT4 machine (only Windows
-2000 so far) — the subsystem-version/import-table checks confirm the
-agent *should* load across the whole range, and the `EXEC` interpreter
-now branches correctly for 9x's `COMMAND.COM`, but neither of those is
-the same as actually booting on real old hardware or a period-accurate
-VM. That's the natural next step.
+Set `PYTHONUTF8=1` when running these fixtures on Windows. The Mac power fixture
+also needs `CC=gcc` if the host has no `cc` command. Tests use temporary files
+and local protocol fixtures; separate live smoke scripts can change a guest.

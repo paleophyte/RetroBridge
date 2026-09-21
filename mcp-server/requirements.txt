@@ -1,2 +1,3 @@
-mcp
+# server.py uses the MCP 2.x server API; validated with 2.0.0 and 2.2.0.
+mcp>=2.0,<3
 Pillow

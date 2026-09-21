@@ -38,8 +38,8 @@ Trust model unchanged: cleartext token, lab/host-only network only.
 ### 1. Build Watt-32 (once)
 
 ```bat
-git clone https://github.com/gvanem/Watt-32.git C:\Users\admin\code\Watt-32
-set "WATT_ROOT=C:\Users\admin\code\Watt-32"
+git clone https://github.com/gvanem/Watt-32.git C:\src\Watt-32
+set "WATT_ROOT=C:\src\Watt-32"
 cd /d %WATT_ROOT%\src
 configur.bat watcom
 ```
@@ -60,8 +60,8 @@ You should get `%WATT_ROOT%\lib\wattcpwl.lib` and `%WATT_ROOT%\inc\sys\watcom.er
 ### 2. Build this agent
 
 ```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-dos
-set "WATT32=C:\Users\admin\code\Watt-32"
+cd C:\src\retro-ssh-server\agent-dos
+set "WATT32=C:\src\Watt-32"
 build.bat
 ```
 

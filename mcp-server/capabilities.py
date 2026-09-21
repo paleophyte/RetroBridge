@@ -39,7 +39,8 @@ TOOLS = {
     "unknown": {"legacy_sysinfo", "legacy_capabilities"},
 }
 NOTES = {
-    "win32": ["Secure desktops are not controlled by synthetic input; screenshot access depends on the agent session."],
+    "win32": ["Secure desktops are not controlled by synthetic input; screenshot access depends on the agent session.",
+              "NT self-update expects an LLMAgent service installation; interactive --run deployments need an explicit restart."],
     "win16": ["WINLIST accepts parent_hwnd for immediate children.",
               "Journal mouse/key/type injection remains unreliable; prefer window/message controls.",
               "WINMSG is synchronous and can block on a modal dialog; POSTMSG only acknowledges queueing.",

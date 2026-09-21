@@ -1,6 +1,8 @@
 # One section per legacy machine. Section name is the `machine` argument
-# every legacy_* MCP tool takes. Copy this file to machines.ini (gitignored,
+# target-specific legacy_* MCP tools take. Copy this file to machines.ini (gitignored,
 # since exec_token is a secret) and fill in your real machines.
+# Every exec_token below is a placeholder: generate a different random value
+# for each guest, then set the same value in its agent configuration.
 # Text defaults to strict ASCII. These Windows examples assume English
 # ANSI 1252 / OEM 437; confirm guest locale. See docs/TEXT_ENCODINGS.md.
 # exec_encoding, exec_command_encoding, and file_encoding inherit text_encoding.
@@ -20,7 +22,7 @@ exec_encoding = cp437
 # exec_port is optional - defaults to 2222.
 [winxp-1]
 host = 192.168.56.11
-exec_token = a-different-long-random-shared-secret
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 max_command_bytes = 4094
 text_encoding = cp1252
 exec_encoding = cp437
@@ -30,26 +32,26 @@ exec_encoding = cp437
 # DOS/Win16/OS2/Mac/NetWare keep max_command_bytes at the default 510.
 [freedos-1]
 host = 192.168.56.20
-exec_token = change-me-freedos-shared-secret
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 # Confirm CHCP first; some installations use 850/858 instead of 437.
 # text_encoding = cp437
 
-# OS/2 2.11 guest running agent-os2/llm_agent.exe (TCPIPDLL / Socket/MPTS).
+# OS/2 2.11 guest running agent-os2/llm_agent.exe (SO32DLL / TCP32DLL / MPTS).
 [os2-1]
 host = 192.168.56.21
-exec_token = change-me-os2-shared-secret
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 # Set text_encoding to the guest's confirmed active code page.
 
 # NetWare 3.12+ guest running agent-netware/LLMAGENT.NLM (CLIB BSD sockets).
 [netware-1]
 host = 192.168.56.30
-exec_token = change-me-netware-shared-secret
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 # Set text_encoding only after confirming the server's locale/code page.
 
 # Classic Mac with the Roman script system (other scripts need verification).
 [mac-1]
 host = 192.168.56.31
-exec_token = REPLACE_WITH_UNIQUE_MAC_TOKEN
+exec_token = REPLACE_WITH_UNIQUE_TOKEN
 text_encoding = mac_roman
 
 # Inventory-only infrastructure host (for example, a Linux QEMU host).

@@ -3,14 +3,14 @@
 Audited `d2ded316c69d96307fcfef0f9c3f665d1840ff34` plus the nine files
 already modified in the working tree. This is a source, documentation,
 build, and bounded live-behavior review, not a claim of exhaustive safety
-or compatibility. **History cleanup is complete; release review remains
-open.** Live-token rotations are complete for all 12 configured agent
+or compatibility. **History cleanup and the final source-publication pass are
+complete; compiled releases retain separate requirements.** Live-token rotations are complete for all 12 configured agent
 endpoints. Source licensing and vendor separation were completed on
 2026-09-20; binary redistribution conditions and remaining functional findings
 still need review or explicit disposition. See the provenance follow-up below.
 Commit references to reachable development history use the rewritten IDs.
 
-## Current release checklist (2026-09-20, after update-verification work)
+## Current release checklist (2026-09-21, source-publication pass)
 
 The sections below retain the original findings and dated follow-ups. This
 checklist summarizes the remaining work; earlier tool counts and test counts
@@ -18,11 +18,11 @@ describe those earlier checkpoints. The current bridge has 43 tools, and
 the latest host suite passed 90 tests. NetWare 4.11 was subsequently built
 and tested successfully; it is no longer awaiting a test guest.
 
-- **Final source-publication pass:** reconcile remaining universal Windows
-  wording in examples/tool descriptions, review intentional disclosure of lab
-  metadata, and repeat full-history secret and clean-clone checks at the exact
-  revision selected for publication. Earlier cleanup passed; subsequent
-  implementation commits received staged secret scans.
+- **Source publication prepared:** current setup examples and MCP descriptions
+  were reconciled with platform behavior; non-secret historical lab metadata
+  and Git authorship are intentionally retained. Full-history/object scans and
+  clean-checkout checks are recorded in the final follow-up. Use the
+  [publication procedure](PUBLICATION.md) for the exact revision being published.
 - **Before distributing binaries:** the [binary release review](BINARY_RELEASE.md)
   now records toolchain revisions, runtime inputs, hashes and collected notices.
   Open tasks are Watcom source/embedded notices, Watt-32 file-license coverage,
@@ -1648,3 +1648,37 @@ the publisher's applicability/terms decision remains explicit. These findings
 do not block publishing the cleaned original source. Notice hashes and inventory
 structure were checked; final release packaging, full-history scanning and
 artifact-specific installation tests remain separate release steps.
+
+### Final source-publication pass (2026-09-21)
+
+The root README now describes current Mac/NetWare update verification and
+links the current audit instead of retaining contradictory early Windows-only
+test claims. The build/deploy walkthrough is explicitly Win32; configuration
+examples use generic paths/addresses and unique-token placeholders. Windows
+session, CPU/import compatibility and interactive-update limits are explicit.
+The owner chose to retain non-secret historical lab metadata and Git authorship.
+
+MCP descriptions now distinguish platform-specific screenshot, shell/detach,
+process/task, registry, clipboard, filesystem and update behavior. Win16's
+detached pid-labelled result is identified as an instance handle. Mac Quit is
+cooperative, so the shared kill result now reports acceptance of a termination
+request rather than claiming the process has exited. No native agent code or
+guest installation changed. The bridge requirement is constrained to MCP 2.x.
+
+A fresh Python 3.12 environment resolved MCP 2.2.0 and Pillow 12.3.0; pip check
+passed. All 90 root tests and the two Mac/one Win16 platform fixtures passed.
+A fresh stdio session exposed 43 tools with the corrected descriptions, loaded
+all seven example inventory entries without disclosing tokens, and rejected the
+inventory-only host before making a guest connection. Notice hashes and relative
+document links were checked. The publication procedure also checks an isolated
+clone's missing-SDK errors, ignored-config rules, archive contents and notice
+line endings.
+
+Full-history Gitleaks and exact current/retired credential comparisons against
+all local Git objects passed; removed vendor payload fingerprints were absent.
+Git integrity passed. No binaries, SDK/media archives, real machine inventory or
+private configuration are tracked. Final commit/clone/archive verification is
+recorded outside the candidate so writing its own hash cannot change it. No
+remote was configured and no GitHub push or compiled release was performed.
+Follow [PUBLICATION.md](PUBLICATION.md) when publishing; keep binary-release
+requirements and documented functional limitations separate from source readiness.

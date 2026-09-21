@@ -234,7 +234,7 @@ installers, CLIBAUX, and StuffKey are not included in this source repository.
 **NetWare 3.12 (default):**
 
 ```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-netware
+cd C:\src\retro-ssh-server\agent-netware
 build.bat
 build_proof.bat
 ```

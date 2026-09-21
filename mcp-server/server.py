@@ -3,7 +3,7 @@ input injection on legacy Windows boxes (WFW 3.11, 95/98/ME/NT4/2000/XP),
 FreeDOS, OS/2 (1.3 and 2.11), NetWare, and classic Mac System 7 to an LLM client.
 
 Supports multiple legacy machines from one bridge process: each is a
-section in machines.ini (see machines.ini.example), and every tool takes
+section in machines.ini (see machines.ini.example), and target tools take
 a `machine` argument naming which one to target. Call legacy_list_machines
 to discover what's configured.
 
@@ -12,7 +12,7 @@ Everything goes through one target-agent channel per machine: llm_agent
 agent-os2/llm_agent.c on OS/2 2.11, agent-os2-13/llm_agent.c on OS/2 1.3 -
 a separate 16-bit build, since 1.3 predates the 32-bit kernel entirely), a
 tiny token-authed TCP service, assumed to be on an isolated lab/host-only
-network (see docs/ARCHITECTURE.md for the trust model). On Windows,
+network (see docs/ARCHITECTURE.md for the trust model). On Win32,
 screenshot/click/key/type are built into the agent itself (GDI capture +
 mouse_event/keybd_event). On FreeDOS, screenshot is a text-mode render and
 key/type stuff the BIOS keyboard buffer; on OS/2 2.11, most GUI/window/
@@ -78,7 +78,7 @@ srv = MCPServer(
         "(agent-os2), OS/2 1.3 (agent-os2-13, a separate 16-bit build), "
         "NetWare 3.12+ (agent-netware), and classic Mac System 7 (agent-mac-system7). "
         "Run shell commands, transfer files, take screenshots, "
-        "and send keyboard input. Every tool takes a `machine` argument "
+        "and send keyboard input where supported. Target tools take a `machine` argument "
         "naming which configured machine to target - call "
         "legacy_list_machines first if you don't already know the name. "
         "Call legacy_capabilities for SYSINFO-based platform tools and limitations; "
@@ -174,14 +174,13 @@ def legacy_exec(machine: str, command: str, output_encoding: str | None = None) 
 
 @srv.tool()
 def legacy_exec_detach(machine: str, command: str) -> str:
-    """Launch a program on the named legacy machine and return
-    immediately without waiting for it to exit. Runs the program
-    directly, not through cmd.exe - no &&, %VAR% expansion, redirection,
-    or built-ins like `dir`/`start`; use legacy_exec for those. The PID
-    in the reply is the actual launched program (safe to pass to
-    legacy_kill or look for in legacy_ps). Use this for GUI apps, browser
-    launches, installers that keep running, or helper scripts that write
-    their own log file."""
+    """Launch a program without waiting on Win32, Win16 or OS/2.
+    This uses the platform launcher, not an implicit command shell; shell
+    built-ins, expansion and redirection require an explicitly launched shell
+    or legacy_exec. Win32/OS2 return a process ID; Win16's pid-labelled result
+    is a WinExec instance handle, not a task ID for legacy_kill. No captured
+    output or tracked completion is provided. For supported tracked commands,
+    use legacy_job_start. DOS, NetWare and Mac do not support detach."""
     try:
         result = _agent(machine).exec_detach(command)
     except (MachineConfigError, AgentAuthError) as e:
@@ -210,7 +209,9 @@ def legacy_ping(machine: str) -> str:
 
 @srv.tool()
 def legacy_upload(machine: str, local_path: str, remote_path: str) -> str:
-    """Copy a file from this control machine to the named legacy machine."""
+    """Copy file bytes from this control machine to the named legacy machine.
+    Mac transfers the data fork only; use legacy_mac_self_update for an agent
+    application containing both data and resource forks."""
     try:
         n = _agent(machine).put(local_path, remote_path)
     except (MachineConfigError, AgentAuthError) as e:
@@ -224,7 +225,8 @@ def legacy_upload(machine: str, local_path: str, remote_path: str) -> str:
 
 @srv.tool()
 def legacy_download(machine: str, remote_path: str, local_path: str) -> str:
-    """Copy a file from the named legacy machine to this control machine."""
+    """Copy file bytes from the named legacy machine to this control machine.
+    Mac transfers the data fork only, not the resource fork or Finder metadata."""
     try:
         n = _agent(machine).get(remote_path, local_path)
     except (MachineConfigError, AgentAuthError) as e:
@@ -238,11 +240,11 @@ def legacy_download(machine: str, remote_path: str, local_path: str) -> str:
 
 @srv.tool()
 def legacy_screenshot(machine: str) -> Image:
-    """Capture the current screen of the named legacy machine. Requires
-    the agent to be running as an interactive service (see
-    docs/ARCHITECTURE.md) - if it isn't, this may return a blank/black
-    image instead of erroring, since capturing a disconnected window
-    station is a valid (just useless) result."""
+    """Capture the target screen. DOS/NetWare render text screens; Mac captures
+    the main display. Windows capture depends on the agent's desktop/session:
+    a disconnected or isolated service session may yield a blank image.
+    An interactive service is not a requirement on every platform. See
+    docs/ARCHITECTURE.md for Windows deployment and session limits."""
     try:
         bmp = _agent(machine).screenshot()
     except (MachineConfigError, AgentAuthError) as e:
@@ -285,7 +287,8 @@ def legacy_screenshot_file(machine: str, local_path: str, image_format: str = "p
 @srv.tool()
 def legacy_click(machine: str, x: int, y: int, button: int = 1) -> str:
     """Move the mouse to (x, y) in screen coordinates on the named legacy
-    machine and click. button: 1=left, 2=middle, 3=right."""
+    machine and click. button: 1=left, 2=middle, 3=right. Mac supports left
+    only; DOS/NetWare have no CLICK. Win16 journal injection is unreliable."""
     try:
         _agent(machine).click(x, y, button)
     except (MachineConfigError, AgentAuthError) as e:
@@ -337,8 +340,9 @@ def legacy_type(machine: str, text: str) -> str:
 
 @srv.tool()
 def legacy_ps(machine: str) -> str:
-    """List running processes (PID and image name) on the named legacy
-    machine."""
+    """List processes/tasks on Win32, Win16, OS/2 or Mac. IDs are platform
+    specific; pass an ID from this listing to legacy_kill. DOS/NetWare do not
+    support process enumeration."""
     try:
         procs = _agent(machine).pslist()
     except (MachineConfigError, AgentAuthError) as e:
@@ -354,9 +358,10 @@ def legacy_ps(machine: str) -> str:
 
 @srv.tool()
 def legacy_kill(machine: str, pid: int) -> str:
-    """Forcibly terminate a process by PID on the named legacy machine.
-    No protection against killing critical processes (including the
-    agent's own) - same trust model as legacy_exec."""
+    """Request termination using an ID returned by legacy_ps. Win32/Win16/OS2
+    can force termination; Mac sends a cooperative Quit request which an app
+    can cancel. Acceptance does not prove the process exited; recheck legacy_ps.
+    Critical processes are not protected. DOS/NetWare do not support this."""
     try:
         _agent(machine).pskill(pid)
     except (MachineConfigError, AgentAuthError) as e:
@@ -365,14 +370,15 @@ def legacy_kill(machine: str, pid: int) -> str:
         return f"[protocol error] {e}"
     except OSError as e:
         return f"[connection error] {e}"
-    return f"terminated pid {pid} on {machine}"
+    return f"termination request accepted for pid {pid} on {machine}"
 
 
 @srv.tool()
 def legacy_sysinfo(machine: str) -> str:
-    """OS family/version/service pack, computer name, memory, and C:
-    disk space for the named legacy machine. Use this to detect what
-    you're actually talking to instead of guessing from context."""
+    """Read platform-specific identity, version, memory/storage and feature
+    fields. Available fields differ by agent; Windows service-pack and C:
+    disk-space fields are not universal. Use legacy_capabilities for the
+    bridge's advisory platform coverage."""
     try:
         info = _agent(machine).sysinfo()
     except (MachineConfigError, AgentAuthError) as e:
@@ -408,7 +414,8 @@ def legacy_wait_for_agent(machine: str, timeout_seconds: int = 180, interval_sec
 
 @srv.tool()
 def legacy_wait_for_desktop(machine: str, timeout_seconds: int = 180, interval_seconds: int = 5) -> str:
-    """Poll until the interactive desktop looks logged in. This checks
+    """Win32 desktop-readiness heuristic: poll until the desktop looks logged in.
+    This checks
     for Explorer or visible top-level windows, which is a better
     post-reboot readiness signal than agent ping alone."""
     deadline = time.time() + max(1, timeout_seconds)
@@ -520,7 +527,7 @@ def legacy_winlist(machine: str, parent_hwnd: int | None = None) -> str:
 
 @srv.tool()
 def legacy_clipboard_set(machine: str, text: str) -> str:
-    """Set the clipboard on the named legacy machine to plain text (no
+    """Set the clipboard on Win32 or 32-bit OS/2 to plain text (no
     newlines). Follow with legacy_key(machine, 'ctrl-v') to paste it -
     more reliable than legacy_type for exact strings like product keys
     or paths, since it sidesteps keyboard-layout character mapping."""
@@ -539,7 +546,7 @@ def legacy_clipboard_set(machine: str, text: str) -> str:
 
 @srv.tool()
 def legacy_reg_get(machine: str, root: str, subkey: str, value_name: str) -> str:
-    """Read a registry value on the named legacy machine. root is one of
+    """Read a registry value on Win32. root is one of
     HKLM/HKCU/HKCR/HKU/HKCC. Only REG_SZ/REG_EXPAND_SZ/REG_DWORD are
     supported. Use this instead of legacy_exec + reg.exe - reg.exe
     doesn't exist by default before Windows XP."""
@@ -556,7 +563,7 @@ def legacy_reg_get(machine: str, root: str, subkey: str, value_name: str) -> str
 
 @srv.tool()
 def legacy_reg_set(machine: str, root: str, subkey: str, value_name: str, value_type: str, data: str) -> str:
-    """Write a registry value on the named legacy machine. root is one of
+    """Write a registry value on Win32. root is one of
     HKLM/HKCU/HKCR/HKU/HKCC. value_type is "SZ" or "DWORD" (the only two
     supported). Creates the key if it doesn't already exist."""
     try:
@@ -737,10 +744,12 @@ def legacy_self_update(
     update_exe_name: str = "update.exe",
     target_agent_name: str = "llm_agent.exe",
 ) -> str:
-    """Update the agent on the named legacy machine in place: uploads a
+    """Update a Win32 or OS/2 agent in place: uploads a
     new agent binary and update helper, then launches the helper detached
     to stop the running agent, swap the binary, and restart it.
 
+    The NT-family helper expects an LLMAgent service installation; interactive
+    --run deployments such as Win7 need an explicit restart and may not verify.
     On Windows, build both with `make` in agent-win32/. On OS/2, build with
     agent-os2/build.bat (produces llm_agent.exe + update.exe). remote_dir
     is the absolute directory the agent is currently deployed in (e.g.

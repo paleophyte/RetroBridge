@@ -454,7 +454,7 @@ ships its own Win16 SDK headers/import libs (`%WATCOM%\H\WIN`,
 `%WATCOM%\LIB286\WIN\winsock.lib`).
 
 ```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-win16
+cd C:\src\retro-ssh-server\agent-win16
 build.bat
 ```
 
@@ -523,7 +523,7 @@ of whatever was actually free in that WFW session at the time).
 
    ```ini
    [wfw-1]
-   host = 10.102.10.228
+   host = 192.168.56.12
    exec_port = 2222
    exec_token = your-shared-secret
    ```

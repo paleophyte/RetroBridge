@@ -45,8 +45,8 @@ Two recurring themes are worth knowing before extending this:
 
 Uses **MacTCP** (driver-style `PBControlSync`/`PBControlAsync` on a
 `TCPiopb`, not Berkeley sockets) for networking. Built with
-[Retro68](https://github.com/autc04/Retro68) targeting plain 68000 (runs
-under any 68k Mac, including emulators like `qemu-system-m68k -M q800`).
+[Retro68](https://github.com/autc04/Retro68) targeting 68000 instructions. Live validation used System 7.5.3 on
+`qemu-system-m68k -M q800`; other 68k machines and OS revisions need testing.
 Guest needs MacTCP configured and working (Control Panel shows an IP).
 
 ## What works

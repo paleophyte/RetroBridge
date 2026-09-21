@@ -3,4 +3,4 @@ token=REPLACE_WITH_UNIQUE_TOKEN
 # host= is only read by UPDATE.EXE (for its SELFEXIT call) - not by
 # LLMAGENT.EXE itself. Must be this machine's real LAN address, not
 # 127.0.0.1 - loopback doesn't work on this TCP/IP stack (confirmed live).
-host=10.102.10.199
+host=192.168.56.22

@@ -62,7 +62,7 @@ Copy from the guest into `vendor/`:
 - `TCP32DLL.DLL`
 
 ```bat
-cd C:\Users\admin\code\retro-ssh-server\agent-os2
+cd C:\src\retro-ssh-server\agent-os2
 build.bat
 ```
 
