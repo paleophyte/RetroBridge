@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VOLUME = "RETROBRG"
 # Explicit allowlist: never gather executables, INIs, SDKs, or media by glob.
 ARTIFACTS = {
-    "WIN32": [("agent-win32/llm_agent.exe", "LLMAGENT.EXE"), ("agent-win32/update.exe", "UPDATE.EXE")],
+    "WIN32": [("agent-win32/llm_agent.exe", "llm_agent.exe"), ("agent-win32/update.exe", "UPDATE.EXE")],
     "DOS": [("agent-dos/llm_agent.exe", "LLMAGENT.EXE")],
     "WIN16": [("agent-win16/llm_agent.exe", "LLMAGENT.EXE"), ("agent-win16/redir.exe", "REDIR.EXE"), ("agent-win16/restart.exe", "RESTART.EXE"), ("agent-win16/jobrun.exe", "JOBRUN.EXE")],
     "OS2": [("agent-os2/llm_agent.exe", "LLMAGENT.EXE"), ("agent-os2/update.exe", "UPDATE.EXE"), ("agent-os2/reboot.exe", "REBOOT.EXE"), ("agent-os2/jobrun.exe", "JOBRUN.EXE")],
@@ -39,11 +39,19 @@ EXAMPLES = {
     "NW411": "agent-netware/LLMAGENT.INI.example",
     "MAC7": "agent-mac-system7/LLMAGENT.INI.example",
 }
+# Joliet preserves the Win32 installation names; the ISO 9660 namespace
+# retains explicit 8.3 aliases so DOS/Win16 readers can still mount the CD.
+ISO_ALIASES = {
+    "WIN32/llm_agent.exe": "WIN32/LLMAGENT.EXE",
+    "WIN32/llm_agent.ini": "WIN32/LLMAGENT.INI",
+}
+CONFIG_NAMES = {folder: ("llm_agent.ini" if folder == "WIN32" else "LLMAGENT.INI")
+                for folder in ARTIFACTS}
 GUIDES = {
     "WIN32": """Windows 95/98/ME and NT-family agent.
-Copy LLMAGENT.EXE to a writable installation folder as llm_agent.exe.
-The ISO uses a short name; the installed long name is required by the updater.
-Copy UPDATE.EXE beside it. Copy CONFIG.INI as llm_agent.ini and replace token=.
+Copy llm_agent.exe, UPDATE.EXE, and llm_agent.ini together to a writable folder.
+Windows reads these installation-ready names from the CD's Joliet namespace.
+Set a unique token in llm_agent.ini before starting; retain the underscore.
 NT4/2000/XP: llm_agent.exe --install, then NET START LLMAgent.
 Windows 9x: --install registers RunServices; --run starts immediately.
 Windows 7 desktop control: run --run in the logged-in user's session.
@@ -52,7 +60,7 @@ Win95 needs Winsock 2. The linked CRT is not certified for a physical 486/Pentiu
 """,
     "DOS": """FreeDOS / MS-DOS agent; foreground application, not a TSR.
 Copy LLMAGENT.EXE and LLMSTART.BAT to a writable 8.3 folder, e.g. C:\\LLMAGENT.
-Copy CONFIG.INI as LLMAGENT.INI, set a unique token, and configure WATTCP.CFG.
+Copy LLMAGENT.INI, set a unique token, and configure WATTCP.CFG.
 Supply your own packet driver and load it before the agent (not on this CD).
 CALL C:\\LLMAGENT\\LLMSTART.BAT offers Agent/Console with a timed default.
 CHOICE must be on PATH. Local Ctrl+C exits the idle agent to the console.
@@ -60,7 +68,7 @@ EXEC blocks networking while its child runs. No jobs or built-in self-update.
 """,
     "WIN16": """Windows for Workgroups 3.11 with a working Winsock 1.1 stack.
 Copy LLMAGENT.EXE, REDIR.EXE, RESTART.EXE, and JOBRUN.EXE to a writable
-8.3 folder without spaces, e.g. C:\\LLMWIN. Copy CONFIG.INI as LLMAGENT.INI
+8.3 folder without spaces, e.g. C:\\LLMWIN. Copy LLMAGENT.INI beside them
 and set a unique token. Start LLMAGENT.EXE from within Windows.
 REDIR and JOBRUN are DOS helpers: EXEC/jobs are for DOS commands.
 Use EXECDETACH for native Windows applications. SHUTDOWN exits to DOS.
@@ -68,14 +76,14 @@ Use the staged Win16 update tool; do not overwrite the running executable.
 """,
     "OS2": """32-bit OS/2 2.x and later tested kernels; SO32DLL/TCP32DLL required.
 Copy all four EXEs to a writable 8.3 directory without spaces.
-Copy CONFIG.INI as LLMAGENT.INI and set a unique token.
+Copy LLMAGENT.INI beside them and set a unique token.
 Launch from a normal OS/2 session or a WPS Startup-folder object.
 Do not start with CONFIG.SYS RUN=; that can break session/helper launches.
 JOBRUN is required for jobs, REBOOT for reboot, UPDATE for staged replacement.
 """,
     "OS213": """16-bit OS/2 1.3; TCPIPDLL.DLL must be on LIBPATH.
 Copy all EXEs and IOSEG.DLL together to a writable 8.3 folder without spaces.
-Copy CONFIG.INI as LLMAGENT.INI; set token and host to this guest's LAN address.
+Copy LLMAGENT.INI; set token and host to this guest's LAN address.
 The host field is used by UPDATE for SELFEXIT, not the controller address.
 Start LLMAGENT.EXE from a normal OS/2 session or STARTUP.CMD.
 REBOOT requires IOPL=YES plus IORESET.EXE/IOSEG.DLL. JOBRUN is for jobs.
@@ -86,7 +94,7 @@ Copy AGENT.BIN and UPDATER.BIN to a writable HFS volume. Decode BOTH using
 an existing MacBinary-capable utility (e.g. StuffIt Expander, not supplied).
 Decoding restores the embedded application names llm_agent and llm_updater,
 including resource forks; renaming .BIN to an application does not decode it.
-Keep both applications together. Copy CONFIG.INI as LLMAGENT.INI beside them
+Keep both applications together. Copy LLMAGENT.INI beside them
 and replace token=. Launch llm_agent; use an alias in Startup Items if desired.
 UPDATE replaces the agent only; the companion is installed separately.
 This CD is ISO 9660/Joliet, not a bootable or HFS-hybrid Macintosh system disk.
@@ -251,11 +259,11 @@ def stage_media(source: Path, stage: Path, info: dict):
         example = (source / EXAMPLES[folder]).read_text(encoding="ascii")
         if "token=REPLACE_WITH_UNIQUE_TOKEN" not in example or len(re.findall(r"^token=", example, re.M)) != 1:
             raise ValueError(f"Not a placeholder configuration: {EXAMPLES[folder]}")
-        text_file(stage / folder / "CONFIG.INI", example)
+        text_file(stage / folder / CONFIG_NAMES[folder], example)
         if folder.startswith("NW"):
             guide = f"""NetWare {('3.12' if folder == 'NW312' else '4.11')} native NLM and shared protocol-2 UPDATE.NLM.
 Preferred: copy LLMAGENT.NLM and UPDATE.NLM to SYS:SYSTEM using your usual
-NetWare client/file utility. Create SYS:SYSTEM\\LLMAGENT.INI from CONFIG.INI
+NetWare client/file utility. Copy LLMAGENT.INI to SYS:SYSTEM\\LLMAGENT.INI
 with a unique token. Keep existing configuration when updating a machine.
 With TCP/IP and CLIB available: LOAD SYS:SYSTEM\\LLMAGENT.NLM
 
@@ -265,7 +273,7 @@ Direct CD load, only when no other LLMAGENT instance is loaded:
      LOAD CDROM
      CD DEVICE LIST
      CD MOUNT RETROBRG
-2. Create the private config in SYS:SYSTEM first; CONFIG.INI is only an example.
+2. Set the private config in SYS:SYSTEM first; the CD's INI is only an example.
 3. LOAD RETROBRG:\\{folder}\\LLMAGENT.NLM
    Or run RETROBRG:\\{folder}\\CDLOAD.NCF after completing steps 1-2.
 The CD does not supply CDROM.NLM, disk drivers, CLIB, CLIBAUX, or StuffKey.
@@ -302,15 +310,18 @@ Optional INSTALL-menu input needs separately supplied STUFFKEY/CLIBAUX.
     text_file(stage / "README.TXT", """RetroBridge - private lab deployment CD (non-bootable), volume RETROBRG
 
 Choose WIN32, WIN16, DOS, OS2, OS213, NW312, NW411, or MAC7.
-Each folder has a README.TXT and CONFIG.INI example. Copy onto a writable
+Each folder has a README.TXT and an INI with the agent's expected name.
+The INI contains a placeholder token. Copy the files onto a writable
 local volume and configure a unique token before starting an agent.
-Preserve existing configurations; CONFIG.INI is never a real credential.
-WIN32 needs the installed name llm_agent.exe / llm_agent.ini (see its README).
+Preserve existing configurations when updating an installation.
+WIN32 exposes llm_agent.exe / llm_agent.ini through Joliet for direct copying.
+Other platforms use LLMAGENT.INI. No manual INI renaming is needed.
 MAC7 contains MacBinary applications: decode them to preserve resource forks.
 NetWare has native NLMs and CDLOAD.NCF; CD driver/mount support must exist.
 This is not a boot disk and does not install drivers, OS files, or SDKs.
 
-CHECKSUM.TXT lists SHA-256 hashes; BUILD.JSN identifies source and artifacts.
+CHECKSUM.TXT lists SHA-256 hashes using Joliet names; BUILD.JSN records source
+and artifacts, including the two Win32 short aliases for ISO-only readers.
 NOTICES preserves dependency terms. DOCS holds selected UTF-8 Markdown source
 references (their repository-relative links refer to the source checkout).
 This locally built ISO is NOT a cleared public binary release. See the
@@ -318,6 +329,7 @@ source repository's docs/BINARY_RELEASE.md before redistributing binaries.
 https://github.com/paleophyte/RetroBridge
 """)
     info = dict(info)
+    info["iso9660_aliases"] = ISO_ALIASES
     info["files"] = {p.relative_to(stage).as_posix(): {"size": p.stat().st_size, "sha256": sha(p.read_bytes())}
                      for p in sorted(stage.rglob("*")) if p.is_file()}
     text_file(stage / "BUILD.JSN", json.dumps(info, indent=2, ensure_ascii=True) + "\n")
@@ -325,11 +337,17 @@ https://github.com/paleophyte/RetroBridge
 
 
 def validate_media_names(stage: Path):
+    seen = set()
     for p in stage.rglob("*"):
         if p.is_symlink() or not (p.is_file() or p.is_dir()):
             raise ValueError(f"Unexpected media entry: {p}")
+        relative = p.relative_to(stage).as_posix()
+        primary = ISO_ALIASES.get(relative, relative)
+        if primary in seen:
+            raise ValueError(f"Conflicting ISO 9660 alias: {primary}")
+        seen.add(primary)
         pattern = r"[A-Z0-9_]{1,8}\.[A-Z0-9_]{1,3}" if p.is_file() else r"[A-Z0-9_]{1,8}"
-        if not re.fullmatch(pattern, p.name):
+        if not re.fullmatch(pattern, primary.rsplit("/", 1)[-1]):
             raise ValueError(f"Not ISO 9660 level-1 / 8.3: {p.name}")
 
 
@@ -340,11 +358,12 @@ def create_iso(stage: Path, output: Path):
     iso.new(interchange_level=1, vol_ident=VOLUME, joliet=3)
     try:
         for p in sorted(stage.rglob("*"), key=lambda p: (len(p.parts), p.as_posix())):
-            name = "/" + p.relative_to(stage).as_posix()
+            relative = p.relative_to(stage).as_posix()
+            name = "/" + relative
             if p.is_dir():
                 iso.add_directory(iso_path=name, joliet_path=name)
             else:
-                iso.add_file(str(p), iso_path=name + ";1", joliet_path=name)
+                iso.add_file(str(p), iso_path="/" + ISO_ALIASES.get(relative, relative) + ";1", joliet_path=name)
         iso.write(str(output))
     finally:
         iso.close()
@@ -356,8 +375,13 @@ def verify_iso(stage: Path, output: Path):
     iso = pycdlib.PyCdlib()
     iso.open(str(output))
     try:
-        expected = {"/" + p.relative_to(stage).as_posix(): p for p in stage.rglob("*") if p.is_file()}
         for mode in ("iso_path", "joliet_path"):
+            expected = {}
+            for p in stage.rglob("*"):
+                if p.is_file():
+                    relative = p.relative_to(stage).as_posix()
+                    name = ISO_ALIASES.get(relative, relative) if mode == "iso_path" else relative
+                    expected["/" + name] = p
             actual = set()
             for directory, _, names in iso.walk(**{mode: "/"}):
                 for name in names:

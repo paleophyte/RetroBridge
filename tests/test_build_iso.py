@@ -1,5 +1,6 @@
 """Deployment media completeness, private-input exclusion, and ISO readback."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,8 @@ class MediaTests(unittest.TestCase):
                 self.assertEqual((self.stage / folder / name).read_bytes(),
                                  (self.source / original).read_bytes())
             self.assertIn(b"token=REPLACE_WITH_UNIQUE_TOKEN\r\n",
-                          (self.stage / folder / "CONFIG.INI").read_bytes())
+                          (self.stage / folder / ("llm_agent.ini" if folder == "WIN32" else "LLMAGENT.INI")).read_bytes())
+            self.assertFalse((self.stage / folder / "CONFIG.INI").exists())
         for path in self.stage.rglob("*"):
             if path.is_file():
                 self.assertNotIn(b"private sentinel", path.read_bytes())
@@ -145,6 +147,18 @@ class MediaTests(unittest.TestCase):
         try:
             self.assertEqual(iso.pvd.volume_identifier.rstrip(), b"RETROBRG")
             self.assertIsNone(iso.eltorito_boot_catalog)
+            # Guests must see the actual names consumed by the config loader
+            # and updater, without a manual post-copy rename.
+            for mode, names in {
+                "joliet_path": ["/WIN32/llm_agent.exe", "/WIN32/llm_agent.ini"],
+                "iso_path": ["/WIN32/LLMAGENT.EXE;1", "/WIN32/LLMAGENT.INI;1"],
+            }.items():
+                for name in names:
+                    payload = io.BytesIO()
+                    iso.get_file_from_iso_fp(payload, **{mode: name})
+                    self.assertTrue(payload.getvalue())
+                    if ".INI" in name.upper():
+                        self.assertIn(b"token=REPLACE_WITH_UNIQUE_TOKEN\r\n", payload.getvalue())
         finally:
             iso.close()
         target = self.stage / "NW312/LLMAGENT.NLM"

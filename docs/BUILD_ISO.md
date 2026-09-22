@@ -66,12 +66,13 @@ deploys to or restarts any guest.
 ## Contents and installation
 
 The volume label is `RETROBRG`. ISO 9660 level 1 supplies uppercase 8.3 names
-for old CD readers; Joliet exposes the same names to newer guests. All quick
+for old CD readers; Joliet preserves the Win32 executable/config names with
+their underscore. All other files have the same names in both namespaces. All quick
 guides, config examples and startup scripts use ASCII with CRLF endings.
 
 | Directory | Binaries and helpers |
 | --- | --- |
-| `WIN32` | `LLMAGENT.EXE`, `UPDATE.EXE` |
+| `WIN32` | `llm_agent.exe`, `UPDATE.EXE` |
 | `DOS` | `LLMAGENT.EXE`, `LLMSTART.BAT`, `WATTCP.CFG` example |
 | `WIN16` | `LLMAGENT.EXE`, `REDIR.EXE`, `RESTART.EXE`, `JOBRUN.EXE` |
 | `OS2` | `LLMAGENT.EXE`, `UPDATE.EXE`, `REBOOT.EXE`, `JOBRUN.EXE` |
@@ -80,17 +81,19 @@ guides, config examples and startup scripts use ASCII with CRLF endings.
 | `NW411` | NetWare 4.11 `LLMAGENT.NLM`, shared `UPDATE.NLM`, `CDLOAD.NCF` |
 | `MAC7` | `AGENT.BIN`, `UPDATER.BIN` (MacBinary applications) |
 
-Each folder contains `CONFIG.INI` with a placeholder token and its own
-installation guide. Copy to a writable installation folder and rename the
-config as directed; preserve a machine's existing configuration when updating.
+Each folder contains its agent's correctly named INI with a placeholder token
+and its own installation guide: `llm_agent.ini` for Win32, `LLMAGENT.INI` for
+the other platforms. Copy to a writable installation folder; no manual INI
+rename is needed. Preserve a machine's existing configuration when updating.
 Generate a unique token before starting a new installation. The CD contains
 no real tokens, inventory, SDKs, packet drivers, OS installers, or guest DLLs.
 Guest network stacks and CD drivers must already work.
 
-**Win32:** Copy `LLMAGENT.EXE` as **`llm_agent.exe`**, and `CONFIG.INI` as
-`llm_agent.ini`. That installed executable name is used by the updater and
-is deliberately different from the ISO's 8.3 name. Other PC agents use
-`LLMAGENT.EXE` / `LLMAGENT.INI`.
+**Win32:** Copy `llm_agent.exe`, `UPDATE.EXE`, and `llm_agent.ini` together
+using Windows' Joliet-capable CD reader. Keep the underscore: the config
+loader and updater use these names. ISO-only readers see short aliases
+`LLMAGENT.EXE` / `LLMAGENT.INI` in this folder, so use Windows to copy the
+Win32 payload. Other PC agents use `LLMAGENT.EXE` / `LLMAGENT.INI` directly.
 
 **Mac:** Copy both `.BIN` files to HFS and decode with an existing MacBinary
 utility. This restores `llm_agent` and `llm_updater`, including their resource
@@ -101,7 +104,8 @@ Access; this ISO has no HFS partition or bootable Mac system.
 `BUILD.JSN` is a JSON record of the source commit, dirty state, tracked-input
 digest, supplied dependency hashes, and packaged artifact hashes. It is not
 a complete toolchain or license attestation. `CHECKSUM.TXT` hashes all payload
-files, including that record, but not itself. `NOTICES` retains the collected
+files by their Joliet names, including that record, but not itself. The record
+also maps the two Win32 ISO 9660 aliases. `NOTICES` retains the collected
 third-party terms. `DOCS` contains selected UTF-8 Markdown references; their
 relative links refer to the source repository.
 
@@ -109,7 +113,7 @@ relative links refer to the source repository.
 
 The preferred installation copies the matching folder's `LLMAGENT.NLM` and
 `UPDATE.NLM` to `SYS:SYSTEM` using a NetWare client or an existing file utility.
-Create `SYS:SYSTEM\LLMAGENT.INI` from `CONFIG.INI`, set its unique token, then
+Copy `LLMAGENT.INI` into `SYS:SYSTEM`, set its unique token, then
 run `LOAD SYS:SYSTEM\LLMAGENT.NLM` after TCP/IP and CLIB are available.
 
 To load directly from CD, first make the virtual CD visible to the server's
